@@ -6,5 +6,12 @@ export default defineConfig({
   build: {
     target: 'esnext',
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // Keep three out of the entry chunk so per-track viz chunks import it
+        // from a leaf chunk instead of circularly from the entry.
+        manualChunks: { three: ['three'] },
+      },
+    },
   },
 });

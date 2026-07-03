@@ -95,5 +95,10 @@ refs.micSkipBtn.addEventListener('click', () => {
   refs.micOverlay.hidden = true;
 });
 
-await go(0);
-host.start();
+// NOTE: no top-level await here. The entry chunk must finish evaluating
+// before dynamically-imported viz chunks (which import three from it) can
+// resolve — a module-level `await go(0)` deadlocks the production build.
+void (async () => {
+  await go(0);
+  host.start();
+})();
