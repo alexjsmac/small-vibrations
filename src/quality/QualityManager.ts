@@ -29,8 +29,15 @@ const PRESETS: Record<QualityLevel, QualityState> = {
   },
 };
 
+/** Phones/tablets start on Lite; the manual toggle can still force Full. */
+function defaultLevel(): QualityLevel {
+  return typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches
+    ? 'lite'
+    : 'full';
+}
+
 export class QualityManager extends EventTarget {
-  private _state: QualityState = { ...PRESETS.full };
+  private _state: QualityState = { ...PRESETS[defaultLevel()] };
   private manualOverride = false;
 
   /** Rolling FPS samples for the auto-detect. */

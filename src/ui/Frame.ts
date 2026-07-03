@@ -6,6 +6,10 @@ export interface FrameRefs {
   nowMeta: HTMLDivElement;
   indicator: HTMLSpanElement;
   micDot: HTMLSpanElement;
+  micLabel: HTMLSpanElement;
+  micOverlay: HTMLDivElement;
+  micStartBtn: HTMLButtonElement;
+  micSkipBtn: HTMLButtonElement;
   prevBtn: HTMLButtonElement;
   nextBtn: HTMLButtonElement;
   qualityBtn: HTMLButtonElement;
@@ -26,7 +30,11 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     </header>
     <div class="frame-edge left"></div>
     <div class="stage" id="stage">
-      <div class="listening">listening…</div>
+      <div class="mic-overlay" id="mic-overlay">
+        <button id="mic-start">Tap to listen</button>
+        <p>Play the record — this page listens along and matches the visuals to the track.</p>
+        <button id="mic-skip" class="link-btn">browse without microphone</button>
+      </div>
     </div>
     <div class="frame-edge right"></div>
     <footer class="footer">
@@ -37,7 +45,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <button id="next">Next</button>
         <button id="quality">Quality: Full</button>
         <button id="fullscreen">Fullscreen</button>
-        <span class="indicator"><span class="mic-dot" id="mic-dot"></span>Mic Off</span>
+        <span class="indicator"><span class="mic-dot" id="mic-dot"></span><span id="mic-label">Mic Off</span></span>
       </div>
     </footer>
   `;
@@ -48,6 +56,10 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     nowMeta:       root.querySelector('#now-meta')      as HTMLDivElement,
     indicator:     root.querySelector('#indicator')     as HTMLSpanElement,
     micDot:        root.querySelector('#mic-dot')       as HTMLSpanElement,
+    micLabel:      root.querySelector('#mic-label')     as HTMLSpanElement,
+    micOverlay:    root.querySelector('#mic-overlay')   as HTMLDivElement,
+    micStartBtn:   root.querySelector('#mic-start')     as HTMLButtonElement,
+    micSkipBtn:    root.querySelector('#mic-skip')      as HTMLButtonElement,
     prevBtn:       root.querySelector('#prev')          as HTMLButtonElement,
     nextBtn:       root.querySelector('#next')          as HTMLButtonElement,
     qualityBtn:    root.querySelector('#quality')       as HTMLButtonElement,

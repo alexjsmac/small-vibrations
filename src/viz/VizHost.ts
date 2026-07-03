@@ -21,8 +21,9 @@ export class VizHost {
   private rafId = 0;
   private lastT = performance.now();
 
-  /** Stub audio frame until the fingerprint pipeline is wired up. */
-  private audio: AudioFrame = {
+  /** Live audio source (AudioEngine.frame); stub zeros until the mic starts. */
+  private audioSource: (() => AudioFrame) | null = null;
+  private stubAudio: AudioFrame = {
     frequency: new Float32Array(64),
     bass: 0, mid: 0, high: 0,
     matched: false,
@@ -100,11 +101,15 @@ export class VizHost {
       this.lastT = now;
       this.quality.tick();
       if (this.current) {
-        this.current.update(dt, this.audio);
+        this.current.update(dt, this.audioSource ? this.audioSource() : this.stubAudio);
         this.renderer.render(this.scene, this.camera);
       }
     };
     tick();
+  }
+
+  setAudioSource(source: (() => AudioFrame) | null) {
+    this.audioSource = source;
   }
 
   stop() {

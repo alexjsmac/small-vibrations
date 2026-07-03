@@ -117,17 +117,68 @@ html, body {
   height: 100%;
   display: block;
 }
-.stage .listening {
+/* --- Mic start overlay --- */
+
+.mic-overlay {
   position: absolute;
   inset: 0;
-  display: grid; place-items: center;
-  pointer-events: none;
-  font-family: var(--mono);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: rgba(236,228,207,0.55);
-  font-size: 12px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  text-align: center;
+  padding: 24px;
+  background: radial-gradient(ellipse at center, rgba(20,70,94,0.92) 0%, rgba(10,34,48,0.96) 80%);
 }
+.mic-overlay[hidden] { display: none; }
+
+#mic-start {
+  appearance: none;
+  background: var(--cream);
+  color: var(--teal-2);
+  border: none;
+  border-radius: 999px;
+  padding: 16px 34px;
+  min-height: 52px;
+  font-family: var(--mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 120ms ease, background 120ms ease;
+}
+#mic-start:hover { transform: scale(1.04); }
+
+.mic-overlay p {
+  margin: 0;
+  max-width: 36ch;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(236,228,207,0.65);
+}
+
+.link-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(236,228,207,0.45);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.link-btn:hover { color: var(--cream); }
 
 /* --- Footer / controls --- */
 
@@ -174,7 +225,7 @@ html, body {
   color: rgba(236,228,207,0.5);
 }
 
-/* Status dot for mic state (wired up later) */
+/* Status dot for mic state */
 .mic-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--cream-2);
@@ -183,7 +234,43 @@ html, body {
   vertical-align: middle;
 }
 .mic-dot.listening { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.mic-dot.matched   { background: var(--cream); box-shadow: 0 0 6px rgba(236,228,207,0.8); }
 @keyframes pulse {
   0%, 100% { opacity: 0.4; }
   50%      { opacity: 1.0; }
+}
+
+/* --- Mobile / touch --- */
+
+.controls button { touch-action: manipulation; }
+button[hidden] { display: none; }
+
+@media (max-width: 720px) {
+  :root { --frame-w: clamp(16px, 5vw, 44px); }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: calc(10px + env(safe-area-inset-top)) 16px 8px;
+  }
+  .now-playing { text-align: left; }
+
+  .footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+  }
+  .controls {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 6px;
+  }
+  .controls button {
+    min-height: 44px;
+    padding: 10px 14px;
+  }
+  .controls .indicator { padding: 0 4px; }
+  .catalog { text-align: center; }
 }
