@@ -37,6 +37,8 @@ export class Dust {
     uScale: { value: number };
     uAttractors: { value: THREE.Vector3[] };
     uSeedShift: { value: number };
+    uFlash: { value: number };
+    uAccent: { value: number };
   };
 
   constructor(seed: number, quality: QualityState, private renderer: THREE.WebGLRenderer) {
@@ -78,6 +80,8 @@ export class Dust {
       uScale: { value: 540 },
       uAttractors: { value: this.attractors },
       uSeedShift: { value: rand() * 100 },
+      uFlash: { value: 0 },
+      uAccent: { value: 0 },
     };
 
     this.material = new THREE.ShaderMaterial({
@@ -171,6 +175,8 @@ export class Dust {
       fragmentShader: /* glsl */ `
         uniform float uBrightness;
         uniform float uHigh;
+        uniform float uFlash;
+        uniform float uAccent;
         varying float vVisible;
         varying float vSparkle;
 
@@ -179,10 +185,13 @@ export class Dust {
           // soft round falloff — additive glow dots, not hard squares
           float d = length(gl_PointCoord - 0.5);
           float falloff = smoothstep(0.5, 0.08, d);
-          float brightness = clamp(uBrightness + uHigh * 0.5 + vSparkle * 0.15, 0.0, 1.4);
+          float brightness = clamp(uBrightness + uHigh * 0.5 + vSparkle * 0.15 + uFlash * 0.5, 0.0, 1.5);
           vec3 dim = vec3(0.624, 0.847, 0.784);   // #9fd8c8
           vec3 hot = vec3(0.925, 0.894, 0.812);   // #ece4cf
           vec3 col = mix(dim, hot, clamp(brightness, 0.0, 1.0));
+          // a seeded subset of particles carries the rust accent, scaled per act
+          float warm = step(0.82, fract(vSparkle * 7.13)) * uAccent;
+          col = mix(col, vec3(0.769, 0.302, 0.227), warm); // #c44d3a
           gl_FragColor = vec4(col, falloff * clamp(brightness, 0.1, 1.0) * 0.85);
         }
       `,
@@ -200,7 +209,7 @@ export class Dust {
     }
   }
 
-  update(dt: number, audio: AudioFrame, section: SectionState) {
+  update(dt: number, audio: AudioFrame, section: SectionState, flash = 0) {
     const p = section.params;
     const u = this.uniforms;
     // Accumulate flow phase so speed changes glide instead of jumping.
@@ -214,6 +223,8 @@ export class Dust {
     u.uBrightness.value = p.dustBrightness;
     u.uHigh.value = audio.high;
     u.uBass.value = audio.bass;
+    u.uFlash.value = flash;
+    u.uAccent.value = p.accent;
     // Point-size scale factor tracks the drawing buffer height (same rule as
     // three's own PointsMaterial size attenuation).
     u.uScale.value = this.renderer.domElement.height * 0.5;

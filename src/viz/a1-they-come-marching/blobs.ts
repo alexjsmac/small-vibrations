@@ -133,6 +133,8 @@ function lerpBalls(a: Ball[], b: Ball[], k: number): Ball[] {
 export class Blobs {
   readonly object: InstanceType<typeof MarchingCubes>;
   private material: THREE.MeshStandardMaterial;
+  private baseEmissive!: THREE.Color;
+  private accentEmissive = new THREE.Color(0xc44d3a);
   private seeds: SlotSeed[];
   private clock = 0;
   private worldScale = 1.5;
@@ -149,9 +151,10 @@ export class Blobs {
     const resolution = quality.level === 'full' ? 48 : 28;
     const hueShift = rand() * 0.15 - 0.075;
 
+    this.baseEmissive = new THREE.Color(0x1f5d7a).offsetHSL(hueShift, 0, -0.15);
     this.material = new THREE.MeshStandardMaterial({
       color: new THREE.Color(0xece4cf),
-      emissive: new THREE.Color(0x1f5d7a).offsetHSL(hueShift, 0, -0.15),
+      emissive: this.baseEmissive.clone(),
       roughness: 0.45,
       metalness: 0.05,
     });
@@ -178,8 +181,14 @@ export class Blobs {
     return out;
   }
 
-  update(dt: number, audio: AudioFrame, section: SectionState) {
+  update(dt: number, audio: AudioFrame, section: SectionState, flash = 0) {
     this.clock += dt;
+
+    // Flashes light the forms from within; the rust accent creeps into the
+    // emissive as the acts progress (strongest during The March).
+    const accentMix = Math.min(1, section.params.accent * (0.5 + flash));
+    this.material.emissive.copy(this.baseEmissive).lerp(this.accentEmissive, accentMix);
+    this.material.emissiveIntensity = 0.6 + flash * 1.6;
 
     ballsForAct(this.frameBalls, section.actIndex, this.seeds, section.localT, this.clock, audio.bass);
     if (section.blend > 0) {

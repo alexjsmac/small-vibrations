@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Viz, VizContext, AudioFrame, VizModule } from '../types';
 import { Dust, ATTRACTOR_COUNT } from './dust';
 import { Blobs } from './blobs';
+import { Sparks } from './sparks';
 import { paramsAt } from './sections';
 import { mulberry32 } from '../random';
 
@@ -17,19 +18,27 @@ import { mulberry32 } from '../random';
 class TheyComeMarching implements Viz {
   private dust!: Dust;
   private blobs!: Blobs;
+  private sparks!: Sparks;
   private camera!: THREE.PerspectiveCamera;
   private lights: THREE.Light[] = [];
   private camPhase = 0;
   private camSeedA = 0;
   private camSeedB = 0;
+  private bgBase = new THREE.Color(0x05141c);
+  private bgFlash = new THREE.Color(0x123243);
+  private forceSparks = false;
+  private sceneRef!: THREE.Scene;
 
   async init(ctx: VizContext) {
     const { scene, camera, renderer, seed, quality } = ctx;
     scene.fog = null;
     this.camera = camera;
 
-    const solo = new URLSearchParams(location.search).get('solo');
-    scene.background = new THREE.Color(solo ? 0x1f5d7a : 0x05141c);
+    const params = new URLSearchParams(location.search);
+    const solo = params.get('solo');
+    this.forceSparks = params.get('sparks') === 'always';
+    if (solo) this.bgBase.setHex(0x1f5d7a);
+    scene.background = this.bgBase.clone();
 
     const rand = mulberry32(seed ^ 0x51ed270b);
     this.camSeedA = rand() * Math.PI * 2;
@@ -40,6 +49,10 @@ class TheyComeMarching implements Viz {
 
     this.blobs = new Blobs(seed, quality);
     if (!solo || solo === 'blobs') scene.add(this.blobs.object);
+
+    this.sparks = new Sparks(seed);
+    if (!solo || solo === 'sparks') scene.add(this.sparks.group);
+    this.sceneRef = scene;
 
     // Blobs use MeshStandardMaterial — light the scene in the sleeve palette:
     // warm cream key from above, cool teal fill from below.
@@ -55,9 +68,16 @@ class TheyComeMarching implements Viz {
   update(dt: number, audio: AudioFrame) {
     const section = paramsAt(audio.time);
 
-    this.blobs.update(dt, audio, section);
-    this.dust.setAttractors(this.blobs.getAttractorWorldPositions(ATTRACTOR_COUNT));
-    this.dust.update(dt, audio, section);
+    const attractors = this.blobs.getAttractorWorldPositions(ATTRACTOR_COUNT);
+    this.sparks.update(dt, audio, section, attractors, this.forceSparks);
+    const flash = this.sparks.flash;
+
+    this.blobs.update(dt, audio, section, flash);
+    this.dust.setAttractors(attractors);
+    this.dust.update(dt, audio, section, flash);
+
+    // Flashes lift the whole scene toward a paler teal for a beat.
+    (this.sceneRef.background as THREE.Color).copy(this.bgBase).lerp(this.bgFlash, Math.min(1, flash));
 
     // Act-aware camera drift: a slow orbit whose pace follows the act's
     // cameraDrift param, with a gentle breathing dolly. Mids nudge the pace.
@@ -76,6 +96,7 @@ class TheyComeMarching implements Viz {
   dispose() {
     this.dust.dispose();
     this.blobs.dispose();
+    this.sparks.dispose();
     for (const l of this.lights) l.dispose();
     this.lights = [];
     // Hand the camera back where the shell expects it.

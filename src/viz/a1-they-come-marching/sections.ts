@@ -34,18 +34,25 @@ export interface ActParams {
   cameraDrift: number;
   /** 0..1 mix toward the procedural "developed skin" pattern on blob surfaces (Full quality only). */
   skinPattern: number;
+  /** Baseline full-scene light pulses per minute (bass onsets add more). */
+  flashRate: number;
+  /** Baseline filament lines per minute (high-band onsets add more). */
+  filamentRate: number;
+  /** 0..1 how much of the sleeve's rust accent (#c44d3a) may appear — flashes, filaments, warm dust. */
+  accent: number;
 }
 
 /** Boundary times in seconds, measured from the master's 2s RMS/band profile. Track duration: 286.439s. */
 export const CUES = [0, 16, 64, 100, 180, 200, 248, 286.439] as const;
 
 export const ACTS: ActParams[] = [
-  { // 1. Void — near-black, sparse dust fading in
+  { // 1. Void — near-black, sparse dust fading in; the rare flash reads as distant lightning
     name: 'void',
     dustDensity: 0.12, flowSpeed: 0.25, turbulence: 0.6, condensation: 0,
     marchDrift: 0, dustBrightness: 0.35,
     blobPresence: 0, blobStrength: 0,
     cameraDrift: 0.15, skinPattern: 0,
+    flashRate: 0.5, filamentRate: 0.5, accent: 0,
   },
   { // 2. Stirring — full dust field flowing, faint clustering
     name: 'stirring',
@@ -53,20 +60,23 @@ export const ACTS: ActParams[] = [
     marchDrift: 0, dustBrightness: 0.75,
     blobPresence: 0, blobStrength: 0,
     cameraDrift: 0.3, skinPattern: 0,
+    flashRate: 2, filamentRate: 2, accent: 0.05,
   },
-  { // 3. Fragments — turbulent, proto-blobs flicker in on hits
+  { // 3. Fragments — turbulent, proto-blobs flicker in on hits; the most electric act
     name: 'fragments',
     dustDensity: 0.85, flowSpeed: 1.1, turbulence: 1.4, condensation: 0.35,
     marchDrift: 0, dustBrightness: 0.85,
     blobPresence: 0.5, blobStrength: 0.35,
     cameraDrift: 0.45, skinPattern: 0,
+    flashRate: 10, filamentRate: 8, accent: 0.15,
   },
-  { // 4. Condensation — metaballs grow/merge, dust orbits them
+  { // 4. Condensation — metaballs grow/merge, dust orbits, filaments bridge the clusters
     name: 'condensation',
     dustDensity: 0.8, flowSpeed: 0.55, turbulence: 0.7, condensation: 0.7,
     marchDrift: 0, dustBrightness: 0.85,
     blobPresence: 1.0, blobStrength: 0.55,
     cameraDrift: 0.3, skinPattern: 0.15,
+    flashRate: 4, filamentRate: 6, accent: 0.2,
   },
   { // 5. Shift — merged mass stretches, reorganizes into a column
     name: 'shift',
@@ -74,13 +84,15 @@ export const ACTS: ActParams[] = [
     marchDrift: 0.25, dustBrightness: 0.8,
     blobPresence: 1.0, blobStrength: 0.75,
     cameraDrift: 0.55, skinPattern: 0.4,
+    flashRate: 6, filamentRate: 8, accent: 0.3,
   },
-  { // 6. The March — peak brightness, forms process, dust streams with them
+  { // 6. The March — peak brightness, forms process, rust accent at its boldest
     name: 'the-march',
     dustDensity: 1.0, flowSpeed: 1.2, turbulence: 0.75, condensation: 0.5,
     marchDrift: 1.0, dustBrightness: 1.0,
     blobPresence: 1.0, blobStrength: 0.9,
     cameraDrift: 0.7, skinPattern: 1.0,
+    flashRate: 8, filamentRate: 10, accent: 0.45,
   },
   { // 7. Dissolve — forms release back to dust, thins toward black
     name: 'dissolve',
@@ -88,6 +100,7 @@ export const ACTS: ActParams[] = [
     marchDrift: 0, dustBrightness: 0.4,
     blobPresence: 0, blobStrength: 0,
     cameraDrift: 0.2, skinPattern: 0.2,
+    flashRate: 1, filamentRate: 2, accent: 0.1,
   },
 ];
 
