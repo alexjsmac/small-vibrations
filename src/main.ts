@@ -1,12 +1,8 @@
-import { mountFrame, setNowPlaying } from './ui/Frame';
+import { mountFrame, renderChrome, type VisualState } from './ui/Frame';
 import { TRACKS, LISTENING_TRACK } from './tracks';
 import { QualityManager } from './quality/QualityManager';
 import { VizHost } from './viz/VizHost';
 import { AudioEngine, type MicState, type TrackMatch } from './audio/AudioEngine';
-import marbleUrl from './assets/marble-tile.png';
-
-// Inject the marble texture as a CSS variable so vite can hash & rewrite the URL.
-document.documentElement.style.setProperty('--marble', `url('${marbleUrl}')`);
 
 const root = document.getElementById('app') as HTMLDivElement;
 const refs = mountFrame(root);
@@ -17,41 +13,41 @@ const engine = new AudioEngine();
 
 /**
  * Two ways in from the start overlay:
- *  - 'listening': mic-driven. The ambient scene + "Listening for Small
- *    Vibrations…" message hold until the matcher confirms a track, which
- *    reveals its visuals; losing the signal returns to the ambient scene.
- *    Manual track navigation is hidden — the record decides.
- *  - 'browse': no mic; Prev/Next navigation.
- * 'choose' is the overlay itself (ambient scene idles behind it).
+ *  - 'listening': mic-driven. The ambient scene + ripple hold until the matcher
+ *    confirms a track ('matched'), which reveals its visuals; losing the signal
+ *    returns to the ambient scene. Manual navigation is hidden — the record decides.
+ *  - 'browse': no mic; tracklist + Prev/Next navigation.
+ * 'choose' is the start overlay itself (ambient scene idles behind it).
+ *
+ * `visual` is the chrome's presentation state and additionally distinguishes
+ * 'matched' (listening, track confirmed) so the plate/now-playing render.
  */
 type Mode = 'choose' | 'listening' | 'browse';
 let mode: Mode = 'choose';
-
+let visual: VisualState = 'choose';
 let idx = 0;
+let trackStart = performance.now();
+
+function setVisual(v: VisualState) {
+  visual = v;
+  renderChrome(refs, v, idx);
+}
 
 async function go(nextIdx: number) {
   idx = (nextIdx + TRACKS.length) % TRACKS.length;
-  const track = TRACKS[idx];
-  setNowPlaying(refs, track, idx);
+  trackStart = performance.now();
+  renderChrome(refs, visual, idx);
   try {
-    await host.load(track);
+    await host.load(TRACKS[idx]);
   } catch (err) {
     // A single broken viz module shouldn't take down navigation or the render loop.
-    console.error(`[viz] failed to load "${track.viz}" for ${track.id}:`, err);
+    console.error(`[viz] failed to load "${TRACKS[idx].viz}" for ${TRACKS[idx].id}:`, err);
   }
 }
 
-function setBrowseControlsVisible(visible: boolean) {
-  refs.prevBtn.hidden = !visible;
-  refs.nextBtn.hidden = !visible;
-  refs.indicator.hidden = !visible;
-}
-
-/** The pre-detection state: ambient dust + pulsing message, neutral header. */
-async function showListeningScene() {
-  refs.nowTitle.textContent = '—';
-  (refs.nowMeta.querySelector('#now-side') as HTMLElement).textContent = '';
-  refs.listeningMsg.hidden = false;
+/** Load the ambient dust scene into the canvas (used behind both the start
+ *  overlay and the listening ripple). Does not change the visual state. */
+async function loadAmbient() {
   try {
     await host.load(LISTENING_TRACK);
   } catch (err) {
@@ -59,60 +55,119 @@ async function showListeningScene() {
   }
 }
 
-function enterBrowse() {
-  mode = 'browse';
-  refs.micOverlay.hidden = true;
-  refs.listeningMsg.hidden = true;
-  setBrowseControlsVisible(true);
-  void go(idx);
+/** The pre-detection listening state: ambient dust + ripple. */
+async function showListeningScene() {
+  setVisual('listening');
+  await loadAmbient();
 }
 
-// --- controls ---
+function setMicStatus(state: MicState) {
+  refs.micDot.classList.toggle('listening', state === 'listening' || state === 'starting');
+  refs.micDot.classList.toggle('matched', state === 'matched');
+  refs.micLabel.textContent =
+    state === 'matched' && engine.current ? `Matched · ${engine.current.trackId.toUpperCase()}`
+    : state === 'listening' || state === 'starting' ? 'Listening…'
+    : state === 'error' ? 'Mic unavailable'
+    : 'Mic Off';
+}
 
-refs.prevBtn.addEventListener('click', () => { if (mode === 'browse') go(idx - 1); });
-refs.nextBtn.addEventListener('click', () => { if (mode === 'browse') go(idx + 1); });
+function enterBrowse(selectIdx = idx) {
+  mode = 'browse';
+  visual = 'browse';
+  setMicStatus('off');
+  void go(selectIdx);
+}
+
+function backToStart() {
+  mode = 'choose';
+  setMicStatus('off');
+  setVisual('choose');
+  void loadAmbient();
+}
+
+// --- controls (rail + sheet share button classes, so wire all matches) ---
+
+const all = <T extends Element>(sel: string) => Array.from(root.querySelectorAll<T>(sel));
+
+all<HTMLButtonElement>('.js-prev').forEach((b) => b.addEventListener('click', () => { if (mode === 'browse') go(idx - 1); }));
+all<HTMLButtonElement>('.js-next').forEach((b) => b.addEventListener('click', () => { if (mode === 'browse') go(idx + 1); }));
+all<HTMLButtonElement>('.js-startover').forEach((b) => b.addEventListener('click', backToStart));
+all<HTMLButtonElement>('.js-stop').forEach((b) => b.addEventListener('click', backToStart));
+all<HTMLButtonElement>('.js-browse').forEach((b) => b.addEventListener('click', () => enterBrowse()));
+
+// Clicking a track row jumps into browse mode on that track.
+all<HTMLElement>('.trow[data-idx]').forEach((row) => {
+  row.addEventListener('click', () => {
+    const i = Number(row.dataset.idx);
+    if (mode === 'listening') return; // the record drives while listening
+    enterBrowse(i);
+  });
+});
 
 function syncQualityLabel() {
-  refs.qualityBtn.textContent = `Quality: ${quality.state.level === 'full' ? 'Full' : 'Lite'}`;
+  const label = `Quality: ${quality.state.level === 'full' ? 'Full' : 'Lite'}`;
+  all<HTMLButtonElement>('.js-quality').forEach((b) => { b.textContent = label; });
 }
-refs.qualityBtn.addEventListener('click', () => quality.toggle());
+all<HTMLButtonElement>('.js-quality').forEach((b) => b.addEventListener('click', () => quality.toggle()));
 quality.addEventListener('change', syncQualityLabel);
 syncQualityLabel();
 
-// iPhone Safari has no Fullscreen API — hide the button there.
-if (!document.documentElement.requestFullscreen) {
-  refs.fullscreenBtn.hidden = true;
+// Fullscreen the canvas stage only (iPhone Safari has no Fullscreen API → hide).
+const fsButtons = all<HTMLButtonElement>('.js-fullscreen');
+if (!refs.stage.requestFullscreen) {
+  fsButtons.forEach((b) => { b.hidden = true; });
+} else {
+  fsButtons.forEach((b) => b.addEventListener('click', () => {
+    if (!document.fullscreenElement) refs.stage.requestFullscreen().catch(() => {});
+    else document.exitFullscreen();
+  }));
 }
-refs.fullscreenBtn.addEventListener('click', () => {
-  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-  else document.exitFullscreen();
+
+// --- collapsible rail ---
+
+refs.railToggle.addEventListener('click', () => refs.rail.classList.add('collapsed'));
+refs.spineToggle.addEventListener('click', () => refs.rail.classList.remove('collapsed'));
+
+// --- mobile bottom sheet (tap to toggle, drag to resize) ---
+
+const SHEET_OPEN = 392, SHEET_CLOSED = 58;
+let sheetOpen = true, sy = 0, sh0 = 0, sheetMoved = false, sheetDragging = false;
+
+function setSheetHeight(h: number, dragging: boolean) {
+  refs.sheet.style.height = `${h}px`;
+  refs.sheet.style.transition = dragging ? 'none' : 'height 0.5s cubic-bezier(0.7,0,0.2,1)';
+}
+refs.sheetHandle.addEventListener('pointerdown', (e) => {
+  try { refs.sheetHandle.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  sy = e.clientY; sh0 = sheetOpen ? SHEET_OPEN : SHEET_CLOSED; sheetMoved = false; sheetDragging = true;
+  setSheetHeight(sh0, true);
 });
+refs.sheetHandle.addEventListener('pointermove', (e) => {
+  if (!sheetDragging) return;
+  const dy = sy - e.clientY;
+  if (Math.abs(dy) > 4) sheetMoved = true;
+  setSheetHeight(Math.max(SHEET_CLOSED, Math.min(SHEET_OPEN, sh0 + dy)), true);
+});
+refs.sheetHandle.addEventListener('pointerup', () => {
+  if (!sheetDragging) return;
+  sheetDragging = false;
+  const cur = parseFloat(refs.sheet.style.height) || SHEET_OPEN;
+  sheetOpen = sheetMoved ? cur > 200 : !sheetOpen;
+  setSheetHeight(sheetOpen ? SHEET_OPEN : SHEET_CLOSED, false);
+});
+
+// --- keyboard ---
 
 window.addEventListener('keydown', (e) => {
   if (mode === 'browse' && e.key === 'ArrowRight') go(idx + 1);
   if (mode === 'browse' && e.key === 'ArrowLeft')  go(idx - 1);
-  if (e.key.toLowerCase() === 'q') {
-    quality.toggle();
-  }
+  if (e.key.toLowerCase() === 'q') quality.toggle();
 });
 
 // --- microphone / track matching ---
 
-const MIC_LABEL: Record<MicState, string> = {
-  off: 'Mic Off',
-  starting: 'Starting…',
-  listening: 'Listening…',
-  matched: 'Matched',
-  error: 'Mic unavailable',
-};
-
 engine.addEventListener('state', (e) => {
-  const state = (e as CustomEvent<MicState>).detail;
-  refs.micDot.classList.toggle('listening', state === 'listening' || state === 'starting');
-  refs.micDot.classList.toggle('matched', state === 'matched');
-  refs.micLabel.textContent = state === 'matched' && engine.current
-    ? `● ${engine.current.trackId.toUpperCase()}`
-    : MIC_LABEL[state];
+  setMicStatus((e as CustomEvent<MicState>).detail);
 });
 
 engine.addEventListener('match', (e) => {
@@ -125,17 +180,14 @@ engine.addEventListener('match', (e) => {
   }
   const matchedIdx = TRACKS.findIndex((t) => t.id === match.trackId);
   if (matchedIdx >= 0) {
-    refs.micLabel.textContent = `● ${match.trackId.toUpperCase()}`;
-    refs.listeningMsg.hidden = true;
+    visual = 'matched';
     void go(matchedIdx);
   }
 });
 
 refs.micStartBtn.addEventListener('click', async () => {
   mode = 'listening';
-  refs.micOverlay.hidden = true;
-  setBrowseControlsVisible(false);
-  refs.listeningMsg.hidden = false;
+  setVisual('listening');
   await engine.start();
   if (engine.state === 'error') {
     // No mic — don't strand them on a scene with no controls.
@@ -148,31 +200,42 @@ refs.micStartBtn.addEventListener('click', async () => {
   });
 });
 
-refs.micSkipBtn.addEventListener('click', enterBrowse);
+refs.micSkipBtn.addEventListener('click', () => enterBrowse());
 
-// NOTE: no top-level await here. The entry chunk must finish evaluating
-// before dynamically-imported viz chunks (which import three from it) can
-// resolve — a module-level `await go(0)` deadlocks the production build.
+// --- now-playing progress (drives the collapsed spine bar + clock) ---
+
+const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+setInterval(() => {
+  if (visual !== 'matched' && visual !== 'browse') return;
+  const dur = TRACKS[idx].duration;
+  const el = Math.min(dur, (performance.now() - trackStart) / 1000);
+  refs.progressBar.style.height = `${dur ? Math.round((el / dur) * 100) : 0}%`;
+  refs.progressClock.textContent = `${mmss(el)} / ${mmss(dur)}`;
+}, 500);
+
+// NOTE: no top-level await here. The entry chunk must finish evaluating before
+// dynamically-imported viz chunks (which import three from it) can resolve — a
+// module-level `await go(0)` deadlocks the production build.
 void (async () => {
   // Boot into the ambient scene: it idles behind the start overlay, and
   // listening mode keeps using it until a track is detected.
-  refs.nowTitle.textContent = '—';
-  (refs.nowMeta.querySelector('#now-side') as HTMLElement).textContent = '';
-  setBrowseControlsVisible(false);
-  try {
-    await host.load(LISTENING_TRACK);
-  } catch (err) {
-    console.error('[viz] failed to load listening scene:', err);
-  }
+  setVisual('choose');
+  setMicStatus('off');
+  await loadAmbient();
   host.start();
 })();
 
 // Console handle for live inspection/tuning (harmless in prod; used heavily
 // while authoring visuals and handy for projection-night tweaks).
-(window as any).__sv = { host, engine, quality, get mode() { return mode; } };
+(window as any).__sv = {
+  host, engine, quality,
+  get mode() { return mode; },
+  get visual() { return visual; },
+  // Force the matched chrome without a live mic (for previews/screenshots).
+  match(i = 0) { mode = 'listening'; visual = 'matched'; setMicStatus('matched'); void go(i); },
+};
 
-// ?debug=1 → tiny FPS/quality readout in the stage corner, so performance
-// reports from test machines carry numbers.
+// ?debug=1 → tiny FPS/quality readout in the stage corner.
 if (new URLSearchParams(location.search).has('debug')) {
   const hud = document.createElement('div');
   hud.className = 'debug-hud';
