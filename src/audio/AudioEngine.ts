@@ -35,6 +35,7 @@ export class AudioEngine extends EventTarget {
     frequency: new Float32Array(64),
     bass: 0, mid: 0, high: 0,
     matched: false,
+    time: 0,
   };
 
   private mic: MicInput | null = null;
@@ -43,6 +44,8 @@ export class AudioEngine extends EventTarget {
   private candidateTrack: number | null = null;
   private hits = 0;
   private misses = 0;
+  /** performance.now() (ms) at which `current.position` was last set, for extrapolating `frame.time`. */
+  private positionAnchorMs = 0;
 
   /** Fetch + parse the fingerprint DB and spin up the worker. */
   private async loadWorker(): Promise<Worker> {
@@ -109,6 +112,9 @@ export class AudioEngine extends EventTarget {
     const mic = this.mic;
     const f = this.frame;
     f.matched = this.state === 'matched';
+    if (f.matched && this.current) {
+      f.time = this.current.position + (performance.now() - this.positionAnchorMs) / 1000;
+    }
     if (!mic) {
       f.frequency.fill(0);
       f.bass = f.mid = f.high = 0;
@@ -148,11 +154,13 @@ export class AudioEngine extends EventTarget {
           position: c.positionSeconds ?? 0,
           votes: c.top!.votes,
         };
+        this.positionAnchorMs = performance.now();
         this.setState('matched');
         this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: this.current }));
       } else if (this.current?.trackId === trackIdOf(t)) {
         this.current.position = c.positionSeconds ?? this.current.position;
         this.current.votes = c.top!.votes;
+        this.positionAnchorMs = performance.now();
       }
     } else {
       this.hits = 0;

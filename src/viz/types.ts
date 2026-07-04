@@ -15,6 +15,8 @@ export interface AudioFrame {
   high: number;
   /** Whether the matcher currently believes the correct track is playing. */
   matched: boolean;
+  /** Seconds into the current track: matcher-extrapolated when matched, otherwise VizHost's looping fallback clock. Never null — a viz can always stage itself by song position. */
+  time: number;
 }
 
 export interface VizContext {
@@ -32,6 +34,8 @@ export interface Viz {
   update(dt: number, audio: AudioFrame): void;
   resize(width: number, height: number): void;
   dispose(): void;
+  /** Optional: take over rendering the frame (e.g. an EffectComposer chain). If omitted, VizHost does a plain renderer.render(scene, camera). */
+  render?(): void;
 }
 
 /** Per-track viz module shape (default export). */

@@ -21,7 +21,12 @@ async function go(nextIdx: number) {
   idx = (nextIdx + TRACKS.length) % TRACKS.length;
   const track = TRACKS[idx];
   setNowPlaying(refs, track, idx);
-  await host.load(track);
+  try {
+    await host.load(track);
+  } catch (err) {
+    // A single broken viz module shouldn't take down navigation or the render loop.
+    console.error(`[viz] failed to load "${track.viz}" for ${track.id}:`, err);
+  }
 }
 
 // --- controls ---
@@ -102,3 +107,18 @@ void (async () => {
   await go(0);
   host.start();
 })();
+
+// Console handle for live inspection/tuning (harmless in prod; used heavily
+// while authoring visuals and handy for projection-night tweaks).
+(window as any).__sv = { host, engine, quality };
+
+// ?debug=1 → tiny FPS/quality readout in the stage corner, so performance
+// reports from test machines carry numbers.
+if (new URLSearchParams(location.search).has('debug')) {
+  const hud = document.createElement('div');
+  hud.className = 'debug-hud';
+  refs.stage.appendChild(hud);
+  setInterval(() => {
+    hud.textContent = `${quality.avgFps().toFixed(0)} fps · ${quality.state.level}`;
+  }, 500);
+}

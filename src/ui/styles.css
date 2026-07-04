@@ -117,6 +117,20 @@ html, body {
   height: 100%;
   display: block;
 }
+/* --- Debug HUD (?debug=1) --- */
+
+.debug-hud {
+  position: absolute;
+  top: 8px; left: 10px;
+  z-index: 3;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(236,228,207,0.8);
+  text-shadow: 0 0 4px rgba(0,0,0,0.8);
+}
+
 /* --- Mic start overlay --- */
 
 .mic-overlay {

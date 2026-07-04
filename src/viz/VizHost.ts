@@ -7,9 +7,9 @@ import type { Track } from '../tracks';
  * Persistent renderer + scene shell. Loads per-track viz modules dynamically
  * and swaps them in/out without recreating the canvas.
  *
- * NOTE: starts on WebGLRenderer for broad compatibility while we scaffold;
- * per-track viz modules will eventually be authored against WebGPURenderer
- * (three/webgpu) once we start building the real generative passes.
+ * Deliberately on WebGLRenderer + GLSL: a WebGPU/TSL migration was attempted
+ * (see branch webgpu-tsl-experiment) and produced silent black frames on
+ * real hardware — WebGL is the proven path for this project's launch.
  */
 export class VizHost {
   readonly canvas: HTMLCanvasElement;
@@ -23,10 +23,14 @@ export class VizHost {
 
   /** Live audio source (AudioEngine.frame); stub zeros until the mic starts. */
   private audioSource: (() => AudioFrame) | null = null;
+  /** Fallback song clock (seconds) used while nothing is matched — loops at trackDuration so manual/at-home viewers still see a track's full staged arc. */
+  private fallbackClock = 0;
+  private trackDuration = 0;
   private stubAudio: AudioFrame = {
     frequency: new Float32Array(64),
     bass: 0, mid: 0, high: 0,
     matched: false,
+    time: 0,
   };
 
   constructor(
@@ -47,7 +51,12 @@ export class VizHost {
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
     this.camera.position.set(0, 0, 4);
 
-    this.quality.addEventListener('change', () => this.applyResolution());
+    this.quality.addEventListener('change', () => {
+      this.applyResolution();
+      // Particle counts etc. are baked into a viz at init — a quality change
+      // must rebuild the scene, not just rescale the framebuffer.
+      this.reloadCurrent();
+    });
     window.addEventListener('resize', () => this.resize());
     this.resize();
   }
@@ -58,31 +67,62 @@ export class VizHost {
   }
 
   resize() {
-    const w = this.container.clientWidth;
-    const h = this.container.clientHeight;
+    const w = Math.max(1, this.container.clientWidth);
+    const h = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / Math.max(1, h);
+    this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.current?.resize(w, h);
   }
 
-  async load(track: Track) {
-    if (this.currentTrackId === track.id) return;
+  /**
+   * Loads never interleave: each call queues behind the previous one, and a
+   * queued call that's been superseded (fast Prev/Next clicks, a mic match
+   * landing mid-navigation) exits before touching the scene.
+   */
+  private loadGen = 0;
+  private loadChain: Promise<void> = Promise.resolve();
+  private currentTrack: Track | null = null;
+  private currentSeed = 0;
+
+  load(track: Track): Promise<void> {
+    const gen = ++this.loadGen;
+    this.loadChain = this.loadChain
+      .catch(() => {}) // one failed load shouldn't wedge the queue
+      .then(() => this.doLoad(track, gen, null));
+    return this.loadChain;
+  }
+
+  /** Rebuild the active viz in place (same track, same per-play seed, same song clock) — used when the quality level changes. */
+  private reloadCurrent() {
+    const track = this.currentTrack;
+    if (!track) return;
+    const gen = ++this.loadGen;
+    this.loadChain = this.loadChain
+      .catch(() => {})
+      .then(() => this.doLoad(track, gen, { seed: this.currentSeed, clock: this.fallbackClock }));
+  }
+
+  private async doLoad(track: Track, gen: number, preserved: { seed: number; clock: number } | null) {
+    if (gen !== this.loadGen) return;
+    if (!preserved && this.currentTrackId === track.id) return;
     if (this.current) {
       this.current.dispose();
       this.scene.clear();
       this.current = null;
+      this.currentTrackId = null;
     }
 
     // Dynamic import → Vite code-splits each viz module.
     const mod = (await import(`./${track.viz}/index.ts`)) as VizModule;
     const viz = mod.default();
 
+    const seed = preserved?.seed ?? hashSeed(track.id + ':' + Date.now());
     const ctx: VizContext = {
       renderer: this.renderer,
       scene: this.scene,
       camera: this.camera,
-      seed: hashSeed(track.id + ':' + Date.now()),
+      seed,
       quality: this.quality.state,
       trackId: track.id,
     };
@@ -90,7 +130,18 @@ export class VizHost {
     viz.resize(this.container.clientWidth, this.container.clientHeight);
 
     this.current = viz;
+    this.currentTrack = track;
     this.currentTrackId = track.id;
+    this.currentSeed = seed;
+    this.trackDuration = track.duration;
+    if (preserved) {
+      this.fallbackClock = preserved.clock;
+    } else {
+      // Dev affordance: ?t=140 seeds the song clock so any act of a staged
+      // viz is reachable instantly without audio.
+      const seedT = Number(new URLSearchParams(location.search).get('t'));
+      this.fallbackClock = Number.isFinite(seedT) && seedT > 0 ? seedT : 0;
+    }
   }
 
   start() {
@@ -101,11 +152,34 @@ export class VizHost {
       this.lastT = now;
       this.quality.tick();
       if (this.current) {
-        this.current.update(dt, this.audioSource ? this.audioSource() : this.stubAudio);
-        this.renderer.render(this.scene, this.camera);
+        const audio = this.resolveAudioFrame(dt);
+        try {
+          this.current.update(dt, audio);
+          if (this.current.render) this.current.render();
+          else this.renderer.render(this.scene, this.camera);
+        } catch (err) {
+          // Live event failure mode: skip the bad frame, keep the loop (and
+          // navigation/matching) alive rather than taking down the app.
+          console.error('[viz] frame failed:', err);
+        }
       }
     };
     tick();
+  }
+
+  /**
+   * Live audio (bands + extrapolated song time) when matched; otherwise
+   * still passes through live bands if the mic is on, but overrides `time`
+   * with the looping fallback clock.
+   */
+  private resolveAudioFrame(dt: number): AudioFrame {
+    const frame = this.audioSource ? this.audioSource() : this.stubAudio;
+    if (frame.matched) return frame;
+    if (this.trackDuration > 0) {
+      this.fallbackClock = (this.fallbackClock + dt) % this.trackDuration;
+    }
+    frame.time = this.fallbackClock;
+    return frame;
   }
 
   setAudioSource(source: (() => AudioFrame) | null) {
