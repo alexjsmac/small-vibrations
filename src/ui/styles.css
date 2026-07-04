@@ -131,6 +131,30 @@ html, body {
   text-shadow: 0 0 4px rgba(0,0,0,0.8);
 }
 
+/* --- Listening mode message --- */
+
+.listening-msg {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  padding: 0 24px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(236,228,207,0.65);
+  animation: listening-pulse 3.2s ease-in-out infinite;
+}
+.listening-msg[hidden] { display: none; }
+@keyframes listening-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1.0; }
+}
+
 /* --- Mic start overlay --- */
 
 .mic-overlay {
@@ -258,6 +282,7 @@ html, body {
 
 .controls button { touch-action: manipulation; }
 button[hidden] { display: none; }
+.controls .indicator[hidden] { display: none; }
 
 @media (max-width: 720px) {
   :root { --frame-w: clamp(16px, 5vw, 44px); }

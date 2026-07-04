@@ -10,6 +10,7 @@ export interface FrameRefs {
   micOverlay: HTMLDivElement;
   micStartBtn: HTMLButtonElement;
   micSkipBtn: HTMLButtonElement;
+  listeningMsg: HTMLDivElement;
   prevBtn: HTMLButtonElement;
   nextBtn: HTMLButtonElement;
   qualityBtn: HTMLButtonElement;
@@ -30,6 +31,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     </header>
     <div class="frame-edge left"></div>
     <div class="stage" id="stage">
+      <div class="listening-msg" id="listening-msg" hidden>Listening for Small Vibrations…</div>
       <div class="mic-overlay" id="mic-overlay">
         <button id="mic-start">Tap to listen</button>
         <p>Play the record — this page listens along and matches the visuals to the track.</p>
@@ -60,6 +62,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     micOverlay:    root.querySelector('#mic-overlay')   as HTMLDivElement,
     micStartBtn:   root.querySelector('#mic-start')     as HTMLButtonElement,
     micSkipBtn:    root.querySelector('#mic-skip')      as HTMLButtonElement,
+    listeningMsg:  root.querySelector('#listening-msg') as HTMLDivElement,
     prevBtn:       root.querySelector('#prev')          as HTMLButtonElement,
     nextBtn:       root.querySelector('#next')          as HTMLButtonElement,
     qualityBtn:    root.querySelector('#quality')       as HTMLButtonElement,

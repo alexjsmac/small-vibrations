@@ -23,3 +23,12 @@ export const TRACKS: Track[] = [
   { id: 'b2', side: 'B', n: 2, title: 'Terminal Taxonomy',         viz: 'placeholder',            duration: 336.998 },
   { id: 'b3', side: 'B', n: 3, title: 'Sterile Breath',            viz: 'placeholder',            duration: 200.042 },
 ];
+
+/**
+ * Pseudo-track for the pre-detection ambient scene: shown behind the start
+ * overlay at boot and while listening mode waits for a match. Not part of
+ * TRACKS — it can't be navigated to and never matches.
+ */
+export const LISTENING_TRACK: Track = {
+  id: 'listening', side: 'A', n: 0, title: '—', viz: 'listening', duration: 120,
+};
