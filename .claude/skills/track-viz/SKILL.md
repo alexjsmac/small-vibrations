@@ -17,6 +17,14 @@ the technical system — module anatomy, staging architecture, performance
 playbook, palette, dev tools. This skill is the *process*; the briefing is
 the *knowledge*. Don't duplicate it, follow it.
 
+**Technique selection: `src/viz/TECHNIQUES.md`.** A researched, WebGL2-vetted
+catalogue of methods (particles, GPGPU, boids, accretion, physics cascades,
+wet surfaces, raymarching, post, typography, minimalism) with per-track
+recommendations, Full/Lite budgets, and mobile fallbacks. Consult it in
+Phase 2 when proposing the signature element, and again in Phase 3 for
+implementation specifics and decision thresholds (e.g. when to use Rapier
+vs an authored wave, when transmission must drop to matcap on Lite).
+
 ## Phase 1 — Concept (with the user, ~minutes)
 
 Ask the artist for the track's inspiration in their own words: the imagery,

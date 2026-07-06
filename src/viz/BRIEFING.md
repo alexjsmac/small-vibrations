@@ -4,6 +4,16 @@ Lessons and working patterns from building the "They Come Marching" (a1)
 visualization — the template for the remaining five tracks. Read this before
 starting any new track module.
 
+Companion documents:
+- **[TECHNIQUES.md](TECHNIQUES.md)** — the researched technique catalogue
+  (GPU particles, GPGPU, boids, accretion/growth, physics cascades, wet
+  surfaces, raymarching, post-processing, typography, minimalism), each
+  entry WebGL2-vetted with per-track recommendations, Full/Lite costs,
+  mobile gotchas, and library choices. Consult it when picking a track's
+  signature element — don't reinvent research that's already done.
+- The `/track-viz` skill (`.claude/skills/track-viz/`) — the authoring
+  process itself.
+
 ## The bar
 
 Every track visual must be three things at once:
