@@ -13,14 +13,15 @@ Implemented:
 - `QualityManager` with Full/Lite presets, an FPS-based auto-drop, and a Lite default on touch devices
 - `VizHost` with a persistent canvas and dynamic per-track viz module loading
 - Shared placeholder visualization that all 6 tracks point to (per-play seeded, quality-aware, audio-reactive)
-- **Mic fingerprinting pipeline**: Shazam-style landmark hashing (`src/audio/dsp.ts`), offline DB builder (`scripts/build-fingerprints.ts` → `public/fp/`), mic capture via AudioWorklet (`src/audio/MicInput.ts`), matching in a Web Worker (`src/audio/match-worker.ts`), orchestrated by `src/audio/AudioEngine.ts`. On a confident match the site auto-switches to the playing track and feeds live band energies to the viz.
-- Keyboard shortcuts: ←/→ to switch tracks, `q` to toggle quality
+- **Mic fingerprinting pipeline**: Shazam-style landmark hashing (`src/audio/dsp.ts`), offline DB builder (`scripts/build-fingerprints.ts` → `public/fp/`), mic capture via AudioWorklet (`src/audio/MicInput.ts`), matching in a Web Worker (`src/audio/match-worker.ts`), orchestrated by `src/audio/AudioEngine.ts`. On a confident match the site reveals the playing track's visuals and feeds live band energies + playback position to the viz.
+- **Two entry modes**: "Tap to listen" (mic-driven — an ambient listening scene holds until a track is detected; no manual nav) and "browse without microphone" (manual Prev/Next).
+- **Track 1 "They Come Marching" visualization** (`src/viz/a1-they-come-marching/`): staged by the track's measured song sections — curl-noise dust, marching-cubes forms, sporadic flashes/filaments, rust accent following the arc. See **[src/viz/BRIEFING.md](src/viz/BRIEFING.md)** — the working brief for authoring the remaining track visuals (architecture, performance playbook, aesthetic system, workflow).
+- Keyboard shortcuts: ←/→ to switch tracks (browse mode), `q` to toggle quality
 
 Not yet implemented:
 
-- Per-track visualizations (currently all 6 share `src/viz/placeholder/`)
-- Switch from `WebGLRenderer` → `WebGPURenderer` once we start authoring real visuals
-- Viz time-sync from the match offset (the matcher already reports playback position)
+- Visualizations for tracks a2–b3 (they share `src/viz/placeholder/`) — start from `src/viz/BRIEFING.md`
+- Bloom on Full quality (planned: WebGL `UnrealBloomPass` via the `Viz.render()` hook)
 
 ## Run
 
