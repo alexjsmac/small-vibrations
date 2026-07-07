@@ -1,87 +1,70 @@
 import * as THREE from 'three';
 import type { QualityState } from '../../quality/QualityManager';
 import type { AudioFrame } from '../types';
-import type { SectionState } from './sections';
+import type { ArcState, SectionState } from './sections';
 import { mulberry32 } from '../random';
 
-/** How many independent condensation targets dust particles can orbit — kept small so the shader lookup stays a fixed-size uniform array read. */
-export const ATTRACTOR_COUNT = 4;
-
 /**
- * Stateless dust field for "They Come Marching": every particle's position
- * is a pure function of its seeded base position + accumulated flow time,
- * computed fresh in the vertex shader each frame — no ping-pong buffers.
- * Blended per-act (see sections.ts) between free curl-noise drift, orbiting
- * a condensation attractor, and a directional "marching" stream.
- *
- * Classic THREE.Points + GLSL ShaderMaterial — the same proven pattern as
- * the shared placeholder (the WebGPU/TSL version lives on branch
- * webgpu-tsl-experiment; it rendered black on real hardware).
+ * Pollen/bee dust for "Homemakers": the a1 stateless-particle pattern
+ * (position = pure function of seeded base + accumulated flow time in the
+ * vertex shader) with a new behavior blend — free curl drift vs. circulating
+ * around the structure like foragers returning to the hive (`swarm`), with a
+ * fine fast jitter so swarming particles read as wings, not orbits.
  */
 export class Dust {
   readonly object: THREE.Points;
   private material: THREE.ShaderMaterial;
   private geometry: THREE.BufferGeometry;
-  private attractors: THREE.Vector3[];
   private uniforms: {
     uFlowTime: { value: number };
-    uMarchTime: { value: number };
     uTurbulence: { value: number };
     uFlowAmount: { value: number };
-    uCondensation: { value: number };
-    uMarchDrift: { value: number };
+    uSwarm: { value: number };
+    uSettle: { value: number };
     uDensity: { value: number };
     uBrightness: { value: number };
     uHigh: { value: number };
     uBass: { value: number };
     uScale: { value: number };
-    uAttractors: { value: THREE.Vector3[] };
     uSeedShift: { value: number };
     uFlash: { value: number };
     uAccent: { value: number };
+    uFog: { value: number };
   };
 
   constructor(seed: number, quality: QualityState, private renderer: THREE.WebGLRenderer) {
     const rand = mulberry32(seed);
-    const count = Math.min(quality.particleBudget, quality.level === 'full' ? 35_000 : 20_000);
+    const count = Math.min(quality.particleBudget, quality.level === 'full' ? 22_000 : 10_000);
 
     const positions = new Float32Array(count * 3);
     const seeds = new Float32Array(count);
-    const attractorIdx = new Float32Array(count);
-
     for (let i = 0; i < count; i++) {
-      // Scatter through a wide, flattened volume — "vast open space".
-      const r = Math.pow(rand(), 0.5) * 5.5;
-      const theta = rand() * Math.PI * 2;
-      positions[i * 3 + 0] = Math.cos(theta) * r;
-      positions[i * 3 + 1] = (rand() * 2 - 1) * 1.6;
-      positions[i * 3 + 2] = Math.sin(theta) * r;
+      // shell around the wall — denser near it, thinning outward
+      positions[i * 3 + 0] = (rand() * 2 - 1) * 3.2;
+      positions[i * 3 + 1] = (rand() * 2 - 1) * 2.0;
+      positions[i * 3 + 2] = (rand() * 2 - 1) * 2.4;
       seeds[i] = rand();
-      attractorIdx[i] = Math.floor(rand() * ATTRACTOR_COUNT);
     }
 
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.geometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
-    this.geometry.setAttribute('aAttractor', new THREE.BufferAttribute(attractorIdx, 1));
 
-    this.attractors = Array.from({ length: ATTRACTOR_COUNT }, () => new THREE.Vector3());
     this.uniforms = {
       uFlowTime: { value: 0 },
-      uMarchTime: { value: 0 },
-      uTurbulence: { value: 0.8 },
-      uFlowAmount: { value: 1.2 },
-      uCondensation: { value: 0 },
-      uMarchDrift: { value: 0 },
+      uTurbulence: { value: 0.7 },
+      uFlowAmount: { value: 1.1 },
+      uSwarm: { value: 0 },
+      uSettle: { value: 0 },
       uDensity: { value: 1 },
-      uBrightness: { value: 0.7 },
+      uBrightness: { value: 0.6 },
       uHigh: { value: 0 },
       uBass: { value: 0 },
       uScale: { value: 540 },
-      uAttractors: { value: this.attractors },
       uSeedShift: { value: rand() * 100 },
       uFlash: { value: 0 },
       uAccent: { value: 0 },
+      uFog: { value: 0.1 },
     };
 
     this.material = new THREE.ShaderMaterial({
@@ -91,22 +74,19 @@ export class Dust {
       blending: THREE.AdditiveBlending,
       vertexShader: /* glsl */ `
         uniform float uFlowTime;
-        uniform float uMarchTime;
         uniform float uTurbulence;
         uniform float uFlowAmount;
-        uniform float uCondensation;
-        uniform float uMarchDrift;
+        uniform float uSwarm;
+        uniform float uSettle;
         uniform float uDensity;
         uniform float uBass;
         uniform float uScale;
         uniform float uSeedShift;
-        uniform vec3 uAttractors[${ATTRACTOR_COUNT}];
         attribute float aSeed;
-        attribute float aAttractor;
         varying float vVisible;
         varying float vSparkle;
+        varying float vDist;
 
-        // hash & value noise (same family as the shared placeholder shader)
         float hash(vec3 p) {
           p = fract(p * 0.3183099 + uSeedShift);
           p *= 17.0;
@@ -123,11 +103,9 @@ export class Dust {
                 mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y),
             f.z);
         }
-        // vec3-valued noise via channel offsets
         vec3 noise3(vec3 p) {
           return vec3(noise(p), noise(p + 31.416), noise(p + 78.54));
         }
-        // forward-difference curl of the noise3 potential — divergence-free drift
         vec3 curl(vec3 p) {
           const float e = 0.1;
           vec3 n0 = noise3(p);
@@ -146,28 +124,29 @@ export class Dust {
           vec3 noiseP = position * uTurbulence + aSeed * 10.0 + uFlowTime;
           vec3 flowPos = position + curl(noiseP) * uFlowAmount * 0.35;
 
-          // condensation: orbit this particle's assigned attractor
-          vec3 attractor = uAttractors[int(aAttractor + 0.5)];
+          // swarm: circulate around the structure like returning foragers
           float phase = aSeed * 6.2831853;
-          float orbitR = aSeed * 0.4 + 0.15;
-          vec3 orbit = vec3(
-            cos(phase + uFlowTime * 0.5),
-            sin(phase + uFlowTime * 0.62) * 0.6,
-            sin(phase + uFlowTime * 0.53)
-          ) * orbitR;
-          vec3 condensed = mix(flowPos, attractor + orbit, uCondensation);
+          float rho = 1.3 + aSeed * 1.5;
+          float ang = phase + uFlowTime * (0.25 + aSeed * 0.35);
+          vec3 orbitPos = vec3(
+            cos(ang) * rho,
+            sin(phase * 3.1 + uFlowTime * 0.6) * (0.5 + aSeed * 0.7),
+            sin(ang) * rho * 0.75
+          );
+          // fine fast jitter — wings, not orbits
+          orbitPos += curl(orbitPos * 3.0 + uFlowTime * 4.0) * 0.05;
+          vec3 finalPos = mix(flowPos, orbitPos, uSwarm);
 
-          // marching: directional stream along +x, wrapped to loop through frame
-          float bound = 5.5;
-          float marchX = mod(position.x + uMarchTime + aSeed * 4.0 + bound, bound * 2.0) - bound;
-          vec3 marched = vec3(marchX, condensed.y, condensed.z);
-          vec3 finalPos = mix(condensed, marched, uMarchDrift);
+          // moving in: once the home is finished the swarm settles onto it
+          vec3 settlePos = vec3(orbitPos.x * 0.5, orbitPos.y * 0.5, 0.18 + sin(phase * 5.0) * 0.12);
+          finalPos = mix(finalPos, settlePos, uSettle * (0.4 + 0.6 * aSeed));
 
           vVisible = 1.0 - step(uDensity, aSeed);
           vSparkle = aSeed;
 
           vec4 mv = modelViewMatrix * vec4(finalPos, 1.0);
-          float size = (0.013 + aSeed * 0.024) * (1.0 + uBass * 0.7);
+          vDist = -mv.z;
+          float size = (0.012 + aSeed * 0.022) * (1.0 + uBass * 0.7);
           gl_PointSize = size * uScale / max(0.1, -mv.z);
           gl_Position = projectionMatrix * mv;
         }
@@ -177,22 +156,24 @@ export class Dust {
         uniform float uHigh;
         uniform float uFlash;
         uniform float uAccent;
+        uniform float uFog;
         varying float vVisible;
         varying float vSparkle;
+        varying float vDist;
 
         void main() {
           if (vVisible < 0.5) discard;
-          // soft round falloff — additive glow dots, not hard squares
           float d = length(gl_PointCoord - 0.5);
           float falloff = smoothstep(0.5, 0.08, d);
           float brightness = clamp(uBrightness + uHigh * 0.5 + vSparkle * 0.15 + uFlash * 0.5, 0.0, 1.5);
           vec3 dim = vec3(0.624, 0.847, 0.784);   // #9fd8c8
           vec3 hot = vec3(0.925, 0.894, 0.812);   // #ece4cf
           vec3 col = mix(dim, hot, clamp(brightness, 0.0, 1.0));
-          // a seeded subset of particles carries the rust accent, scaled per act
           float warm = step(0.82, fract(vSparkle * 7.13)) * uAccent;
           col = mix(col, vec3(0.769, 0.302, 0.227), warm); // #c44d3a
-          gl_FragColor = vec4(col, falloff * clamp(brightness, 0.1, 1.0) * 0.72);
+          float alpha = falloff * clamp(brightness, 0.1, 1.0) * 0.65;
+          alpha *= exp(-max(0.0, vDist - 1.2) * uFog);
+          gl_FragColor = vec4(col, alpha);
         }
       `,
     });
@@ -201,32 +182,21 @@ export class Dust {
     this.object.frustumCulled = false;
   }
 
-  /** Up to ATTRACTOR_COUNT condensation targets, in world space. Copies values — safe to pass pooled vectors. */
-  setAttractors(points: THREE.Vector3[]) {
-    for (let i = 0; i < ATTRACTOR_COUNT; i++) {
-      const p = points[i] ?? points[points.length - 1];
-      if (p) this.attractors[i].copy(p);
-    }
-  }
-
-  update(dt: number, audio: AudioFrame, section: SectionState, flash = 0) {
+  update(dt: number, audio: AudioFrame, section: SectionState, arc: ArcState, flash = 0) {
     const p = section.params;
     const u = this.uniforms;
-    // Accumulate flow phase so speed changes glide instead of jumping.
     u.uFlowTime.value += dt * p.flowSpeed;
-    u.uMarchTime.value += dt * 1.3;
     u.uTurbulence.value = p.turbulence;
     u.uFlowAmount.value = 0.9 + p.turbulence * 0.5;
-    u.uCondensation.value = p.condensation;
-    u.uMarchDrift.value = p.marchDrift;
+    u.uSwarm.value = p.swarm;
+    u.uSettle.value = arc.settle;
     u.uDensity.value = p.dustDensity;
     u.uBrightness.value = p.dustBrightness;
     u.uHigh.value = audio.high;
     u.uBass.value = audio.bass;
     u.uFlash.value = flash;
     u.uAccent.value = p.accent;
-    // Point-size scale factor tracks the drawing buffer height (same rule as
-    // three's own PointsMaterial size attenuation).
+    u.uFog.value = p.fog;
     u.uScale.value = this.renderer.domElement.height * 0.5;
   }
 
