@@ -25,6 +25,14 @@ Phase 2 when proposing the signature element, and again in Phase 3 for
 implementation specifics and decision thresholds (e.g. when to use Rapier
 vs an authored wave, when transmission must drop to matcap on Lite).
 
+**Structural design: `src/viz/ARC.md`.** The full-track visual-arc manual
+(Max Cooper / generative-audiovisual tradition): premise→development→payoff
+spines, arc archetypes, section→system mapping, audio-reactivity discipline
+("each band has one job"; the three response types), camera regimes, pacing
+rules, and the failure-mode list. Techniques make a scene; ARC.md makes it
+a *piece*. Use it in Phase 2 to design the arc, and its Part 5 failure
+modes as the Phase 4 self-review rubric.
+
 ## Phase 1 — Concept (with the user, ~minutes)
 
 Ask the artist for the track's inspiration in their own words: the imagery,
@@ -34,6 +42,12 @@ coming together to create the earliest forms of life") drove every design
 decision that stuck — get the equivalent before touching anything. If
 they've already given it in the conversation, don't re-ask.
 
+Distill what they say into a **one-sentence premise — a process or
+transformation with a natural beginning, middle, and end** (ARC.md Part 0:
+score to a concept, not to the beat). The premise is what the whole track
+enacts; if you can't state it in one sentence, Phase 2 will produce
+staging without a story.
+
 ## Phase 2 — Structure + treatment proposal (one approval gate)
 
 1. Profile the master: `node scripts/profile-track.mjs "<master.wav>" [window]`
@@ -41,12 +55,32 @@ they've already given it in the conversation, don't re-ask.
    level steps in the bar chart = section boundaries.
 2. Draft the act table: cue times, act names, one line of musical character,
    one line of visual treatment per act — mapping the profile to the concept.
+   Design it as an **arc, not a sequence of looks** (ARC.md Parts 1–2):
+   - Pick the arc archetype (§1.7) the premise implies; sketch the track's
+     0–1 energy envelope and bind macro params (density, camera pace,
+     palette temperature) to it, not just per-act values.
+   - One system, transformed — acts are **rule/regime changes** to the one
+     world, never a switch to a different world.
+   - Name the **recurring motif** and where it returns transformed —
+     including loop closure: the outro should resolve to, or return to,
+     the intro's seed image.
+   - Ration the maximum: the densest, most saturated state appears exactly
+     once, and the act before it must be the restraint that earns it.
+   - Place at least one **scale shift or genuine surprise in the back half**.
+   - Give each act its own **camera regime** (continuous contemplative vs.
+     kinetic; regime changes on section boundaries only).
 3. Propose the signature element: each track remixes the existing layer
    vocabulary (dust fields, metaball forms, filaments/flashes — extract to
    `src/viz/lib/` on second use) **plus one new element that belongs to this
    track alone**. One new invention per track keeps every track distinct
    without re-inventing everything.
-4. Present the act table + signature element to the user and get agreement
+4. Plan the audio mapping with the "each band has one job" table (ARC.md
+   §3.1–3.2): every band/feature gets exactly one visual job, with the
+   right response type — fast-direct (transients→events), smoothed
+   (bass/RMS→sustained params), or **discrete state changes on section
+   boundaries** (the layer amateur visualizers omit). Big drops deserve a
+   *discrete* visible hit, not only a 6s crossfade.
+5. Present the act table + signature element to the user and get agreement
    **before building**. This is the cheapest moment to be wrong in the
    whole pipeline.
 
@@ -74,8 +108,12 @@ then build **one layer at a time**:
 Walk the whole arc yourself: screenshot at each act's midpoint plus at least
 one crossfade boundary (`?t=<seconds>`), on Lite. Look at them critically —
 composition, palette balance, whether adjacent acts are visibly different,
-whether stills suggest motion. Fix the obvious before involving the user.
-Present the set act-by-act with one line each on what to look at.
+whether stills suggest motion. Then audit the sheet against ARC.md Part 5's
+failure modes — especially: monotony (any single state held >~90s unchanged,
+watch long climaxes), premature climax, no restraint before the peak, missing
+scale shift, and gradual-only transitions at the big musical hits. Fix the
+obvious before involving the user. Present the set act-by-act with one line
+each on what to look at.
 
 ## Phase 5 — Taste pass (the user, the decisive step)
 
@@ -97,8 +135,10 @@ say so and propose the smallest structural change.
 
 ## Checklist (paste into a task list at start)
 
-- [ ] Concept captured in the artist's words
-- [ ] Master profiled → act table + signature element approved by user
+- [ ] Concept captured in the artist's words → one-sentence premise
+- [ ] Master profiled → act table (arc archetype, energy envelope, motif +
+      loop closure, back-half surprise, camera regimes, band-job audio map)
+      + signature element approved by user
 - [ ] Module scaffolded, tracks.ts pointed at it
 - [ ] Each layer solo-verified by screenshot (force switches for sporadic elements)
 - [ ] Composed scene + events layer; fps HUD healthy on Lite

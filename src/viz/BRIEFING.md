@@ -5,6 +5,11 @@ visualization — the template for the remaining five tracks. Read this before
 starting any new track module.
 
 Companion documents:
+- **[ARC.md](ARC.md)** — the full-track visual-arc manual (Max Cooper /
+  generative-audiovisual tradition): premise→development→payoff structure,
+  arc archetypes, energy envelopes, audio-mapping discipline ("each band
+  has one job"), camera regimes, pacing, and failure modes. Consult it when
+  designing a track's act table and when self-reviewing a contact sheet.
 - **[TECHNIQUES.md](TECHNIQUES.md)** — the researched technique catalogue
   (GPU particles, GPGPU, boids, accretion/growth, physics cascades, wet
   surfaces, raymarching, post-processing, typography, minimalism), each
@@ -44,11 +49,13 @@ A structured taste interview produced these governing rules:
    rejections came after complete builds. Concept → prototype screenshot →
    user approval → then stage the arc.
 
-The pre-reset a1 module and the unmerged a2 branch
-(`claude/intelligent-germain-06b26f`) embody the rejected direction — use
-them for infrastructure patterns only, not aesthetics. Everything below
-about staging, performance, and workflow still stands; palette rules below
-are superseded.
+The pre-reset a1 module (`a1-they-come-marching/`, now unused) and the
+first a2 build (`a2-homemakers/`, still live pending its rebuild) embody
+the rejected direction — use them for infrastructure patterns only, not
+aesthetics. Everything below about staging, performance, and workflow
+still stands; palette rules below are superseded. ARC.md's structural
+craft (premise/arc/motif/camera discipline) remains fully in force — it's
+aesthetics-agnostic.
 
 ## The bar
 
@@ -75,6 +82,14 @@ Every track visual must be three things at once:
   `?t=` and look. When an element is sporadic, add a force switch (see
   `?sparks=always`) so screenshots can catch it. Adjectives from memory or
   imagination don't count; only pixels count.
+- **A hidden preview tab freezes the whole app** — browsers pause
+  `requestAnimationFrame` entirely, so the song clock stops, sporadic events
+  never spawn, and screenshots return the stale last-composited frame. If
+  the scene looks mysteriously dead mid-verification, check
+  `document.visibilityState` FIRST before debugging the viz (the a2 session
+  lost an hour to this). Workaround while hidden: drive
+  `host.current.update(dt, fakeFrame)` in a loop via eval and verify state
+  numerically; fresh pixels require the tab visible.
 - **Isolate before you debug.** `?solo=<layer>` renders one layer against a
   bright background. Building a new module: get each layer on screen alone
   before composing.
@@ -162,8 +177,11 @@ something that happens *now*, at a moment, and is gone.
   dropped beats.
 - **MarchingCubes is CPU-bound at res³** — 28 (Lite) / 48 (Full) is the
   proven range for ~14 balls. Cap `maxPolyCount`.
-- **Budgets that shipped for a1**: dust 20k Lite / 150k Full; MC res 28/48;
-  7 pooled filaments. Start new tracks near these numbers.
+- **Budgets that shipped for a1**: dust 20k Lite / 35k Full; MC res 28/48;
+  7 pooled filaments. Start new tracks near these numbers. Full's dust budget
+  was cut from 150k after artist feedback — high DPR already makes Full
+  particles bigger and brighter, so Full needs *fewer* particles than raw
+  budget allows, not more; treat ~2× Lite as the ceiling.
 - Uniform-array lookups (4 attractors) are fine; keep shader-visible state
   tiny and fixed-size.
 - Quality system already handles the rest: Lite default, `?q=full` opt-in
