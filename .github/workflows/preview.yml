@@ -1,0 +1,47 @@
+name: Deploy PR preview
+
+# Builds each PR with a base path of /small-vibrations/pr-preview/pr-<N>/ and
+# publishes it to that subdir of the gh-pages branch, then comments the live
+# URL on the PR. On PR close it removes the subdir. Same-repo PRs only get a
+# write token (fork PRs can't deploy) — fine for this solo repo. This uses
+# pull_request (NOT pull_request_target), so PR code never runs with secrets.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        if: github.event.action != 'closed'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build with the preview base path
+        if: github.event.action != 'closed'
+        env:
+          BASE_PATH: /small-vibrations/pr-preview/pr-${{ github.event.number }}/
+        run: |
+          npm ci
+          npm run build
+          touch dist/.nojekyll
+
+      - name: Deploy / update / remove the preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: dist
+          umbrella-dir: pr-preview
+          custom-url: www.alexmaclean.ca

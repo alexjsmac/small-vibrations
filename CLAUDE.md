@@ -19,6 +19,27 @@ green PR can be self-merged.
 
 Never commit or push directly to `main`, and never bypass the `CI` check.
 
+## Deploys & PR previews
+
+GitHub Pages serves from the **`gh-pages` branch** (Pages source must be set to
+"Deploy from a branch" → `gh-pages` / root). Two workflows write to it:
+
+- **`deploy.yml`** (push to `main`) builds with the default base
+  `/small-vibrations/` and publishes to the branch **root** → the live site
+  at `https://www.alexmaclean.ca/small-vibrations/`. It uses
+  `clean-exclude: pr-preview/` so it never wipes open previews.
+- **`preview.yml`** (every PR) builds with `BASE_PATH=/small-vibrations/pr-preview/pr-<N>/`
+  and publishes to `pr-preview/pr-<N>/` on the branch, then comments the live
+  preview URL on the PR; it removes that subdir when the PR closes.
+
+The base path is build-time only: `vite.config.ts` reads `process.env.BASE_PATH`
+(default `/small-vibrations/`), and the app resolves the fingerprint DB and the
+audio worklet off `import.meta.env.BASE_URL`, so a correct base at build time
+makes everything load from the right subpath. Never hardcode the base elsewhere.
+
+`.nojekyll` is written at the branch root on every production deploy — required
+because branch-served Pages runs Jekyll by default.
+
 ## Before opening a PR, run locally
 
 ```
