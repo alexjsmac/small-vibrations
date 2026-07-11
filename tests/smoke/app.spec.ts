@@ -89,6 +89,10 @@ test('deadlock regression: render loop starts and the stage is not black', async
 
 for (const q of ['full', 'lite'] as const) {
   test(`quality tier q=${q} renders a non-black stage`, async ({ page }) => {
+    // Full quality runs a 4x-resolution sim with a ~1,100-step warmup — on
+    // CI's 2-core SwiftShader runner that alone can exceed the default 45s
+    // (measured: 15s on an M-series laptop, timed out at 45s on ubuntu-latest).
+    if (q === 'full') test.setTimeout(180_000);
     await page.goto(`?t=140&q=${q}`);
     await page.click('#mic-skip');
 
