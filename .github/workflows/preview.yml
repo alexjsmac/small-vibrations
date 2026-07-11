@@ -44,4 +44,7 @@ jobs:
         with:
           source-dir: dist
           umbrella-dir: pr-preview
-          custom-url: www.alexmaclean.ca
+          # Must include the /small-vibrations/ project path — the action
+          # appends only <umbrella>/pr-<N>/. Without the path segment the
+          # commented link drops /small-vibrations/ and 404s.
+          custom-url: www.alexmaclean.ca/small-vibrations
