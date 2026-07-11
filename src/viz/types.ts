@@ -29,6 +29,14 @@ export interface VizContext {
   trackId: string;
 }
 
+/** Canvas pointer/touch gesture, dispatched by VizHost to the active viz. */
+export interface VizPointerEvent {
+  type: 'down' | 'move' | 'up' | 'cancel';
+  x: number; y: number;   // canvas uv 0..1, y-up (matches vUv)
+  dx: number; dy: number; // uv delta since previous event of the gesture (0 on 'down')
+  down: boolean;
+}
+
 export interface Viz {
   init(ctx: VizContext): void | Promise<void>;
   update(dt: number, audio: AudioFrame): void;
@@ -36,6 +44,8 @@ export interface Viz {
   dispose(): void;
   /** Optional: take over rendering the frame (e.g. an EffectComposer chain). If omitted, VizHost does a plain renderer.render(scene, camera). */
   render?(): void;
+  /** Optional: canvas pointer/touch gestures. Modules that omit this are unaffected — VizHost calls it via optional chaining. */
+  pointer?(e: VizPointerEvent): void;
 }
 
 /** Per-track viz module shape (default export). */

@@ -14,6 +14,42 @@ Companion documents:
 - The `/track-viz` skill (`.claude/skills/track-viz/`) — the authoring
   process itself.
 
+## ART DIRECTION RESET — July 2026 (supersedes anything below that conflicts)
+
+Alex reviewed the shipped a1 and the a2 branch build and rejected the
+direction as "very basic" — lifeless, colorless, not representing the music.
+A structured taste interview produced these governing rules:
+
+1. **Vibrancy is a requirement.** The muted cyanotype lock was a core
+   failure. **Each track owns its own bold, saturated palette.** The
+   cyanotype survives only in the app chrome and sleeve.
+2. **Density over scale.** Many simple elements in patterned motion —
+   micro-ecosystems, tiling/growing patterns — beat a few large slow 3D
+   objects. His words: "even simpler shapes moving more often in these
+   micro ecosystems, and patterns would be better."
+3. **Fast evolution.** No hard cuts, but the scene must never sit still
+   for more than ~15–20 seconds — something is always arriving, growing,
+   or dying off. (He chose this over VJ-style hard cuts.)
+4. **Living painting.** Mood-first atmosphere that breathes with the music;
+   reactivity stays subtle, never beat-slaved.
+5. **Suggestive-to-recognizable insect imagery** — comb cells, wing
+   venation, swarms, specimen plates. Legible in the gut.
+6. **One medium per song; media vary across the album.** Organic/analog,
+   precise/minimal, lush/painterly, illustrated/graphic are all approved —
+   match medium to track. Never mix 2D and 3D scenes inside one song.
+7. **Shader-first, three.js host.** Fullscreen fragment-shader worlds are
+   the primary medium (a quad in the existing VizHost — all infra
+   unchanged). 3D scenes remain available where a track calls for them.
+8. **Prove looks with rendered prototypes before full builds.** Both
+   rejections came after complete builds. Concept → prototype screenshot →
+   user approval → then stage the arc.
+
+The pre-reset a1 module and the unmerged a2 branch
+(`claude/intelligent-germain-06b26f`) embody the rejected direction — use
+them for infrastructure patterns only, not aesthetics. Everything below
+about staging, performance, and workflow still stands; palette rules below
+are superseded.
+
 ## The bar
 
 Every track visual must be three things at once:
@@ -135,12 +171,14 @@ something that happens *now*, at a moment, and is gone.
 
 ## Aesthetic system
 
-- **Palette** (cyanotype sleeve, already in styles.css): cream `#ece4cf`,
-  teal `#1f5d7a`, deep teal `#14465e`, ink `#05141c` (scene background),
-  dim cyan `#9fd8c8` (particle low end), **rust accent `#c44d3a`**.
-- The rust accent is precious — it follows the album's arc. In a1 it rises
-  from 0 (void) to 0.45 (The March). Later tracks can own more of it
-  (the album moves toward decay/heat), but it must never stop feeling rare.
+- **Palette: per-track, bold, saturated** (see ART DIRECTION RESET above —
+  the album-wide cyanotype lock is dead). The cyanotype family (cream
+  `#ece4cf`, teal `#1f5d7a`, ink `#05141c`, rust `#c44d3a`) remains the
+  app-chrome palette only. A track palette should feel like it belongs on
+  a festival screen: 3–5 anchor colors, real saturation, real contrast.
+- Album-arc color idea (optional, not a lock): early tracks luminous and
+  cool-to-warm, later tracks hotter and more decayed — rust/heat can still
+  ascend across the album as life declines.
 - Materials: unlit custom GLSL for particles/lines; `MeshStandardMaterial` +
   two directional lights (warm cream key from above, cool teal fill from
   below) + teal ambient for solid forms. Emissive intensity is the flash
@@ -163,6 +201,35 @@ something that happens *now*, at a moment, and is gone.
 6. Ask the user for a taste pass (they run real audio through the real
    mic — flashes landing on actual kicks can't be simulated here).
 7. `npm run build` + commit; deploy only when asked.
+
+## Interaction (pointer contract)
+
+Every track scene should invite touch. VizHost owns the plumbing: it
+captures the primary pointer on its canvas and forwards
+`{ type: 'down'|'move'|'up'|'cancel', x, y, dx, dy, down }` (canvas uv,
+y-up, deltas per event) to the active module's optional
+`Viz.pointer?(e)` — modules that don't implement it are untouched.
+
+- **The principle: interaction = injecting life/energy into the scene,
+  never a UI widget.** In a1, a tap pokes the petri dish (a hot seed +
+  a near-white ripple ring — white so it reads on dark AND dense acts)
+  and a drag pans the wrapping field with momentum after release.
+- Screen→field mapping reuses the display shader's own formula
+  (`field = (screen − 0.5) * uCover + 0.5 − uScroll`) — never maintain a
+  parallel inverse. **Wrap the result into [0,1) (`x -= floor(x)`) before
+  writing it into any sim/effect uniform**: `uScroll` grows unboundedly
+  and the shader-side distance math must also torus-wrap
+  (`d -= floor(d + 0.5)`), or pokes/ripples silently miss after minutes.
+- 1:1 drag tracking is exactly `scroll += d · uCover` (solve the display
+  formula for a fixed field point under a moving finger).
+- Poke on `down` immediately — no tap-vs-drag threshold. A pure tap fires
+  no `move`, so pan/momentum never trigger; disambiguation falls out free.
+- Momentum: EMA the drag velocity while held (`Math.min(1, dt*10)` idiom),
+  integrate with `exp(-2.5·dt)` friction after release, snap to 0 below
+  ~0.0005 uv/s. `cancel` (iOS system gestures) zeroes velocity — no fling.
+- **VizHost clamps dt to 100ms** — a backgrounded tab's rAF pause would
+  otherwise deliver one minutes-long dt that teleports every integrated
+  quantity (glide, drift, fallback clock) on resume. Found the hard way.
 
 ## Dev tools reference
 

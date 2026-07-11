@@ -63,6 +63,9 @@ then build **one layer at a time**:
   moment they're created, so screenshots can catch them.
 - Keep every tunable in `sections.ts` act params — taste notes later must
   translate to one-number edits, not refactors.
+- Implement `Viz.pointer?()` — every track responds to touch (see the
+  briefing's Interaction section: poke = inject life/energy, drag = pan;
+  never a UI widget).
 - Respect the Lite/Full budgets and patterns in the briefing; check the
   `?debug=1` fps HUD as layers land, not at the end.
 
@@ -99,6 +102,7 @@ say so and propose the smallest structural change.
 - [ ] Module scaffolded, tracks.ts pointed at it
 - [ ] Each layer solo-verified by screenshot (force switches for sporadic elements)
 - [ ] Composed scene + events layer; fps HUD healthy on Lite
+- [ ] Pointer response implemented + verified (tap = poke/ripple, drag = pan with momentum)
 - [ ] Contact sheet: every act + one boundary, self-reviewed then presented
 - [ ] Taste pass rounds until the user is happy
 - [ ] Build green, committed; BRIEFING.md ratcheted; shared code extracted

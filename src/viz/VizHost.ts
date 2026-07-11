@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Viz, VizContext, AudioFrame, VizModule } from './types';
+import type { Viz, VizContext, AudioFrame, VizModule, VizPointerEvent } from './types';
 import type { QualityManager } from '../quality/QualityManager';
 import type { Track } from '../tracks';
 
@@ -33,6 +33,16 @@ export class VizHost {
     time: 0,
   };
 
+  /** Primary-pointer gesture tracking (id + last uv) — no multi-touch/pinch in v1. */
+  private activePointerId: number | null = null;
+  private lastUvX = 0;
+  private lastUvY = 0;
+  /** One reused event object, mutated in place per dispatch — zero per-frame allocation. */
+  private scratchPointerEvent: VizPointerEvent = { type: 'down', x: 0, y: 0, dx: 0, dy: 0, down: false };
+  /** Scratch uv output for clientToUv() — avoids a fresh {x,y} object on every pointermove. */
+  private scratchUvX = 0;
+  private scratchUvY = 0;
+
   constructor(
     private container: HTMLElement,
     private quality: QualityManager,
@@ -59,6 +69,69 @@ export class VizHost {
     });
     window.addEventListener('resize', () => this.resize());
     this.resize();
+    this.attachPointerListeners();
+  }
+
+  /**
+   * Client(px) → canvas uv, y-up (matches vUv in the display shaders).
+   * No DPR/resolutionScale term: setSize(w,h,false) keeps CSS size equal to
+   * the container, and getBoundingClientRect()/clientX are both CSS px.
+   */
+  private clientToUv(clientX: number, clientY: number): void {
+    const rect = this.canvas.getBoundingClientRect();
+    this.scratchUvX = (clientX - rect.left) / Math.max(1, rect.width);
+    this.scratchUvY = 1 - (clientY - rect.top) / Math.max(1, rect.height);
+  }
+
+  /**
+   * Dispatches through one reused scratch event (mutated in place) to the
+   * active viz's optional pointer() — modules that don't implement it are
+   * unaffected via optional chaining. A track swap or quality rebuild mid-
+   * gesture is numerically safe here since we only ever send deltas, not
+   * accumulated state, so no guard against `this.current` changing underfoot.
+   */
+  private dispatchPointer(type: VizPointerEvent['type'], x: number, y: number, down: boolean) {
+    const dx = type === 'down' ? 0 : x - this.lastUvX;
+    const dy = type === 'down' ? 0 : y - this.lastUvY;
+    this.lastUvX = x;
+    this.lastUvY = y;
+    const evt = this.scratchPointerEvent;
+    evt.type = type;
+    evt.x = x;
+    evt.y = y;
+    evt.dx = dx;
+    evt.dy = dy;
+    evt.down = down;
+    this.current?.pointer?.(evt);
+  }
+
+  private attachPointerListeners() {
+    this.canvas.addEventListener('pointerdown', (e) => {
+      if (!e.isPrimary) return;
+      this.activePointerId = e.pointerId;
+      try { this.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      this.clientToUv(e.clientX, e.clientY);
+      this.lastUvX = this.scratchUvX;
+      this.lastUvY = this.scratchUvY;
+      this.dispatchPointer('down', this.scratchUvX, this.scratchUvY, true);
+    });
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== this.activePointerId) return;
+      this.clientToUv(e.clientX, e.clientY);
+      this.dispatchPointer('move', this.scratchUvX, this.scratchUvY, true);
+    });
+    this.canvas.addEventListener('pointerup', (e) => {
+      if (e.pointerId !== this.activePointerId) return;
+      this.activePointerId = null;
+      this.clientToUv(e.clientX, e.clientY);
+      this.dispatchPointer('up', this.scratchUvX, this.scratchUvY, false);
+    });
+    this.canvas.addEventListener('pointercancel', (e) => {
+      if (e.pointerId !== this.activePointerId) return;
+      this.activePointerId = null;
+      this.clientToUv(e.clientX, e.clientY);
+      this.dispatchPointer('cancel', this.scratchUvX, this.scratchUvY, false);
+    });
   }
 
   private applyResolution() {
@@ -148,7 +221,11 @@ export class VizHost {
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
       const now = performance.now();
-      const dt = (now - this.lastT) / 1000;
+      // Clamp dt: after the tab is backgrounded (rAF paused), the first frame
+      // back sees seconds-to-minutes of elapsed time, and every dt-integrated
+      // path (drag momentum, march drift, fallback song clock) would take the
+      // whole gap in one violent step. 100ms ≈ a dropped frame, not a resume.
+      const dt = Math.min(0.1, (now - this.lastT) / 1000);
       this.lastT = now;
       this.quality.tick();
       if (this.current) {
