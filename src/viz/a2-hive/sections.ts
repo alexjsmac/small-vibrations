@@ -136,9 +136,16 @@ const ARC_KEYS: [number, number, number, number, number, number, number][] = [
   [225,     1.0,  1.0,  0,    1,   0,    0.95],
   [248,     1.0,  1.0,  0,    1,   0.9,  0.85],
   [252,     1.0,  1.0,  0,    1,   0.95, 0.70],
-  [267,     1.0,  1.0,  0,    1,   1,    0.40],
-  [290,     1.0,  1.0,  0.97, 1,   1,    0.08],
-  [294.124, 1.0,  1.0,  1,    1,   1,    0],
+  // macro tapers back to 0 across housewarming (252->267) rather than
+  // staying revealed to the end: it's the climax's scale shift, coordinated
+  // with two-homes-one-wall's 0.55 pull-back — holding it through lights-out
+  // would (a) fight the wall's return to the ink-dark intro image and (b)
+  // keep wallShader.ts's `if (uMacro > 0.001)` branch paying the second
+  // lattice evaluation for the whole back third of the track for no visual
+  // gain. Outside ~[188, 267] macro is 0.
+  [267,     1.0,  1.0,  0,    0,   1,    0.40],
+  [290,     1.0,  1.0,  0.97, 0,   1,    0.08],
+  [294.124, 1.0,  1.0,  1,    0,   1,    0],
 ];
 
 export interface ArcState {

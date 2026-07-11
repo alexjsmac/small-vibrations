@@ -49,13 +49,16 @@ A structured taste interview produced these governing rules:
    rejections came after complete builds. Concept → prototype screenshot →
    user approval → then stage the arc.
 
-The pre-reset a1 module (`a1-they-come-marching/`, now unused) and the
-first a2 build (`a2-homemakers/`, still live pending its rebuild) embody
-the rejected direction — use them for infrastructure patterns only, not
-aesthetics. Everything below about staging, performance, and workflow
-still stands; palette rules below are superseded. ARC.md's structural
-craft (premise/arc/motif/camera discipline) remains fully in force — it's
-aesthetics-agnostic.
+The pre-reset a1 module (`a1-they-come-marching/`, now unused) embodies the
+rejected direction — use it for infrastructure patterns only, not
+aesthetics. The pre-reset a2 build (`a2-homemakers/`) embodied it too and
+has since been deleted, rebuilt as `a2-hive/` (the golden-wax-wall dual
+lattice) and approved; its infrastructure patterns (module shape,
+pointer/momentum, `arcAt`/act-crossfade machinery, measured song staging)
+live on there and in a2-hive's own port of them. Everything below about
+staging, performance, and workflow still stands; palette rules below are
+superseded. ARC.md's structural craft (premise/arc/motif/camera
+discipline) remains fully in force — it's aesthetics-agnostic.
 
 ## The bar
 
