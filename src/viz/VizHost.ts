@@ -68,6 +68,12 @@ export class VizHost {
       this.reloadCurrent();
     });
     window.addEventListener('resize', () => this.resize());
+    // The window listener misses container-level size changes (the mobile
+    // sheet drag, CSS transitions, embedded-pane resizes) — and a resize
+    // event that fires MID-transition bakes a transient aspect into the viz
+    // with nothing to correct it later. ResizeObserver fires again once the
+    // final size settles.
+    new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
     this.attachPointerListeners();
   }

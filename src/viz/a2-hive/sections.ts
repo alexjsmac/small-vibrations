@@ -60,10 +60,14 @@ export interface ActParams {
   zoom: number;
   /** 0..1 pre-birth ghost-flicker strength on unbuilt hex cells just beyond the build front. */
   ghost: number;
-  /** 0..1 beat-pulse strength: how much of the built comb re-rolls colour on each flash (beat) event. */
+  /** 0..1 beat-pulse strength: how much of the built comb re-rolls colour on each pulse event. */
   beatPulse: number;
   /** Baseline chalk-line events per minute (bass onsets add one more when >= 8, climax coupling). */
   lineRate: number;
+  /** Dense beat-pulse channel rate (events/min) — separate from flashRate; drives ONLY the beat-pulse cell block, not windows/bees/scene lifts. */
+  pulseRate: number;
+  /** 0..1 fraction of the crawler (Homemakers) slot budget visible — eases toward this target, fade never pop, so population visibly grows across the track. */
+  crawlers: number;
 }
 
 /** Boundary times in seconds, from the master's 2s RMS/band profile. Track duration: 294.124s. */
@@ -77,28 +81,33 @@ export const ACTS: ActParams[] = [
     wallGlow: 0.4, honeyFill: 0.15, roomLight: 0, shimmer: 0,
     beeDensity: 0.35, beeSwarm: 0.1, flashRate: 2.5, knockRate: 4,
     driftX: 0.02, driftY: 0.01, palMix: 0.1, hueVar: 0.4, zoom: 1.0,
-    ghost: 0.8, beatPulse: 0.15, lineRate: 0,
+    ghost: 0.8, beatPulse: 0.15, lineRate: 0, pulseRate: 8, crawlers: 0.2,
   },
   { // 2. Raising the Frame — first drop: comb accretes fast in rings
     name: 'raising-the-frame',
     wallGlow: 0.65, honeyFill: 0.5, roomLight: 0.2, shimmer: 0.15,
     beeDensity: 0.4, beeSwarm: 0.25, flashRate: 8, knockRate: 4,
     driftX: 0.05, driftY: 0.02, palMix: 0.3, hueVar: 0.55, zoom: 1.0,
-    ghost: 0.5, beatPulse: 0.8, lineRate: 6,
+    ghost: 0.5, beatPulse: 0.8, lineRate: 6, pulseRate: 60, crawlers: 0.5,
   },
-  { // 3. Settling In — breakdown: growth halts, the half-built wall breathes
+  { // 3. Settling In — breakdown: growth halts, the half-built wall breathes.
+    // Bumped (taste round 2): 54s-2:24 read as static — shimmer was a
+    // literal zero mid-track dead spot; knockRate/lineRate raised for more
+    // ambient event density (not brightness — fill/density knobs untouched).
     name: 'settling-in',
-    wallGlow: 0.55, honeyFill: 0.4, roomLight: 0.15, shimmer: 0,
-    beeDensity: 0.3, beeSwarm: 0.2, flashRate: 2, knockRate: 2,
+    wallGlow: 0.55, honeyFill: 0.4, roomLight: 0.15, shimmer: 0.12,
+    beeDensity: 0.3, beeSwarm: 0.2, flashRate: 2, knockRate: 5,
     driftX: 0.015, driftY: 0.01, palMix: 0.25, hueVar: 0.5, zoom: 1.0,
-    ghost: 0.2, beatPulse: 0.2, lineRate: 1,
+    ghost: 0.2, beatPulse: 0.2, lineRate: 3, pulseRate: 30, crawlers: 0.35,
   },
-  { // 4. Inside the House — camera pulls in tight; intimate before the climax pulls back
+  { // 4. Inside the House — camera pulls in tight; intimate before the climax
+    // pulls back. Bumped (taste round 2): pre-climax anticipation rise —
+    // shimmer/knockRate/lineRate all up a notch from round 1's values.
     name: 'inside-the-house',
-    wallGlow: 0.5, honeyFill: 0.45, roomLight: 0.4, shimmer: 0.1,
-    beeDensity: 0.3, beeSwarm: 0.15, flashRate: 3, knockRate: 6,
+    wallGlow: 0.5, honeyFill: 0.45, roomLight: 0.4, shimmer: 0.18,
+    beeDensity: 0.3, beeSwarm: 0.15, flashRate: 3, knockRate: 8,
     driftX: 0.01, driftY: 0.04, palMix: 0.4, hueVar: 0.6, zoom: 1.6,
-    ghost: 0.15, beatPulse: 0.35, lineRate: 2,
+    ghost: 0.15, beatPulse: 0.35, lineRate: 4, pulseRate: 45, crawlers: 0.6,
   },
   { // 5. Two Homes, One Wall — climax: THE single maximum (shimmer 1.0 once);
     // macro pull-back. Bumped (taste round 1): beatPulse and lineRate also
@@ -108,21 +117,21 @@ export const ACTS: ActParams[] = [
     wallGlow: 0.9, honeyFill: 0.85, roomLight: 0.6, shimmer: 1.0,
     beeDensity: 0.85, beeSwarm: 0.85, flashRate: 9, knockRate: 16,
     driftX: 0.08, driftY: 0.03, palMix: 0.6, hueVar: 0.8, zoom: 0.55,
-    ghost: 0.3, beatPulse: 1.0, lineRate: 20,
+    ghost: 0.3, beatPulse: 1.0, lineRate: 20, pulseRate: 90, crawlers: 0.9,
   },
   { // 6. Housewarming — the finished wall holds, warm, restrained
     name: 'housewarming',
     wallGlow: 0.75, honeyFill: 0.75, roomLight: 0.5, shimmer: 0.4,
     beeDensity: 0.5, beeSwarm: 0.5, flashRate: 3, knockRate: 9,
     driftX: 0.03, driftY: 0.015, palMix: 0.5, hueVar: 0.65, zoom: 0.85,
-    ghost: 0, beatPulse: 0.25, lineRate: 3,
+    ghost: 0, beatPulse: 0.25, lineRate: 3, pulseRate: 25, crawlers: 0.55,
   },
   { // 7. Lights Out — windows go dark one by one, dust settles, back to ink
     name: 'lights-out',
     wallGlow: 0.3, honeyFill: 0.2, roomLight: 0.05, shimmer: 0,
     beeDensity: 0.1, beeSwarm: 0.1, flashRate: 0.3, knockRate: 0,
     driftX: 0.005, driftY: 0.005, palMix: 0.2, hueVar: 0.3, zoom: 1.0,
-    ghost: 0, beatPulse: 0, lineRate: 0,
+    ghost: 0, beatPulse: 0, lineRate: 0, pulseRate: 4, crawlers: 0.1,
   },
 ];
 

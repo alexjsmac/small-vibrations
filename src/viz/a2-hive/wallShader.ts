@@ -55,6 +55,35 @@ export const KNOCK_BOOST_LIFETIME = 0.5;
 /** Knock-glow ring lifetime (seconds) — matches the shader's exp(-age*3.2) decay window. */
 export const KNOCK_GLOW_LIFETIME = 1.1;
 
+/**
+ * The five hex-lattice seed cells (axial q,r), source of truth for both the
+ * shader's birth-order field (`hexRing`) and the CPU crawler system's
+ * `hexBirthApprox` neighbour-choice heuristic (index.ts). Exported as data
+ * rather than left as inline GLSL literals — before this change the shader
+ * and any CPU-side hex math had no shared source, and a CPU replication
+ * would silently drift out of sync the next time someone tuned a seed.
+ */
+export const HEX_SEEDS: readonly [number, number][] = [[0, 0], [7, -5], [-5, 7], [9, 2], [-8, -3]];
+
+/** Homemakers crawler slot count: Full 10 / Lite 5, baked into the shader like knockSlots/lineSlots. */
+export const CRAWLER_SLOTS_FULL = 10;
+export const CRAWLER_SLOTS_LITE = 5;
+
+/** Crawler silhouette half-length/width (wall-uv units) — small dark elongated body. */
+export const CRAWLER_LEN = 0.5 * HEX_R;
+export const CRAWLER_WID = 0.22 * HEX_R;
+/** Crawler ember wake half-length/width (wall-uv units) — trails behind the heading. */
+export const WAKE_LEN = 1.6 * HEX_R;
+export const WAKE_WID = 0.5 * HEX_R;
+
+/**
+ * Radius (wall-uv units) within which a crawler-boost slot pre-builds the
+ * cell it's currently standing on (+ a small rim) — much tighter than
+ * KNOCK_BOOST_RADIUS because only the single cell underfoot should visibly
+ * "finish" as the crawler passes, not a whole neighbourhood.
+ */
+export const CRAWLER_BOOST_RADIUS = 1.5 * HEX_R;
+
 /** Chalk-line pool sizes: Lite halves (rounds down from) Full. */
 export const LINE_SLOTS_FULL = 6;
 export const LINE_SLOTS_LITE = 3;
@@ -73,14 +102,25 @@ void main() {
 }
 `;
 
+/** Nested `min(hexDist(hexId, seed0), min(hexDist(hexId, seed1), ...))` GLSL expression over all `n` generated seed vars — mirrors the hand-written chain this replaced, just generated so it always matches HEX_SEEDS' length. */
+function hexSeedMinChain(n: number): string {
+  function build(i: number): string {
+    if (i === n - 1) return `hexDist(hexId, seed${i})`;
+    return `min(hexDist(hexId, seed${i}), ${build(i + 1)})`;
+  }
+  return build(0);
+}
+
 /**
  * Builds the wall fragment shader source. `full` bakes in fwidth()-based AA
  * and a 2-octave honey wobble (vs. a fixed-epsilon AA and 1 octave on Lite);
  * `knockSlots` bakes the uKnockBoost/uKnockGlow array length and loop bound;
  * `lineSlots` bakes the uLineA/uLineMeta array length and loop bound for the
- * chalk-line events (Full 6 / Lite 3).
+ * chalk-line events (Full 6 / Lite 3); `crawlerSlots` bakes the
+ * uCrawler/uCrawlerBoost array length and loop bound for the Homemakers
+ * (Full 10 / Lite 5).
  */
-export function buildWallFragmentShader(full: boolean, knockSlots: number, lineSlots: number): string {
+export function buildWallFragmentShader(full: boolean, knockSlots: number, lineSlots: number, crawlerSlots: number): string {
   return `
 precision highp float;
 varying vec2 vUv;
@@ -93,10 +133,22 @@ uniform float uHexBuild, uRoomBuild, uMacro, uDim;
 uniform float uWallGlow, uHoneyFill, uRoomLight, uShimmer, uPalMix, uHueVar;
 uniform float uBass, uMid, uHigh, uFlash, uFlashCount;
 uniform float uGhost, uBeatPulse;
+// Dense beat-pulse channel: a second, faster event counter than uFlash,
+// driving ONLY the beat-pulse cell-selection block below. uFlash stays as-is
+// for windows/bees/big scene lifts — raising ITS rate to pulse-channel
+// speeds (60-90/min) would strobe everything, not just the comb.
+uniform float uPulse, uPulseCount;
 uniform vec4 uKnockBoost[${knockSlots}];
 uniform vec4 uKnockGlow[${knockSlots}];
 uniform vec4 uLineA[${lineSlots}];
 uniform vec4 uLineMeta[${lineSlots}];
+// Homemakers: xy wall pos, z heading (rad), w strength 0..1.
+uniform vec4 uCrawler[${crawlerSlots}];
+// xy cell-center wall pos, z age (s), w strength 0..1 — dedicated array, NOT
+// a reuse of uKnockBoost: knock is user-tap-facing feedback, and folding
+// crawler pre-build into the same pool would let ambient crawler traffic
+// steal/overwrite a tap's boost slot.
+uniform vec4 uCrawlerBoost[${crawlerSlots}];
 
 const float HEX_WALL_HALF = ${HEX_WALL_HALF.toFixed(4)};
 const float ROOM_WALL_HALF = ${ROOM_WALL_HALF.toFixed(4)};
@@ -191,9 +243,11 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
   float hexHash = hash21(hexId * 1.7 + uSeed);
 
   // Five seed cells (taste round 1: 3 was too sparse — Act 1 read as empty).
-  vec2 seedA = vec2(0.0, 0.0), seedB = vec2(7.0, -5.0), seedC = vec2(-5.0, 7.0);
-  vec2 seedD = vec2(9.0, 2.0), seedE = vec2(-8.0, -3.0);
-  float hexRing = min(hexDist(hexId, seedA), min(hexDist(hexId, seedB), min(hexDist(hexId, seedC), min(hexDist(hexId, seedD), hexDist(hexId, seedE)))));
+  // Generated from the exported HEX_SEEDS array (not hand-duplicated here)
+  // so the CPU crawler system's hexBirthApprox() can never silently drift
+  // from what the GPU actually renders.
+${HEX_SEEDS.map((s, i) => `  vec2 seed${i} = vec2(${s[0].toFixed(1)}, ${s[1].toFixed(1)});`).join('\n')}
+  float hexRing = ${hexSeedMinChain(HEX_SEEDS.length)};
   float hexBirth = clamp((hexRing + hexHash * ${HEX_JITTER.toFixed(1)}) / ${HEX_MAX_RING.toFixed(1)}, 0.0, 1.0);
   float hexGrow = 1.0 - smoothstep(uHexBuild, uHexBuild + ${GROW_BAND.toFixed(3)}, hexBirth);
 
@@ -206,6 +260,20 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
     float d = length(wallUv - kb.xy);
     float prox = clamp(1.0 - d / ${KNOCK_BOOST_RADIUS.toFixed(4)}, 0.0, 1.0);
     hexGrow = max(hexGrow, kb.w * exp(-kb.z * 2.0) * prox);
+  }
+
+  // Crawler boost: each Homemaker pre-builds the single cell it's standing
+  // on (+ a tight rim) as it passes, same decay shape as the knock boost
+  // above but a much smaller radius (CRAWLER_BOOST_RADIUS = 1.5*HEX_R vs.
+  // knock's 3*HEX_R — only the cell underfoot should visibly "finish") and
+  // its own array (see uCrawlerBoost's declaration for why it isn't folded
+  // into uKnockBoost).
+  for (int i = 0; i < ${crawlerSlots}; i++) {
+    vec4 cb = uCrawlerBoost[i];
+    if (cb.w <= 0.0) continue;
+    float d = length(wallUv - cb.xy);
+    float prox = clamp(1.0 - d / ${CRAWLER_BOOST_RADIUS.toFixed(4)}, 0.0, 1.0);
+    hexGrow = max(hexGrow, cb.w * exp(-cb.z * 2.0) * prox);
   }
 
   // Raw wall mask (pre-hexGrow) kept alongside the grown one: the ghost
@@ -333,20 +401,24 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
   float boundaryMask = coincide * hexWallMask * roomWallMask;
   col += boundaryMask * COL_ACCENT * uShimmer * (0.5 + 0.5 * sin(uTime * 3.0 + hexHash * 30.0)) * (0.7 + 0.3 * uHigh);
 
-  // ---- beat pulse: each flash event (kickFlash, i.e. every beat/onset) re-
-  // rolls which built cells light and in what colour — warm family (vivid
-  // orange/rust-red/cream/amber) with a rare verdigris contrast pop
-  // (~1-in-12 cells·beats). Rides uFlash's decay envelope so pulses land on
-  // the beat rather than lingering. ----
-  float beatRoll = hash21(hexId * 3.1 + uFlashCount * 13.7);
-  float beatSel = step(1.0 - uBeatPulse * 0.4, beatRoll);
-  float hueRoll = hash21(hexId * 5.3 + uFlashCount * 7.7);
+  // ---- beat pulse: driven by the DENSE pulse channel (uPulse/uPulseCount),
+  // not uFlash — uFlash stays reserved for windows/bees/big scene lifts,
+  // which would strobe if raised to the pulse channel's 60-90/min rate.
+  // Each pulse event re-rolls which built cells light and in what colour —
+  // warm family (vivid orange/rust-red/cream/amber) with a rare verdigris
+  // contrast pop (~1-in-12 cells·pulses). Selection width is 0.20, not the
+  // 0.4 an uFlash-driven version used: at ~90 events/min, 40%-of-comb
+  // re-rolls every event read as noise rather than pulses; 20% reads clean.
+  // Rides uPulse's decay envelope so pulses land on the beat, not linger. ----
+  float beatRoll = hash21(hexId * 3.1 + uPulseCount * 13.7);
+  float beatSel = step(1.0 - uBeatPulse * 0.20, beatRoll);
+  float hueRoll = hash21(hexId * 5.3 + uPulseCount * 7.7);
   vec3 pulseCol = hueRoll < 0.30 ? vec3(1.0, 0.55, 0.10)
                : hueRoll < 0.55 ? vec3(0.95, 0.20, 0.10)
                : hueRoll < 0.80 ? vec3(1.0, 0.9, 0.55)
                : hueRoll < 0.92 ? vec3(1.0, 0.75, 0.20)
                : vec3(0.25, 0.85, 0.65);
-  col += pulseCol * beatSel * uFlash * uBeatPulse * hexInterior * hexAlive * 0.9;
+  col += pulseCol * beatSel * uPulse * uBeatPulse * hexInterior * hexAlive * 0.9;
 
   // ---- macro comb: climax scale shift, coordinated with the zoom pull-back.
   // Guarded: uMacro is 0 for ~85% of the track — skip the second lattice
@@ -361,6 +433,37 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
     float macroWallMask = smoothstep(-macroAa, macroAa, macroEdge) - smoothstep(HEX_WALL_HALF * 6.0 - macroAa, HEX_WALL_HALF * 6.0 + macroAa, macroEdge);
     col *= 1.0 - 0.4 * uMacro; // background darkens as the giant comb reveals behind the wall
     col += macroWallMask * COL_WALL_GLOW * 0.35 * uMacro;
+  }
+
+  // ---- Homemakers: small dark crawler entities walking the comb, each
+  // leaving a warm ember wake behind its heading. Placed AFTER beat-pulse/
+  // macro (crawlers are wall-surface — part of "how the built wall looks
+  // right now", same layer as the honey/glow terms above) but BEFORE
+  // knocks/chalk-lines below (those are drawn ACROSS everything, the
+  // topmost "mark on top of the whole scene" layer, and must stay on top of
+  // the crawlers rather than being walked over). ----
+  const float CRAWLER_LEN = ${CRAWLER_LEN.toFixed(5)};
+  const float CRAWLER_WID = ${CRAWLER_WID.toFixed(5)};
+  const float WAKE_LEN = ${WAKE_LEN.toFixed(5)};
+  const float WAKE_WID = ${WAKE_WID.toFixed(5)};
+  // Ember, deliberately NOT COL_WALL_GLOW — the wake needs to read as the
+  // crawler's own trail, not just more of the wall's ambient gold glow (the
+  // two would visually merge into one indistinct color on a built cell).
+  const vec3 COL_CRAWLER_WAKE = vec3(0.95, 0.55, 0.18);
+  for (int i = 0; i < ${crawlerSlots}; i++) {
+    vec4 cw = uCrawler[i];
+    if (cw.w <= 0.0) continue;
+    vec2 d = wallUv - cw.xy;
+    if (dot(d, d) > WAKE_LEN * WAKE_LEN * 2.0) continue; // early reject before the trig below
+    float ch = cos(cw.z), sh = sin(cw.z);
+    vec2 local = vec2(d.x * ch + d.y * sh, -d.x * sh + d.y * ch);
+    float legWobble = 1.0 + 0.12 * sin(uTime * 9.0 + cw.z * 3.7 + float(i) * 12.9);
+    vec2 bn = local / vec2(CRAWLER_LEN, CRAWLER_WID * legWobble);
+    float body = exp(-dot(bn, bn) * 2.2) * cw.w;
+    col *= 1.0 - body * 0.65; // dark silhouette
+    col += COL_ACCENT * body * 0.10; // faint warm rim
+    vec2 wn = (local + vec2(WAKE_LEN * 0.5, 0.0)) / vec2(WAKE_LEN, WAKE_WID);
+    col += COL_CRAWLER_WAKE * exp(-dot(wn, wn) * 1.6) * cw.w * 0.35; // wake trails BEHIND heading
   }
 
   // ---- knocks: expanding ring, masked by the lattice so light travels along it ----
