@@ -14,9 +14,14 @@ permissions:
   contents: write
   pull-requests: write
 
+# Shared with deploy.yml — see the comment there. All gh-pages writers are
+# serialized in one group; this also stops two different PRs' preview
+# deploys from racing each other, not just the merge-time deploy/cleanup
+# race. The old per-PR group + cancel-in-progress lost pushes exactly that
+# way.
 concurrency:
-  group: preview-${{ github.event.number }}
-  cancel-in-progress: true
+  group: gh-pages-writes
+  cancel-in-progress: false
 
 jobs:
   preview:
