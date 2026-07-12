@@ -42,7 +42,6 @@ jobs:
         run: |
           npm ci
           npm run build
-          touch dist/.nojekyll
 
       - name: Deploy / update / remove the preview
         uses: rossjrw/pr-preview-action@v1
