@@ -46,6 +46,23 @@ export const MACRO_SCALE = 7.0;
 /** Radius (wall-uv units) within which a knock-boost slot pre-builds neighbouring cells. */
 export const KNOCK_BOOST_RADIUS = 3.0 * HEX_R;
 
+/**
+ * Half-width (wall-uv units) of the bounded region traceField.ts's ping-pong
+ * FBO covers; texUv = (wallUv + REGION_HALF) / (2*REGION_HALF). The wall
+ * itself is an unbounded plane (index.ts never wraps it), but the reachable
+ * territory is bounded by index.ts's pan clamp (`MAX_PAN = 8*HEX_R ≈ 0.44`)
+ * combined with the widest cover-fit/zoom combination the camera ever
+ * shows: worst case ≈ `0.5*cover/zoomMin + MAX_PAN ≈ 2.62`. 2.6 covers that
+ * with a hair of margin. index.ts's resize() additionally clamps aspect to
+ * [0.28, 3.5]; the true unclamped extreme (~3.69, a rare degenerate-resize
+ * case) is accepted as soft ClampToEdge degradation at the far periphery
+ * rather than inflating the region (and its resolution cost) for everyone —
+ * do not raise this to chase that last edge case. Defined here (not in
+ * traceField.ts) so both wallShader.ts's own texture-fetch math and
+ * traceField.ts's inverse mapping read from one source of truth.
+ */
+export const REGION_HALF = 2.6;
+
 /** Knock pool sizes (both boost and glow use the same count): Lite halves Full. */
 export const KNOCK_SLOTS_FULL = 4;
 export const KNOCK_SLOTS_LITE = 2;
@@ -102,6 +119,77 @@ void main() {
 }
 `;
 
+/**
+ * The rect-room lattice's irregular hierarchical binary split — a floor
+ * plan, not graph paper. Each uRoomSize block optionally splits once
+ * (level 1, either axis) and, within that sub-cell, optionally splits again
+ * (level 2, FORCED to the other axis so a block never slivers along one
+ * direction). Both levels carry a MIN_ROOM_DIM guard: a split that would
+ * leave either resulting piece thinner than a closet is skipped, and the
+ * block/sub-cell stays whole. Two levels max — a third level was tried and
+ * rejected (wall-dominated slivers).
+ *
+ * Factored out of buildWallFragmentShader (taste round 3) so traceField.ts's
+ * seed pass can interpolate the SAME source text — it needs to know which
+ * cells "should" be built by a given roomBuild value to pre-trace deep
+ * links, and only identical GLSL run on the same GPU is guaranteed to agree
+ * bit-for-bit with what the wall shader itself draws. Requires `hash21` and
+ * the `uSeed`/`uRoomSize` uniforms already declared in scope; produces the
+ * `cellMin`/`cellMax` bounds the wall shader needs for its box SDF plus this
+ * cell's birth-order value (roomGrow's smoothstep against uRoomBuild is left
+ * to the caller — the seed shader compares against a different uniform name).
+ */
+export const ROOM_SPLIT_GLSL_CHUNK = `
+void computeRoomBirth(vec2 wallUv, out vec2 cellMin, out vec2 cellMax, out float roomBirth) {
+  vec2 baseId = floor(wallUv / uRoomSize);
+  cellMin = baseId * uRoomSize; cellMax = cellMin + uRoomSize;
+  const float MIN_ROOM_DIM = 0.14;
+  float h1 = hash21(baseId + uSeed);
+  bool splitX = h1 < 0.4;
+  if (h1 < 0.8) {
+    float ratio = 0.35 + fract(h1 * 7.31) * 0.3;
+    if (splitX) {
+      float cut = cellMin.x + (cellMax.x - cellMin.x) * ratio;
+      float dimA = cut - cellMin.x, dimB = cellMax.x - cut;
+      if (dimA >= MIN_ROOM_DIM && dimB >= MIN_ROOM_DIM) {
+        if (wallUv.x < cut) cellMax.x = cut; else cellMin.x = cut;
+      }
+    } else {
+      float cut = cellMin.y + (cellMax.y - cellMin.y) * ratio;
+      float dimA = cut - cellMin.y, dimB = cellMax.y - cut;
+      if (dimA >= MIN_ROOM_DIM && dimB >= MIN_ROOM_DIM) {
+        if (wallUv.y < cut) cellMax.y = cut; else cellMin.y = cut;
+      }
+    }
+
+    // Level 2: forced to the axis level 1 did NOT use, sampled from the
+    // level-1 sub-cell (so it's independent per sub-cell, not per block).
+    float h2 = hash21(cellMin * 31.7 + uSeed);
+    if (h2 < 0.5) {
+      float ratio2 = 0.4 + fract(h2 * 11.3) * 0.2;
+      if (!splitX) {
+        float cut2 = cellMin.x + (cellMax.x - cellMin.x) * ratio2;
+        float dimA2 = cut2 - cellMin.x, dimB2 = cellMax.x - cut2;
+        if (dimA2 >= MIN_ROOM_DIM && dimB2 >= MIN_ROOM_DIM) {
+          if (wallUv.x < cut2) cellMax.x = cut2; else cellMin.x = cut2;
+        }
+      } else {
+        float cut2 = cellMin.y + (cellMax.y - cellMin.y) * ratio2;
+        float dimA2 = cut2 - cellMin.y, dimB2 = cellMax.y - cut2;
+        if (dimA2 >= MIN_ROOM_DIM && dimB2 >= MIN_ROOM_DIM) {
+          if (wallUv.y < cut2) cellMax.y = cut2; else cellMin.y = cut2;
+        }
+      }
+    }
+  }
+
+  vec2 roomIdEff = cellMin; // unique per room; do NOT quantize
+  float roomHash = hash21(roomIdEff * 2.3 + uSeed + 91.7);
+  float roomRing = max(abs(baseId.x), abs(baseId.y)); // birth wave stays keyed to the coarse block
+  roomBirth = clamp((roomRing + roomHash * ${ROOM_JITTER.toFixed(2)}) / ${ROOM_MAX_RING.toFixed(1)}, 0.0, 1.0);
+}
+`;
+
 /** Nested `min(hexDist(hexId, seed0), min(hexDist(hexId, seed1), ...))` GLSL expression over all `n` generated seed vars — mirrors the hand-written chain this replaced, just generated so it always matches HEX_SEEDS' length. */
 function hexSeedMinChain(n: number): string {
   function build(i: number): string {
@@ -149,9 +237,22 @@ uniform vec4 uCrawler[${crawlerSlots}];
 // crawler pre-build into the same pool would let ambient crawler traffic
 // steal/overwrite a tap's boost slot.
 uniform vec4 uCrawlerBoost[${crawlerSlots}];
+// Trace field (taste round 3): R = healing line-cut damage, G = fading
+// crawler-dim trail, B = permanent room-build trace. uDamage scales how
+// deep a fresh scar cuts (an ActParams-driven severity knob — see
+// sections.ts's 'damage' field); the field's own healing/fade timescales
+// live in traceField.ts and are NOT further modulated by uDamage.
+uniform sampler2D uTrace;
+uniform float uDamage;
+// '?trace=off' debug isolation: forces the sampled trace to (0,0,1) below —
+// zero damage, zero crawler-dim, roomReveal pinned to 1 — without skipping
+// the texture2D() call itself (a real GPU op either way; the branch below
+// is cheap uniform-driven select, not a shader recompile).
+uniform float uTraceOff;
 
 const float HEX_WALL_HALF = ${HEX_WALL_HALF.toFixed(4)};
 const float ROOM_WALL_HALF = ${ROOM_WALL_HALF.toFixed(4)};
+const float REGION_HALF = ${REGION_HALF.toFixed(2)};
 // Chalk-line marks: a physical scratch (LINE_HALF) thinner than either wall
 // line, a bbox reject margin (LINE_REACH), and a constant-screen-size head.
 const float LINE_HALF = 0.005;
@@ -200,6 +301,8 @@ ${full ? `  p = p * 2.03 + 17.1;
   return v;
 }
 
+${ROOM_SPLIT_GLSL_CHUNK}
+
 // Amber / honey / brown regional anchors — anti-monochrome (a1 lesson: flat
 // palettes read as a wash from a distance; neighbouring cells must differ).
 const vec3 COL_BROWN = vec3(0.30, 0.16, 0.06);
@@ -230,6 +333,12 @@ void main(){
   vec2 wallUv = (vUv - 0.5) * uCover / uZoom + uScroll;
 
 ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fixed epsilon on Lite: no derivatives on that path
+
+  // Trace field sample: R = damage, G = crawler-dim trail, B = build trace.
+  // Fetched once here (not per-use-site below) — same texUv mapping as
+  // traceField.ts's inverse (REGION_HALF is the single shared constant).
+  // uTraceOff > 0.5 overrides to (0,0,1) — see its declaration above.
+  vec3 trace = mix(texture2D(uTrace, (wallUv + REGION_HALF) / (2.0 * REGION_HALF)).rgb, vec3(0.0, 0.0, 1.0), step(0.5, uTraceOff));
 
   // ---- hex lattice ----
   vec2 hexId = axialRound(pixelToAxial(wallUv, uHexR));
@@ -288,66 +397,36 @@ ${HEX_SEEDS.map((s, i) => `  vec2 seed${i} = vec2(${s[0].toFixed(1)}, ${s[1].toF
   // (the old module's "roomGhost/blueprint" idea, reborn for hexes).
   float ghost = (1.0 - hexGrow) * (1.0 - smoothstep(uHexBuild, uHexBuild + 0.10, hexBirth)) * (0.3 + 0.7 * abs(sin(uTime * 1.7 + hexHash * 20.0)));
 
-  // ---- rect room lattice: irregular hierarchical split — a floor plan, not
-  // graph paper. Each uRoomSize block optionally splits once (level 1,
-  // either axis) and, within that sub-cell, optionally splits again
-  // (level 2, FORCED to the other axis so a block never slivers along one
-  // direction). Both levels carry a MIN_ROOM_DIM guard: a split that would
-  // leave either resulting piece thinner than a closet is skipped, and the
-  // block/sub-cell stays whole. Two levels max — a third level was tried and
-  // rejected (wall-dominated slivers). ----
-  vec2 baseId = floor(wallUv / uRoomSize);
-  vec2 cellMin = baseId * uRoomSize, cellMax = cellMin + uRoomSize;
-  const float MIN_ROOM_DIM = 0.14;
-  float h1 = hash21(baseId + uSeed);
-  bool splitX = h1 < 0.4;
-  if (h1 < 0.8) {
-    float ratio = 0.35 + fract(h1 * 7.31) * 0.3;
-    if (splitX) {
-      float cut = cellMin.x + (cellMax.x - cellMin.x) * ratio;
-      float dimA = cut - cellMin.x, dimB = cellMax.x - cut;
-      if (dimA >= MIN_ROOM_DIM && dimB >= MIN_ROOM_DIM) {
-        if (wallUv.x < cut) cellMax.x = cut; else cellMin.x = cut;
-      }
-    } else {
-      float cut = cellMin.y + (cellMax.y - cellMin.y) * ratio;
-      float dimA = cut - cellMin.y, dimB = cellMax.y - cut;
-      if (dimA >= MIN_ROOM_DIM && dimB >= MIN_ROOM_DIM) {
-        if (wallUv.y < cut) cellMax.y = cut; else cellMin.y = cut;
-      }
-    }
-
-    // Level 2: forced to the axis level 1 did NOT use, sampled from the
-    // level-1 sub-cell (so it's independent per sub-cell, not per block).
-    float h2 = hash21(cellMin * 31.7 + uSeed);
-    if (h2 < 0.5) {
-      float ratio2 = 0.4 + fract(h2 * 11.3) * 0.2;
-      if (!splitX) {
-        float cut2 = cellMin.x + (cellMax.x - cellMin.x) * ratio2;
-        float dimA2 = cut2 - cellMin.x, dimB2 = cellMax.x - cut2;
-        if (dimA2 >= MIN_ROOM_DIM && dimB2 >= MIN_ROOM_DIM) {
-          if (wallUv.x < cut2) cellMax.x = cut2; else cellMin.x = cut2;
-        }
-      } else {
-        float cut2 = cellMin.y + (cellMax.y - cellMin.y) * ratio2;
-        float dimA2 = cut2 - cellMin.y, dimB2 = cellMax.y - cut2;
-        if (dimA2 >= MIN_ROOM_DIM && dimB2 >= MIN_ROOM_DIM) {
-          if (wallUv.y < cut2) cellMax.y = cut2; else cellMin.y = cut2;
-        }
-      }
-    }
-  }
+  // ---- rect room lattice: split math lives in ROOM_SPLIT_GLSL_CHUNK
+  // (computeRoomBirth), shared verbatim with traceField.ts's seed pass. ----
+  vec2 cellMin, cellMax;
+  float roomBirth;
+  computeRoomBirth(wallUv, cellMin, cellMax, roomBirth);
 
   vec2 roomHalfV = (cellMax - cellMin) * 0.5 - vec2(ROOM_WALL_HALF);
   float roomEdge = sdBox(wallUv - (cellMin + cellMax) * 0.5, roomHalfV);
-  vec2 roomIdEff = cellMin; // unique per room; do NOT quantize
-  float roomHash = hash21(roomIdEff * 2.3 + uSeed + 91.7);
-  float roomRing = max(abs(baseId.x), abs(baseId.y)); // birth wave stays keyed to the coarse block
-  float roomBirth = clamp((roomRing + roomHash * ${ROOM_JITTER.toFixed(2)}) / ${ROOM_MAX_RING.toFixed(1)}, 0.0, 1.0);
   float roomGrow = 1.0 - smoothstep(uRoomBuild, uRoomBuild + ${GROW_BAND.toFixed(3)}, roomBirth);
 
   float roomInterior = (1.0 - smoothstep(-aa, aa, roomEdge)) * roomGrow;
   float roomWallMask = (smoothstep(-aa, aa, roomEdge) - smoothstep(ROOM_WALL_HALF - aa, ROOM_WALL_HALF + aa, roomEdge)) * roomGrow;
+
+  // Room-reveal gate: rooms only actually show where a crawler has walked
+  // (trace.b), on top of birth-order eligibility (roomGrow above) — "rooms
+  // appear only where crawlers have actually walked" is the narrative, not
+  // a bug to fix. Gates roomInterior/roomWallMask (the two blend WEIGHTS
+  // used below), deliberately NOT winRim: winRim is a colour interpolant
+  // computed from roomEdge/roomHalfV further down, and if it were gated too
+  // an unrevealed room would composite as dark fill (still visibly a room-
+  // shaped hole) rather than staying fully invisible — the interior/wall
+  // masks already being zero is what makes the room vanish. Boundary
+  // shimmer, room glow, and window visibility all inherit this gate
+  // downstream automatically since they're built from these two masks. The
+  // wide 0.15->0.6 band is deliberate: trace.b accumulates gradually as a
+  // crawler crosses a cell, so a narrow band would pop the room in instead
+  // of it gradually resolving ("under construction").
+  float roomReveal = smoothstep(0.15, 0.6, trace.b);
+  roomInterior *= roomReveal;
+  roomWallMask *= roomReveal;
 
   // ---- lights-out: latest-built edge cells die first, seed cells die last ----
   float hexAlive = 1.0 - smoothstep(1.0 - uDim - ${DIM_BAND.toFixed(2)}, 1.0 - uDim, hexBirth);
@@ -365,7 +444,15 @@ ${HEX_SEEDS.map((s, i) => `  vec2 seed${i} = vec2(${s[0].toFixed(1)}, ${s[1].toF
   honey *= mix(1.0, 0.45, rim);
   honey += COL_HONEY * (1.0 - rim) * 0.10 * wobble;
   honey *= 1.0 + uBass * 0.15; // smoothed bass -> honey glow breath
-  honey *= 0.75 * uHoneyFill * hexAlive;
+  // Contrast-inverted crawler path (round-3 note 3): trace.g dims bright
+  // honey cells the crawler has recently crossed. Multiplicative, so it's a
+  // no-op on dark/unbuilt cells (honey is already near zero there — their
+  // reveal comes from the existing crawler-BOOST mechanic above, a
+  // separate term) and a visible dimming on bright ones, giving the path a
+  // consistent readable cue regardless of what it's crossing. windowLight
+  // deliberately stays untouched by trace.g below: rooms live on the reveal
+  // gate above, not this dimming mechanic.
+  honey *= 0.75 * uHoneyFill * hexAlive * (1.0 - trace.g * 0.55);
 
   // ---- windowLight: light seen through the wall from inside — brightest
   // just inside the room's own walls, dark at center. A flat cream fill
@@ -465,6 +552,14 @@ ${HEX_SEEDS.map((s, i) => `  vec2 seed${i} = vec2(${s[0].toFixed(1)}, ${s[1].toF
     vec2 wn = (local + vec2(WAKE_LEN * 0.5, 0.0)) / vec2(WAKE_LEN, WAKE_WID);
     col += COL_CRAWLER_WAKE * exp(-dot(wn, wn) * 1.6) * cw.w * 0.35; // wake trails BEHIND heading
   }
+
+  // Line-cut damage: the whole composite so far dims under accumulated
+  // scars (round-3 note 1). Placed AFTER crawlers but BEFORE knocks/chalk
+  // lines below, so a fresh bright stroke (a new knock or the chalk line
+  // that CAUSED this scar) still draws on top and reads clearly, while a
+  // faded stroke leaves the dimmed scar visible underneath, healing over
+  // traceField.ts's ~8s R-channel decay.
+  col *= 1.0 - trace.r * uDamage;
 
   // ---- knocks: expanding ring, masked by the lattice so light travels along it ----
   float latticeMask = max(hexWallMask, roomWallMask);

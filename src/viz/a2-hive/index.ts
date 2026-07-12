@@ -7,6 +7,7 @@ import {
   LINE_SLOTS_FULL, LINE_SLOTS_LITE, LINE_LIFETIME, LINE_MIN_LENGTH,
   CRAWLER_SLOTS_FULL, CRAWLER_SLOTS_LITE,
 } from './wallShader';
+import { TraceField } from './traceField';
 import { Bees } from './bees';
 import { paramsAt, arcAt } from './sections';
 import { mulberry32 } from '../random';
@@ -54,6 +55,27 @@ const CRAWLER_BUILT_PREFERENCE = 1.8;
 const CRAWLER_RECALL_RADIUS = 1.1;
 /** Recall bias strength per wall-uv unit beyond CRAWLER_RECALL_RADIUS. */
 const CRAWLER_RECALL_GAIN = 1.5;
+/**
+ * Room-building steering bonus (taste round 3, note 2: "crawlers build the
+ * rooms"): a candidate neighbour whose cell center falls within
+ * ROOM_LINE_PROXIMITY of a coarse ROOM_SIZE grid line gets its weight
+ * multiplied by ROOM_LINE_BONUS, so crawler tails preferentially trace
+ * along room-block boundaries instead of wandering the open hex field.
+ * Hash-free: this only tests distance to the coarse `x/y = k*ROOM_SIZE`
+ * grid, NOT wallShader.ts's actual per-block split (computeRoomBirth) —
+ * replicating that split's hash-driven cut positions on the CPU would be a
+ * hexBirthApprox-grade porting exercise, out of scope for v1. Known scope
+ * limit: only OUTER block boundaries get targeted steering this way;
+ * interior split walls (the level-1/level-2 cuts within a block) trace
+ * opportunistically, whenever a crawler's forward-biased random walk
+ * happens to cross one. Active only while arc.roomBuild is strictly
+ * between 0 and 1 (rooms actively under construction) — before that
+ * there's nothing to build toward, and after roomBuild reaches 1 every
+ * room is already fully birth-eligible, so steering toward its boundary no
+ * longer serves the "crawlers build the rooms" narrative.
+ */
+const ROOM_LINE_BONUS = 3.0;
+const ROOM_LINE_PROXIMITY = 0.04;
 /** The six pointy-top axial hex neighbour offsets (dq, dr), redblobgames convention — matches the pixelToAxial/axialToPixel formulas ported from wallShader.ts's GLSL below. */
 const AXIAL_DIRS: readonly [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
 
@@ -204,6 +226,7 @@ class HiveWall implements Viz {
   private quad!: THREE.Mesh;
   private material!: THREE.ShaderMaterial;
   private bees!: Bees;
+  private traceField!: TraceField;
 
   private rand!: () => number;
   private soloWall = true;
@@ -213,6 +236,13 @@ class HiveWall implements Viz {
   private arcOverride: ArcOverride | null = null;
   /** `?crawlers=<0..1>` debug override — forces the crawler population fraction regardless of the act's `crawlers` ActParams. Null means "no override, use the act value". */
   private forceCrawlers: number | null = null;
+  /** `?trace=off` — isolates the round-3 trace field for A/B comparison against round-2 behavior. Forces the wall shader to treat the trace sample as (0,0,1): zero damage, zero crawler-dim, and roomReveal=1 (rooms show purely by birth-order again), without actually skipping the traceField.step()/texture upload machinery. */
+  private forceTraceOff = false;
+
+  /** Set true until the first update() call runs the trace field's seed pass — mirrors a1's warmup gate, and (since init() reruns on a mid-song quality toggle) transparently covers quality-reload seeding too. */
+  private firstUpdate = true;
+  /** Cached from the most recent update(dt, ...) call so render() (called by VizHost after update(), with no dt of its own) can advance traceField.step() by the same dt the rest of this frame's simulation used. */
+  private lastDt = 0;
 
   /** Cover-fit scale, computed in resize() — copied by value into both the wall and bees uniforms each frame/resize (see bees.ts's uCover doc comment on why not shared by reference). */
   private cover = new THREE.Vector2(1, 1);
@@ -276,6 +306,7 @@ class HiveWall implements Viz {
     this.soloBees = !solo || solo === 'bees';
     this.forceKnockAlways = params.get('knock') === 'always';
     this.forceLinesAlways = params.get('lines') === 'always';
+    this.forceTraceOff = params.get('trace') === 'off';
     const arcParam = params.get('arc');
     if (arcParam) {
       const parts = arcParam.split(',').map(Number);
@@ -356,6 +387,9 @@ class HiveWall implements Viz {
         uLineMeta: { value: this.lineMetaUniformValues },
         uCrawler: { value: this.crawlerUniformValues },
         uCrawlerBoost: { value: this.crawlerBoostUniformValues },
+        uTrace: { value: null },
+        uDamage: { value: 0 },
+        uTraceOff: { value: this.forceTraceOff ? 1 : 0 },
       },
     });
     this.quad = new THREE.Mesh(geometry, this.material);
@@ -363,6 +397,21 @@ class HiveWall implements Viz {
 
     this.bees = new Bees(seed, quality, renderer);
     if (this.soloBees) this.scene.add(this.bees.object);
+
+    // Trace field: shares the SAME pooled uLineA/uLineMeta/uCrawler Vector4
+    // arrays as the wall material above (passed by reference, not copied) —
+    // index.ts's per-frame writes into those arrays (activateLine,
+    // updateCrawlers) are visible to both shaders with no extra bookkeeping.
+    this.traceField = new TraceField(
+      renderer,
+      full,
+      this.lineSlotCount,
+      this.crawlerSlotCount,
+      seedFloat,
+      this.lineAUniformValues,
+      this.lineMetaUniformValues,
+      this.crawlerUniformValues,
+    );
 
     this.initCrawlers();
 
@@ -601,10 +650,15 @@ class HiveWall implements Viz {
    *    (uScroll), candidates pointing back toward it gain weight
    *    proportionally to the excess distance — a lean, not a wall, so
    *    there are no teleports and no visible bounce at an invisible fence.
+   *  - room-line steering ×ROOM_LINE_BONUS: while `roomBuildActive` (see
+   *    that param's doc), a candidate near a coarse room-grid line is
+   *    preferred, so crawler tails trace the boundaries the room lattice is
+   *    about to build on top of — see ROOM_LINE_BONUS's doc comment for the
+   *    known outer-boundary-only scope limit.
    * Arrival path (~1-2 calls/sec/crawler) — free to allocate, unlike the
    * per-frame position writes in updateCrawlers.
    */
-  private chooseNeighbor(slot: CrawlerSlot, hexBuild: number, scrollX: number, scrollY: number): [number, number] {
+  private chooseNeighbor(slot: CrawlerSlot, hexBuild: number, scrollX: number, scrollY: number, roomBuildActive: boolean): [number, number] {
     const cx = axialToPixelX(slot.toQ, slot.toR, HEX_R);
     const cy = axialToPixelY(slot.toQ, slot.toR, HEX_R);
     const inX = Math.cos(slot.heading);
@@ -628,8 +682,10 @@ class HiveWall implements Viz {
     for (const [dq, dr] of AXIAL_DIRS) {
       const nq = slot.toQ + dq;
       const nr = slot.toR + dr;
-      const dx = axialToPixelX(nq, nr, HEX_R) - cx;
-      const dy = axialToPixelY(nq, nr, HEX_R) - cy;
+      const nx = axialToPixelX(nq, nr, HEX_R);
+      const ny = axialToPixelY(nq, nr, HEX_R);
+      const dx = nx - cx;
+      const dy = ny - cy;
       const len = Math.hypot(dx, dy);
       const ndx = dx / len, ndy = dy / len;
       // Forward bias: floor keeps sideways turns alive, dot rewards straight-ish.
@@ -637,6 +693,13 @@ class HiveWall implements Viz {
       if (nq === slot.fromQ && nr === slot.fromR) w *= CRAWLER_BACKTRACK_FACTOR;
       if (hexBirthApprox(nq, nr, this.hexSeedFloat) <= hexBuild) w *= CRAWLER_BUILT_PREFERENCE;
       w *= 1 + recallExcess * CRAWLER_RECALL_GAIN * Math.max(0, ndx * recallNX + ndy * recallNY);
+      if (roomBuildActive) {
+        // Hash-free coarse-grid proximity — see ROOM_LINE_BONUS's doc
+        // comment for what this is (and isn't) steering toward.
+        const gx = Math.abs(nx - Math.round(nx / ROOM_SIZE) * ROOM_SIZE);
+        const gy = Math.abs(ny - Math.round(ny / ROOM_SIZE) * ROOM_SIZE);
+        if (Math.min(gx, gy) < ROOM_LINE_PROXIMITY) w *= ROOM_LINE_BONUS;
+      }
       weights.push(w);
       total += w;
     }
@@ -686,8 +749,12 @@ class HiveWall implements Viz {
    * Hot path discipline: the position/heading/strength writes below are all
    * scalar math into the pooled Vector4s — zero allocation. Only the
    * arrival branch (chooseNeighbor, ~1-2 times/sec/crawler) allocates.
+   *
+   * `roomBuildActive` (arc.roomBuild strictly between 0 and 1, computed ONCE
+   * per frame by the caller — never re-derived per candidate inside
+   * chooseNeighbor) gates the room-line steering bonus; see ROOM_LINE_BONUS.
    */
-  private updateCrawlers(dt: number, targetFraction: number, hexBuild: number, scrollX: number, scrollY: number) {
+  private updateCrawlers(dt: number, targetFraction: number, hexBuild: number, scrollX: number, scrollY: number, roomBuildActive: boolean) {
     const n = this.crawlers.length;
     const ease = Math.min(1, dt * 3);
     for (let i = 0; i < n; i++) {
@@ -703,7 +770,7 @@ class HiveWall implements Viz {
         const arrY = axialToPixelY(slot.toQ, slot.toR, HEX_R);
         this.activateCrawlerBoost(i, arrX, arrY, slot.stepDur, slot.strength);
         // ...then pick where to walk next.
-        const next = this.chooseNeighbor(slot, hexBuild, scrollX, scrollY);
+        const next = this.chooseNeighbor(slot, hexBuild, scrollX, scrollY, roomBuildActive);
         slot.fromQ = slot.toQ;
         slot.fromR = slot.toR;
         slot.toQ = next[0];
@@ -733,6 +800,29 @@ class HiveWall implements Viz {
     const section = paramsAt(audio.time);
     const arc = arcAt(audio.time);
     const p = section.params;
+
+    // Cached for render(), which VizHost calls with no dt of its own —
+    // traceField.step() needs this frame's dt to compute its decay factors.
+    this.lastDt = dt;
+
+    // Seed the trace field once, at the current song position: covers cold
+    // loads, `?t=` deep links, AND mid-song quality toggles (VizHost's
+    // reloadCurrent reruns init(), which resets firstUpdate to true) — all
+    // three land on a scene whose rooms already look "should be built"
+    // instead of bare hex comb waiting for crawlers to catch up live.
+    if (this.firstUpdate) {
+      this.firstUpdate = false;
+      this.traceField.seed(this.arcOverride?.roomBuild ?? arc.roomBuild);
+    }
+
+    // Loop-wrap: song time jumping backward by more than 10s means the
+    // track looped back to 0 — re-seed so scars/build state reset with the
+    // song instead of a new play inheriting the previous play's field.
+    // (10s margin, not 0: audio.time can jitter slightly near a boundary,
+    // and this must never fire on ordinary forward playback.)
+    if (this.lastSongTime >= 0 && audio.time < this.lastSongTime - 10) {
+      this.traceField.seed(this.arcOverride?.roomBuild ?? arc.roomBuild);
+    }
 
     // The two drops land as discrete hits, not crossfades — same edge-
     // triggered detection as the old a2-homemakers/index.ts. The `< 0.5`
@@ -801,6 +891,7 @@ class HiveWall implements Viz {
     du.uPulseCount.value = this.pulseCount;
     du.uGhost.value = p.ghost;
     du.uBeatPulse.value = p.beatPulse;
+    du.uDamage.value = p.damage;
 
     du.uHexBuild.value = this.arcOverride?.hexBuild ?? arc.hexBuild;
     du.uRoomBuild.value = this.arcOverride?.roomBuild ?? arc.roomBuild;
@@ -864,11 +955,20 @@ class HiveWall implements Viz {
     // hexBuild goes in as the same effective value the shader will read
     // (arc override included) — the built-cell preference should follow
     // whatever build front is actually on screen.
+    // roomBuildActive computed ONCE here (not per candidate inside
+    // chooseNeighbor) — roomBuild strictly between 0 and 1 means rooms are
+    // actively under construction, the only window where steering crawlers
+    // toward room-grid lines serves the "crawlers build the rooms"
+    // narrative (see ROOM_LINE_BONUS's doc comment). Reads the same
+    // effective value (arc override included) the shader's uRoomBuild uses.
+    const effRoomBuild = this.arcOverride?.roomBuild ?? arc.roomBuild;
+    const roomBuildActive = effRoomBuild > 0 && effRoomBuild < 1;
     this.updateCrawlers(
       dt,
       this.forceCrawlers ?? p.crawlers,
       this.arcOverride?.hexBuild ?? arc.hexBuild,
       scroll.x, scroll.y,
+      roomBuildActive,
     );
     this.updateCrawlerAges(dt);
 
@@ -923,6 +1023,12 @@ class HiveWall implements Viz {
   }
 
   render() {
+    // traceField.step() renders into its own offscreen target and restores
+    // the previous render target itself (mirrors RDSim.step) — safe to call
+    // right before the main setRenderTarget(null)/render() below with no
+    // extra state juggling here.
+    this.traceField.step(this.lastDt);
+    this.material.uniforms.uTrace.value = this.traceField.texture;
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.scene, this.camera);
   }
@@ -944,6 +1050,7 @@ class HiveWall implements Viz {
     this.material.dispose();
     this.quad.geometry.dispose();
     this.bees.dispose();
+    this.traceField.dispose();
     this.renderer.setRenderTarget(null);
   }
 }
