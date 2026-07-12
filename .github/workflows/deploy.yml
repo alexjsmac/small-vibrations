@@ -13,9 +13,16 @@ on:
 permissions:
   contents: write
 
+# Shared with preview.yml: every workflow that pushes to gh-pages must sit
+# in this one group, serialized. When a PR merges, the production deploy
+# (push to main) and the preview cleanup (pull_request closed) fire at the
+# same instant; unserialized, both clone gh-pages and the second push wins,
+# silently discarding the other's changes (this left stale pr-preview dirs
+# behind PRs #3/#4). cancel-in-progress stays false so a queued cleanup is
+# never skipped in favour of a deploy or vice versa.
 concurrency:
-  group: pages-deploy
-  cancel-in-progress: true
+  group: gh-pages-writes
+  cancel-in-progress: false
 
 jobs:
   deploy:
