@@ -211,6 +211,50 @@ something that happens *now*, at a moment, and is gone.
 - Per-play `ctx.seed` (mulberry32 from `src/viz/random.ts`) drives all
   randomness — every play unique, every play internally coherent.
 
+## Lessons from a2 "Homemakers" (the golden wall — ratchet, July 2026)
+
+- **Persistence via a bounded trace field.** When taste notes need memory
+  (scars that heal, structures that stay built, trails that linger), a
+  pure-function-of-uniforms shader isn't enough — add ONE ping-pong FBO in
+  wall/world space (`a2-hive/traceField.ts`, modeled on a1's RDSim). The
+  pan clamp is what makes it possible: bounded reachable territory = a
+  fixed-region texture. Channels: fast-decay, slow-decay, and permanent
+  (permanent = literally no decay term; reset via a seed pass). Always
+  build the **seed pass** (analytically pre-fill "what should exist by
+  now") or `?t=` deep links and quality reloads break — and re-seed on
+  loop wrap.
+- **Agents beat ambience.** The single biggest captivation jump came from
+  ~10 CPU-animated entities (crawlers walking the lattice, biased random
+  walk + steering) with visible AGENCY — they build the world (boost the
+  cells they pass, trace the rooms into existence) and interact with it
+  in both directions (brighten the dark, dim the bright — contrast
+  inversion keeps their paths legible everywhere). Cost: one vec4[10]
+  uniform array + a cheap oriented-blob loop.
+- **Separate event channels by tempo.** One decaying "flash" scalar can't
+  serve both full-scene hits (few/min) and per-beat pulses (60-90/min) —
+  the fast rate strobes everything the scalar touches. Give each tempo
+  its own scalar + counter (`uFlash/uFlashCount` vs `uPulse/uPulseCount`);
+  a per-event counter hashed with cell ids re-rolls which cells light and
+  in what colour each beat.
+- **Two GLSL template-literal traps** (both caught by the house rule of
+  rendering generated shader source to a file and READING it): interpolated
+  constants that were never declared, and backticks inside GLSL comments
+  silently truncating the template string. `npm run build` catches neither.
+- **iq's sdHexagon is flat-top and takes the apothem.** Pointy-top axial
+  grids need `p.yx` + `R*0.866` or neighbouring SDF hexes overlap and the
+  walls collapse into triangle slivers.
+- **Scale birth/build pacing to the VISIBLE field** (viewport + pan clamp),
+  not to abstract lattice units — a build wave that outruns the viewport
+  reads as "already done" for the whole track.
+- **Deterministic shader worlds beat sims for iteration**: no warmup, every
+  `?t=` lands exactly, contact sheets are trivial. Reach for a sim (or the
+  trace field) only when notes demand memory.
+- **CPU/GPU hash divergence is total, not approximate** (measured up to
+  0.87 on `fract(sin(dot))` at float32 vs float64): CPU replicas of shader
+  hashes are ring/structure-dominated heuristics only — never gate a hard
+  visual on one. Share structural constants (seed cells, split chunks) as
+  exported source-of-truth data/GLSL text instead.
+
 ## Workflow: from master WAV to shipped visuals
 
 1. Profile the track's master (2s RMS + low/high bands) → section table.
