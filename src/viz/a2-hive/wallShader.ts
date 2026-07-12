@@ -55,6 +55,15 @@ export const KNOCK_BOOST_LIFETIME = 0.5;
 /** Knock-glow ring lifetime (seconds) — matches the shader's exp(-age*3.2) decay window. */
 export const KNOCK_GLOW_LIFETIME = 1.1;
 
+/** Chalk-line pool sizes: Lite halves (rounds down from) Full. */
+export const LINE_SLOTS_FULL = 6;
+export const LINE_SLOTS_LITE = 3;
+
+/** Chalk-line lifetime (seconds) — head travels A->B in the first 0.5s, then the line persists and fades (shader's exp(-max(age-0.5,0)*2.5) curve); the slot is freed once it's visually gone. */
+export const LINE_LIFETIME = 1.6;
+/** Minimum accepted spawn length (wall-uv units) — shorter segments are rejected and resampled. */
+export const LINE_MIN_LENGTH = 0.3;
+
 /** Trivial fullscreen-quad passthrough — identical idiom to a1-primordial's VERT. */
 export const WALL_VERT = `
 varying vec2 vUv;
@@ -67,9 +76,11 @@ void main() {
 /**
  * Builds the wall fragment shader source. `full` bakes in fwidth()-based AA
  * and a 2-octave honey wobble (vs. a fixed-epsilon AA and 1 octave on Lite);
- * `knockSlots` bakes the uKnockBoost/uKnockGlow array length and loop bound.
+ * `knockSlots` bakes the uKnockBoost/uKnockGlow array length and loop bound;
+ * `lineSlots` bakes the uLineA/uLineMeta array length and loop bound for the
+ * chalk-line events (Full 6 / Lite 3).
  */
-export function buildWallFragmentShader(full: boolean, knockSlots: number): string {
+export function buildWallFragmentShader(full: boolean, knockSlots: number, lineSlots: number): string {
   return `
 precision highp float;
 varying vec2 vUv;
@@ -80,12 +91,20 @@ uniform vec2 uCover, uScroll;
 uniform float uZoom;
 uniform float uHexBuild, uRoomBuild, uMacro, uDim;
 uniform float uWallGlow, uHoneyFill, uRoomLight, uShimmer, uPalMix, uHueVar;
-uniform float uBass, uMid, uHigh, uFlash;
+uniform float uBass, uMid, uHigh, uFlash, uFlashCount;
+uniform float uGhost, uBeatPulse;
 uniform vec4 uKnockBoost[${knockSlots}];
 uniform vec4 uKnockGlow[${knockSlots}];
+uniform vec4 uLineA[${lineSlots}];
+uniform vec4 uLineMeta[${lineSlots}];
 
 const float HEX_WALL_HALF = ${HEX_WALL_HALF.toFixed(4)};
 const float ROOM_WALL_HALF = ${ROOM_WALL_HALF.toFixed(4)};
+// Chalk-line marks: a physical scratch (LINE_HALF) thinner than either wall
+// line, a bbox reject margin (LINE_REACH), and a constant-screen-size head.
+const float LINE_HALF = 0.005;
+const float LINE_REACH = 0.03;
+const float HEAD_R_SCREEN = 0.03;
 
 // ---- hex lattice math (pointy-top axial) ----
 vec2 pixelToAxial(vec2 p, float R){ return vec2((0.57735027*p.x - 0.33333333*p.y)/R, (0.66666667*p.y)/R); }
@@ -99,6 +118,18 @@ float sdHexagon(vec2 p, float r){ const vec3 k=vec3(-0.8660254,0.5,0.5773503); p
 
 // ---- rect room math ----
 float sdBox(vec2 p, vec2 b){ vec2 d=abs(p)-b; return length(max(d,0.0))+min(max(d.x,d.y),0.0); }
+
+// ---- chalk-line math ----
+// Distance from p to the segment a->b, but only tracing it up to 'prog'
+// (0..1) of the way — the travelling-head reveal. abLen2 == 0 guard covers
+// a degenerate (zero-length, rejected-at-spawn-but-still-fading) segment so
+// t never divides by zero and NaNs the whole line invisible.
+float segDistProgress(vec2 p, vec2 a, vec2 b, float prog) {
+  vec2 ab = b - a;
+  float abLen2 = dot(ab, ab);
+  float t = abLen2 > 1e-8 ? clamp(dot(p - a, ab) / abLen2, 0.0, prog) : 0.0;
+  return length(p - (a + ab * t));
+}
 
 // ---- noise ----
 float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -159,8 +190,10 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
   float hexEdge = sdHexagon(vec2(hexLocal.y, hexLocal.x), uHexR * 0.8660254 - HEX_WALL_HALF);
   float hexHash = hash21(hexId * 1.7 + uSeed);
 
+  // Five seed cells (taste round 1: 3 was too sparse — Act 1 read as empty).
   vec2 seedA = vec2(0.0, 0.0), seedB = vec2(7.0, -5.0), seedC = vec2(-5.0, 7.0);
-  float hexRing = min(hexDist(hexId, seedA), min(hexDist(hexId, seedB), hexDist(hexId, seedC)));
+  vec2 seedD = vec2(9.0, 2.0), seedE = vec2(-8.0, -3.0);
+  float hexRing = min(hexDist(hexId, seedA), min(hexDist(hexId, seedB), min(hexDist(hexId, seedC), min(hexDist(hexId, seedD), hexDist(hexId, seedE)))));
   float hexBirth = clamp((hexRing + hexHash * ${HEX_JITTER.toFixed(1)}) / ${HEX_MAX_RING.toFixed(1)}, 0.0, 1.0);
   float hexGrow = 1.0 - smoothstep(uHexBuild, uHexBuild + ${GROW_BAND.toFixed(3)}, hexBirth);
 
@@ -175,16 +208,73 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
     hexGrow = max(hexGrow, kb.w * exp(-kb.z * 2.0) * prox);
   }
 
+  // Raw wall mask (pre-hexGrow) kept alongside the grown one: the ghost
+  // flicker below needs to paint on cells that AREN'T built yet, so it reads
+  // hexWallMask0 rather than the *hexGrow-multiplied hexWallMask.
+  float hexWallMask0 = smoothstep(-aa, aa, hexEdge) - smoothstep(HEX_WALL_HALF - aa, HEX_WALL_HALF + aa, hexEdge);
   float hexInterior = (1.0 - smoothstep(-aa, aa, hexEdge)) * hexGrow;
-  float hexWallMask = (smoothstep(-aa, aa, hexEdge) - smoothstep(HEX_WALL_HALF - aa, HEX_WALL_HALF + aa, hexEdge)) * hexGrow;
+  float hexWallMask = hexWallMask0 * hexGrow;
 
-  // ---- rect room lattice ----
-  vec2 roomId = floor(wallUv / uRoomSize);
-  vec2 roomLocal = wallUv - (roomId + 0.5) * uRoomSize;
-  float roomHalf = uRoomSize * 0.5 - ROOM_WALL_HALF;
-  float roomEdge = sdBox(roomLocal, vec2(roomHalf));
-  float roomHash = hash21(roomId * 2.3 + uSeed + 91.7);
-  float roomRing = max(abs(roomId.x), abs(roomId.y));
+  // Pre-birth ghost flicker: unbuilt cells just beyond the build front
+  // shimmer faintly, as if the site is being surveyed ahead of construction
+  // (the old module's "roomGhost/blueprint" idea, reborn for hexes).
+  float ghost = (1.0 - hexGrow) * (1.0 - smoothstep(uHexBuild, uHexBuild + 0.10, hexBirth)) * (0.3 + 0.7 * abs(sin(uTime * 1.7 + hexHash * 20.0)));
+
+  // ---- rect room lattice: irregular hierarchical split — a floor plan, not
+  // graph paper. Each uRoomSize block optionally splits once (level 1,
+  // either axis) and, within that sub-cell, optionally splits again
+  // (level 2, FORCED to the other axis so a block never slivers along one
+  // direction). Both levels carry a MIN_ROOM_DIM guard: a split that would
+  // leave either resulting piece thinner than a closet is skipped, and the
+  // block/sub-cell stays whole. Two levels max — a third level was tried and
+  // rejected (wall-dominated slivers). ----
+  vec2 baseId = floor(wallUv / uRoomSize);
+  vec2 cellMin = baseId * uRoomSize, cellMax = cellMin + uRoomSize;
+  const float MIN_ROOM_DIM = 0.14;
+  float h1 = hash21(baseId + uSeed);
+  bool splitX = h1 < 0.4;
+  if (h1 < 0.8) {
+    float ratio = 0.35 + fract(h1 * 7.31) * 0.3;
+    if (splitX) {
+      float cut = cellMin.x + (cellMax.x - cellMin.x) * ratio;
+      float dimA = cut - cellMin.x, dimB = cellMax.x - cut;
+      if (dimA >= MIN_ROOM_DIM && dimB >= MIN_ROOM_DIM) {
+        if (wallUv.x < cut) cellMax.x = cut; else cellMin.x = cut;
+      }
+    } else {
+      float cut = cellMin.y + (cellMax.y - cellMin.y) * ratio;
+      float dimA = cut - cellMin.y, dimB = cellMax.y - cut;
+      if (dimA >= MIN_ROOM_DIM && dimB >= MIN_ROOM_DIM) {
+        if (wallUv.y < cut) cellMax.y = cut; else cellMin.y = cut;
+      }
+    }
+
+    // Level 2: forced to the axis level 1 did NOT use, sampled from the
+    // level-1 sub-cell (so it's independent per sub-cell, not per block).
+    float h2 = hash21(cellMin * 31.7 + uSeed);
+    if (h2 < 0.5) {
+      float ratio2 = 0.4 + fract(h2 * 11.3) * 0.2;
+      if (!splitX) {
+        float cut2 = cellMin.x + (cellMax.x - cellMin.x) * ratio2;
+        float dimA2 = cut2 - cellMin.x, dimB2 = cellMax.x - cut2;
+        if (dimA2 >= MIN_ROOM_DIM && dimB2 >= MIN_ROOM_DIM) {
+          if (wallUv.x < cut2) cellMax.x = cut2; else cellMin.x = cut2;
+        }
+      } else {
+        float cut2 = cellMin.y + (cellMax.y - cellMin.y) * ratio2;
+        float dimA2 = cut2 - cellMin.y, dimB2 = cellMax.y - cut2;
+        if (dimA2 >= MIN_ROOM_DIM && dimB2 >= MIN_ROOM_DIM) {
+          if (wallUv.y < cut2) cellMax.y = cut2; else cellMin.y = cut2;
+        }
+      }
+    }
+  }
+
+  vec2 roomHalfV = (cellMax - cellMin) * 0.5 - vec2(ROOM_WALL_HALF);
+  float roomEdge = sdBox(wallUv - (cellMin + cellMax) * 0.5, roomHalfV);
+  vec2 roomIdEff = cellMin; // unique per room; do NOT quantize
+  float roomHash = hash21(roomIdEff * 2.3 + uSeed + 91.7);
+  float roomRing = max(abs(baseId.x), abs(baseId.y)); // birth wave stays keyed to the coarse block
   float roomBirth = clamp((roomRing + roomHash * ${ROOM_JITTER.toFixed(2)}) / ${ROOM_MAX_RING.toFixed(1)}, 0.0, 1.0);
   float roomGrow = 1.0 - smoothstep(uRoomBuild, uRoomBuild + ${GROW_BAND.toFixed(3)}, roomBirth);
 
@@ -211,8 +301,13 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
 
   // ---- windowLight: light seen through the wall from inside — brightest
   // just inside the room's own walls, dark at center. A flat cream fill
-  // (first attempt) washed the whole frame and occluded the comb. ----
-  float winRim = smoothstep(-uRoomSize * 0.22, 0.0, roomEdge);
+  // (first attempt) washed the whole frame and occluded the comb.
+  // Companion fix for irregular rooms: the falloff used to key off the
+  // global uRoomSize, so a small split-off room would render uniformly dim
+  // (a silent look regression once rooms stopped being uniform) — key off
+  // each room's own half-dimension instead. ----
+  float roomHalfEff = min(roomHalfV.x, roomHalfV.y);
+  float winRim = smoothstep(-roomHalfEff * 0.45, 0.0, roomEdge);
   vec3 win = mix(COL_WIN_DIM, COL_WIN_HOT, winRim * 0.85);
   win *= 1.0 + uFlash * 0.5;
   win *= uRoomLight * roomAlive;
@@ -221,6 +316,9 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
   vec3 col = COL_DEEP;
   col = mix(col, honey, hexInterior);
   col += hexWallMask * COL_WALL_GLOW * uWallGlow * (1.0 + uBass * 0.3);
+  // Pre-birth ghost flicker on the raw (not-yet-grown) wall mask — surveying
+  // the site ahead of construction.
+  col += COL_WALL_GLOW * hexWallMask0 * ghost * uGhost * 0.25;
 
   // Built rooms take priority, but hex walls bleed through at 0.35 —
   // x-ray cohabitation, so the comb underneath a finished room is still
@@ -234,6 +332,21 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
   float coincide = 1.0 - smoothstep(0.0, ${BOUNDARY_BAND.toFixed(3)}, abs(hexEdge - roomEdge));
   float boundaryMask = coincide * hexWallMask * roomWallMask;
   col += boundaryMask * COL_ACCENT * uShimmer * (0.5 + 0.5 * sin(uTime * 3.0 + hexHash * 30.0)) * (0.7 + 0.3 * uHigh);
+
+  // ---- beat pulse: each flash event (kickFlash, i.e. every beat/onset) re-
+  // rolls which built cells light and in what colour — warm family (vivid
+  // orange/rust-red/cream/amber) with a rare verdigris contrast pop
+  // (~1-in-12 cells·beats). Rides uFlash's decay envelope so pulses land on
+  // the beat rather than lingering. ----
+  float beatRoll = hash21(hexId * 3.1 + uFlashCount * 13.7);
+  float beatSel = step(1.0 - uBeatPulse * 0.4, beatRoll);
+  float hueRoll = hash21(hexId * 5.3 + uFlashCount * 7.7);
+  vec3 pulseCol = hueRoll < 0.30 ? vec3(1.0, 0.55, 0.10)
+               : hueRoll < 0.55 ? vec3(0.95, 0.20, 0.10)
+               : hueRoll < 0.80 ? vec3(1.0, 0.9, 0.55)
+               : hueRoll < 0.92 ? vec3(1.0, 0.75, 0.20)
+               : vec3(0.25, 0.85, 0.65);
+  col += pulseCol * beatSel * uFlash * uBeatPulse * hexInterior * hexAlive * 0.9;
 
   // ---- macro comb: climax scale shift, coordinated with the zoom pull-back.
   // Guarded: uMacro is 0 for ~85% of the track — skip the second lattice
@@ -258,6 +371,26 @@ ${full ? `  float aa = fwidth(wallUv.x) * 1.5;` : `  float aa = 0.0035;`} // fix
     float d = length(wallUv - kg.xy);
     float ring = exp(-pow((d - kg.z * 1.6) * 14.0, 2.0)) * kg.w * exp(-kg.z * 3.2);
     col += COL_KNOCK_GOLD * ring * latticeMask * 1.6;
+  }
+
+  // ---- chalk lines: straight architectural marks with a travelling bright
+  // head, cutting through the hexagons — additive and NOT lattice-masked
+  // (unlike the knock ring above), since these are drawn across everything,
+  // not light travelling along a wall. lm.x is raw age in seconds; the head
+  // reaches B at age 0.5s, then the line persists and fades. ----
+  for (int i = 0; i < ${lineSlots}; i++) {
+    vec4 la = uLineA[i]; vec4 lm = uLineMeta[i];
+    if (lm.y <= 0.0) continue;
+    vec2 bmin = min(la.xy, la.zw) - LINE_REACH, bmax = max(la.xy, la.zw) + LINE_REACH;
+    if (wallUv.x < bmin.x || wallUv.x > bmax.x || wallUv.y < bmin.y || wallUv.y > bmax.y) continue;
+    float prog = clamp(lm.x * 2.0, 0.0, 1.0);
+    float fade = exp(-max(lm.x - 0.5, 0.0) * 2.5) * lm.y;
+    float d = segDistProgress(wallUv, la.xy, la.zw, prog);
+    float core = (1.0 - smoothstep(LINE_HALF, LINE_HALF * 2.5, d)) * fade;
+    vec2 headPos = mix(la.xy, la.zw, prog);
+    float headR = HEAD_R_SCREEN / uZoom;
+    float head = exp(-pow(length(wallUv - headPos) / headR, 2.0) * 8.0) * lm.y * step(lm.x, 0.55);
+    col += vec3(1.0, 0.93, 0.7) * (core * 0.8 + head * 1.2);
   }
 
   // ---- finish: grain, vignette, filmic ----

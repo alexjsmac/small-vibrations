@@ -4,6 +4,7 @@ import {
   WALL_VERT, buildWallFragmentShader,
   HEX_R, ROOM_SIZE,
   KNOCK_SLOTS_FULL, KNOCK_SLOTS_LITE, KNOCK_BOOST_LIFETIME, KNOCK_GLOW_LIFETIME,
+  LINE_SLOTS_FULL, LINE_SLOTS_LITE, LINE_LIFETIME, LINE_MIN_LENGTH,
 } from './wallShader';
 import { Bees } from './bees';
 import { paramsAt, arcAt } from './sections';
@@ -27,6 +28,17 @@ const AMBIENT_KNOCK_SPAN_Y = 1.0;
 /** Continuous rate (knocks/min) used for the `?knock=always` debug affordance. */
 const DEBUG_KNOCK_RATE = 60;
 
+/** Continuous rate (lines/min) used for the `?lines=always` debug affordance. */
+const DEBUG_LINE_RATE = 40;
+/** Fraction of the view span (each axis) a line endpoint samples within. */
+const LINE_SPAN_FRAC = 0.6;
+/** Fraction of the view span a "center-biased" endpoint samples within, so lines visibly cut through rather than skim the edge. */
+const LINE_CENTER_FRAC = 0.33;
+/** Bounded resample attempts to satisfy LINE_MIN_LENGTH — mirrors the small-bounded-retry idiom used elsewhere, never an unbounded loop. */
+const LINE_SPAWN_ATTEMPTS = 6;
+/** Bass-onset coupling: an extra line spawns on top of the Poisson schedule once an act's lineRate reaches this (climax coupling). */
+const LINE_ONSET_RATE_THRESHOLD = 8;
+
 /** Drag-release momentum: friction decay rate and the speed floor below which we snap to a stop (a1 idiom). */
 const MOMENTUM_FRICTION = 2.5;
 const MOMENTUM_STOP_SPEED = 0.0005;
@@ -42,6 +54,11 @@ const VEL_MAX = 1.5;
 const MAX_PAN = 8 * HEX_R;
 
 interface KnockSlot {
+  age: number;
+  active: boolean;
+}
+
+interface LineSlot {
   age: number;
   active: boolean;
 }
@@ -63,8 +80,9 @@ interface ArcOverride {
  *
  * Debug: `?solo=wall|bees` isolates a layer, `?knock=always` forces a
  * steady ambient knock stream (verification affordance for the knock-glow
- * travel + boost pre-build), `?arc=hexBuild,roomBuild,macro,dim` force-
- * overrides those four continuous arc values (comma list of floats).
+ * travel + boost pre-build), `?lines=always` forces a steady chalk-line
+ * stream (same idiom, for the line pool), `?arc=hexBuild,roomBuild,macro,dim`
+ * force-overrides those four continuous arc values (comma list of floats).
  */
 class HiveWall implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -78,6 +96,7 @@ class HiveWall implements Viz {
   private soloWall = true;
   private soloBees = true;
   private forceKnockAlways = false;
+  private forceLinesAlways = false;
   private arcOverride: ArcOverride | null = null;
 
   /** Cover-fit scale, computed in resize() — copied by value into both the wall and bees uniforms each frame/resize (see bees.ts's uCover doc comment on why not shared by reference). */
@@ -89,8 +108,11 @@ class HiveWall implements Viz {
   private bassSlowE = 0;
   private onsetCooldown = 0;
   private flash = 0;
+  /** Beat/flash-event counter — incremented on every kickFlash() call (a1's "each kick = a beat event"), re-rolls the beat-pulse colour selection each time. */
+  private flashCount = 0;
   private flashTimeToNext = 0;
   private knockTimeToNext = 0;
+  private lineTimeToNext = 0;
   /** Previous frame's song time, for edge-triggered 54s/188s boundary detection (old a2-homemakers/index.ts idiom). */
   private lastSongTime = -1;
 
@@ -99,6 +121,11 @@ class HiveWall implements Viz {
   private knockBoostUniformValues!: THREE.Vector4[];
   private knockGlows: KnockSlot[] = [];
   private knockGlowUniformValues!: THREE.Vector4[];
+
+  private lineSlotCount = LINE_SLOTS_FULL;
+  private lines: LineSlot[] = [];
+  private lineAUniformValues!: THREE.Vector4[];
+  private lineMetaUniformValues!: THREE.Vector4[];
 
   /** Pointer/drag-pan state — all scalars, zero per-frame allocation (a1 momentum block, verbatim shape). */
   private held = false;
@@ -117,6 +144,7 @@ class HiveWall implements Viz {
     this.soloWall = !solo || solo === 'wall';
     this.soloBees = !solo || solo === 'bees';
     this.forceKnockAlways = params.get('knock') === 'always';
+    this.forceLinesAlways = params.get('lines') === 'always';
     const arcParam = params.get('arc');
     if (arcParam) {
       const parts = arcParam.split(',').map(Number);
@@ -134,6 +162,13 @@ class HiveWall implements Viz {
     this.knockGlowUniformValues = [];
     for (let i = 0; i < this.knockSlotCount; i++) this.knockGlowUniformValues.push(new THREE.Vector4(0, 0, 0, 0));
 
+    this.lineSlotCount = full ? LINE_SLOTS_FULL : LINE_SLOTS_LITE;
+    for (let i = 0; i < this.lineSlotCount; i++) this.lines.push({ age: 0, active: false });
+    this.lineAUniformValues = [];
+    for (let i = 0; i < this.lineSlotCount; i++) this.lineAUniformValues.push(new THREE.Vector4(0, 0, 0, 0));
+    this.lineMetaUniformValues = [];
+    for (let i = 0; i < this.lineSlotCount; i++) this.lineMetaUniformValues.push(new THREE.Vector4(0, 0, 0, 0));
+
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
@@ -141,7 +176,7 @@ class HiveWall implements Viz {
     const seedFloat = ((seed >>> 0) % 100000) / 100000;
     this.material = new THREE.ShaderMaterial({
       vertexShader: WALL_VERT,
-      fragmentShader: buildWallFragmentShader(full, this.knockSlotCount),
+      fragmentShader: buildWallFragmentShader(full, this.knockSlotCount, this.lineSlotCount),
       depthTest: false,
       depthWrite: false,
       uniforms: {
@@ -166,8 +201,13 @@ class HiveWall implements Viz {
         uMid: { value: 0 },
         uHigh: { value: 0 },
         uFlash: { value: 0 },
+        uFlashCount: { value: 0 },
+        uGhost: { value: 0 },
+        uBeatPulse: { value: 0 },
         uKnockBoost: { value: this.knockBoostUniformValues },
         uKnockGlow: { value: this.knockGlowUniformValues },
+        uLineA: { value: this.lineAUniformValues },
+        uLineMeta: { value: this.lineMetaUniformValues },
       },
     });
     this.quad = new THREE.Mesh(geometry, this.material);
@@ -184,6 +224,10 @@ class HiveWall implements Viz {
 
   private kickFlash(amount: number) {
     this.flash = Math.min(FLASH_CEILING, this.flash + amount);
+    // Every kick is a beat event, whether from a bass onset, a boundary
+    // crossing, or the ambient Poisson schedule — the beat-pulse shader
+    // term re-rolls its cell selection + colour off this counter.
+    this.flashCount++;
   }
 
   private activateKnockBoost(x: number, y: number, strength = 1) {
@@ -262,6 +306,74 @@ class HiveWall implements Viz {
     }
   }
 
+  /**
+   * Chalk-line spawn: endpoints sampled within the current view span
+   * (`scroll ± cover/zoom * LINE_SPAN_FRAC`), with one endpoint per attempt
+   * biased toward the view-center third so a spawned line visibly cuts
+   * through the frame instead of skimming its edge. Segments shorter than
+   * LINE_MIN_LENGTH are resampled, bounded by LINE_SPAWN_ATTEMPTS (small-
+   * bounded-retry idiom — never an unbounded loop).
+   */
+  private activateLine() {
+    let idx = this.lines.findIndex((s) => !s.active);
+    if (idx < 0) idx = 0;
+    const slot = this.lines[idx];
+
+    const cover = this.cover;
+    const zoom = this.material.uniforms.uZoom.value as number;
+    const scroll = this.material.uniforms.uScroll.value as THREE.Vector2;
+    const spanX = (cover.x / zoom) * LINE_SPAN_FRAC;
+    const spanY = (cover.y / zoom) * LINE_SPAN_FRAC;
+
+    let ax = 0, ay = 0, bx = 0, by = 0;
+    for (let attempt = 0; attempt < LINE_SPAWN_ATTEMPTS; attempt++) {
+      const cx = scroll.x + (this.rand() * 2 - 1) * spanX * LINE_CENTER_FRAC;
+      const cy = scroll.y + (this.rand() * 2 - 1) * spanY * LINE_CENTER_FRAC;
+      const fx = scroll.x + (this.rand() * 2 - 1) * spanX;
+      const fy = scroll.y + (this.rand() * 2 - 1) * spanY;
+      if (this.rand() < 0.5) { ax = cx; ay = cy; bx = fx; by = fy; }
+      else { ax = fx; ay = fy; bx = cx; by = cy; }
+      if (Math.hypot(bx - ax, by - ay) >= LINE_MIN_LENGTH) break;
+    }
+
+    slot.active = true;
+    slot.age = 0;
+    this.lineAUniformValues[idx].set(ax, ay, bx, by);
+    this.lineMetaUniformValues[idx].set(0, 1, this.rand(), 0);
+  }
+
+  /**
+   * Ages the line pool. Unlike the knock pools' `w`-holds-strength pattern,
+   * the line meta's x component IS the age the shader reads directly (its
+   * head-travel and fade curves are both keyed off raw seconds) — only y
+   * (strength) needs zeroing to retire a slot for reuse.
+   */
+  private updateLineAges(dt: number) {
+    for (let i = 0; i < this.lines.length; i++) {
+      const slot = this.lines[i];
+      if (!slot.active) continue;
+      slot.age += dt;
+      if (slot.age >= LINE_LIFETIME) {
+        slot.active = false;
+        this.lineMetaUniformValues[i].y = 0;
+      } else {
+        this.lineMetaUniformValues[i].x = slot.age;
+      }
+    }
+  }
+
+  private scheduleLines(dt: number, ratePerMinute: number) {
+    // Poisson process, same idiom as scheduleKnocks/scheduleFlash.
+    const rate = Math.max(0, ratePerMinute) / 60;
+    if (rate <= 0) return;
+    this.lineTimeToNext -= dt;
+    while (this.lineTimeToNext <= 0) {
+      this.activateLine();
+      const u = Math.max(1e-6, this.rand());
+      this.lineTimeToNext += -Math.log(u) / rate;
+    }
+  }
+
   update(dt: number, audio: AudioFrame) {
     const section = paramsAt(audio.time);
     const arc = arcAt(audio.time);
@@ -293,6 +405,10 @@ class HiveWall implements Viz {
       const wy = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_Y;
       this.activateKnockBoost(wx, wy);
       this.activateKnockGlow(wx, wy);
+      // Climax coupling: once an act's baseline lineRate reaches the
+      // threshold (only two-homes-one-wall's 20 does), every bass onset
+      // also spawns an extra chalk line on top of the Poisson schedule.
+      if (p.lineRate >= LINE_ONSET_RATE_THRESHOLD) this.activateLine();
       this.onsetCooldown = ONSET_COOLDOWN;
     }
 
@@ -302,12 +418,18 @@ class HiveWall implements Viz {
     this.scheduleKnocks(dt, this.forceKnockAlways ? DEBUG_KNOCK_RATE : p.knockRate);
     this.updateKnockAges(dt);
 
+    this.scheduleLines(dt, this.forceLinesAlways ? DEBUG_LINE_RATE : p.lineRate);
+    this.updateLineAges(dt);
+
     const du = this.material.uniforms;
     du.uTime.value += dt;
     du.uBass.value = this.bassE;
     du.uMid.value = this.midE;
     du.uHigh.value = this.highE;
     du.uFlash.value = this.flash;
+    du.uFlashCount.value = this.flashCount;
+    du.uGhost.value = p.ghost;
+    du.uBeatPulse.value = p.beatPulse;
 
     du.uHexBuild.value = this.arcOverride?.hexBuild ?? arc.hexBuild;
     du.uRoomBuild.value = this.arcOverride?.roomBuild ?? arc.roomBuild;
