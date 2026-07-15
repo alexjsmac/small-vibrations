@@ -15,7 +15,10 @@
  *   2:34 convergence      — density climbs, all species on, colour
  *                           deliberately held back (restraint before peak)
  *   2:58 full-biosphere    — the maximum, once: full density, spore bursts,
- *                           saturated gold, slow zoom-OUT scale shift
+ *                           saturated gold, slow zoom-OUT scale shift, AND a
+ *                           daughter-cell bubble colony (index.ts's CPU pool)
+ *                           budding off the mother dish, accelerating and
+ *                           crowding/shoving for the rest of the act
  *   3:54 exhale           — hard cut honored discretely: network dissolves
  *                           to drifting spores; one last node glows and
  *                           fades (loop closure back toward act 1)
@@ -77,6 +80,17 @@ export interface ActParams {
   zoom: number;
   /** Strength of the analytic food field added to agent sensors. */
   foodPull: number;
+  /**
+   * 0..1 daughter-cell bubble-colony intensity — index.ts's CPU bubble pool
+   * spawns/grows only while this is > 0, and scales every active bubble's
+   * EFFECTIVE growth target by this value, so it doubles as both the spawn
+   * gate and the exhale drain (crossfading this field to 0 eases every
+   * daughter's target back to 0 with no extra bookkeeping). Zero everywhere
+   * except full-biosphere — the multiplication IS the back-half surprise
+   * the artist asked for ("many of them fighting for the space... move
+   * beyond just that single circle").
+   */
+  bubbles: number;
 }
 
 /** Boundary times in seconds, from the master's 2s RMS/band profile. Track duration: 251.238s. */
@@ -93,7 +107,7 @@ export const ACTS: ActParams[] = [
     speed: 0.05, deposit: 0.15, decay: 0.25,
     fruitGain: 0.05, fruitGlow: 0.1,
     sporeDensity: 1.0, burstRate: 2,
-    throb: 0.2, shimmer: 0.15, sat: 0.9, palMix: 0.1, zoom: 1.0, foodPull: 0.3,
+    throb: 0.2, shimmer: 0.15, sat: 0.9, palMix: 0.1, zoom: 1.0, foodPull: 0.3, bubbles: 0,
   },
   { // 2. First Bloom — discrete hit at 54s: mass spawn burst; veins fatten
     // and throb; first fruiting bodies appear.
@@ -104,7 +118,7 @@ export const ACTS: ActParams[] = [
     speed: 0.09, deposit: 0.45, decay: 0.2,
     fruitGain: 0.25, fruitGlow: 0.4,
     sporeDensity: 0.5, burstRate: 10,
-    throb: 0.6, shimmer: 0.3, sat: 1.0, palMix: 0.2, zoom: 1.0, foodPull: 0.4,
+    throb: 0.6, shimmer: 0.3, sat: 1.0, palMix: 0.2, zoom: 1.0, foodPull: 0.4, bubbles: 0,
   },
   { // 3. Rot — veins wither (decay up, deposit down); palette bruises and
     // desaturates.
@@ -115,7 +129,7 @@ export const ACTS: ActParams[] = [
     speed: 0.06, deposit: 0.15, decay: 0.55,
     fruitGain: 0.1, fruitGlow: 0.2,
     sporeDensity: 0.3, burstRate: 1.5,
-    throb: 0.25, shimmer: 0.15, sat: 0.45, palMix: 0.55, zoom: 1.0, foodPull: 0.2,
+    throb: 0.25, shimmer: 0.15, sat: 0.45, palMix: 0.55, zoom: 1.0, foodPull: 0.2, bubbles: 0,
   },
   { // 4. Stirring — species B activates with visibly DIFFERENT sensing
     // params (wider sensor distance/angle) — a distinct network texture
@@ -127,7 +141,7 @@ export const ACTS: ActParams[] = [
     speed: 0.08, deposit: 0.3, decay: 0.3,
     fruitGain: 0.15, fruitGlow: 0.25,
     sporeDensity: 0.35, burstRate: 4,
-    throb: 0.35, shimmer: 0.25, sat: 0.7, palMix: 0.35, zoom: 1.0, foodPull: 0.35,
+    throb: 0.35, shimmer: 0.25, sat: 0.7, palMix: 0.35, zoom: 1.0, foodPull: 0.35, bubbles: 0,
   },
   { // 5. Convergence — density climbs, all three species on, colour
     // deliberately held back (restraint before the peak: sat well below
@@ -139,12 +153,15 @@ export const ACTS: ActParams[] = [
     speed: 0.09, deposit: 0.4, decay: 0.25,
     fruitGain: 0.2, fruitGlow: 0.3,
     sporeDensity: 0.3, burstRate: 6,
-    throb: 0.4, shimmer: 0.3, sat: 0.55, palMix: 0.3, zoom: 1.0, foodPull: 0.45,
+    throb: 0.4, shimmer: 0.3, sat: 0.55, palMix: 0.3, zoom: 1.0, foodPull: 0.45, bubbles: 0,
   },
   { // 6. Full Biosphere — discrete hit at 178s: THE single maximum (sat
     // 1.0, throb/burstRate/deposit all peak here, exactly once) plus the
     // back-half scale shift: zoom pulls OUT below 1 for the only time in
-    // the track.
+    // the track. `bubbles` goes to 1.0 here ONLY — the daughter-cell colony
+    // (index.ts's CPU bubble pool) spawns, grows, and crowds/shoves through
+    // this whole window, honoring the artist's note to move beyond the
+    // single mother circle into "many of them fighting for the space".
     name: 'full-biosphere',
     activeA: 0.95, activeB: 0.9, activeC: 0.6,
     sensDistA: 0.045, sensDistB: 0.075, sensDistC: 0.028,
@@ -152,7 +169,7 @@ export const ACTS: ActParams[] = [
     speed: 0.11, deposit: 0.55, decay: 0.2,
     fruitGain: 0.3, fruitGlow: 0.55,
     sporeDensity: 0.6, burstRate: 16,
-    throb: 0.85, shimmer: 0.6, sat: 1.0, palMix: 0.15, zoom: 0.72, foodPull: 0.5,
+    throb: 0.85, shimmer: 0.6, sat: 1.0, palMix: 0.15, zoom: 0.72, foodPull: 0.5, bubbles: 1.0,
   },
   { // 7. Exhale — the hard cut at 234s: network dissolves back to drifting
     // spores (sporeDensity climbs back near act 1's 1.0, zoom returns to
@@ -164,7 +181,7 @@ export const ACTS: ActParams[] = [
     speed: 0.04, deposit: 0.08, decay: 0.7,
     fruitGain: 0.05, fruitGlow: 0.15,
     sporeDensity: 0.9, burstRate: 1,
-    throb: 0.15, shimmer: 0.1, sat: 0.6, palMix: 0.1, zoom: 1.0, foodPull: 0.2,
+    throb: 0.15, shimmer: 0.1, sat: 0.6, palMix: 0.1, zoom: 1.0, foodPull: 0.2, bubbles: 0,
   },
 ];
 

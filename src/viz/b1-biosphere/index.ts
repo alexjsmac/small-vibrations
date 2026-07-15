@@ -8,7 +8,7 @@ import {
 } from './physarum';
 import { DISH_VERT, buildDishFragmentShader } from './dishShader';
 import { Spores } from './spores';
-import { paramsAt, arcAt, type ActParams } from './sections';
+import { paramsAt, arcAt, ACTS, CUES, type ActParams } from './sections';
 import { mulberry32 } from '../random';
 
 /** Bass-onset detector (a1/a2's EMA + margin + cooldown recipe): excess over its own slow EMA triggers a small spore burst + flash. */
@@ -52,24 +52,85 @@ const VEL_MAX = 1.5;
 /** Soft pan radius (dish-uv units) — a small looking-around range within/near the dish; hitting it zeroes momentum. */
 const MAX_PAN = 0.16;
 
+/**
+ * Daughter-cell bubble colony (full-biosphere act only, 178-234s): each
+ * active bubble is an independent circular WINDOW into the SAME trail
+ * texture (own offset/rotation/scale, see dishShader.ts's bubble loop), not
+ * a second sim — "one bubble after another... fighting for the space",
+ * per the artist's note. BUBBLE_SLOTS: 14 Full / 10 Lite.
+ */
+const BUBBLE_SLOTS_FULL = 14;
+const BUBBLE_SLOTS_LITE = 10;
+/** Radius at spawn (dish-uv units) — eases toward its (bubbles-scaled) target over BUBBLE_GROW_TAU seconds. */
+const BUBBLE_START_R = 0.03;
+/** Hash-varied per-spawn target radius range (dish-uv units) — the upper bound (0.16) is also dishShader.ts's growthFrac literal; keep the two in sync. */
+const BUBBLE_TARGET_R_MIN = 0.09;
+const BUBBLE_TARGET_R_MAX = 0.16;
+/** Growth (and exhale shrink) time constant, seconds — an asymptotic ease, not a linear ramp. */
+const BUBBLE_GROW_TAU = 2.5;
+/** A daughter above this radius counts as "large" — eligible as a rim-spawn parent ("colonies budding off colonies"). */
+const BUBBLE_LARGE_R = 0.07;
+/** Poisson baseline spawn interval (seconds): accelerates from START to END across BUBBLE_SPAWN_PHASE_WINDOW of the act, then holds. */
+const BUBBLE_SPAWN_INTERVAL_START = 2.5;
+const BUBBLE_SPAWN_INTERVAL_END = 0.7;
+const BUBBLE_SPAWN_PHASE_WINDOW = 0.6;
+/** Spawn-point flash-ring strength (dimmer than a scripted mass burst's 1.0 — "small", per the plan). */
+const BUBBLE_SPAWN_FLASH_STRENGTH = 0.55;
+/** Pairwise/mother repulsion: cushion added to the sum-of-radii overlap test (dish-uv units), and the two acceleration gains (dish-uv/s^2 per unit overlap) — the mother pushes a touch harder so daughters read as crowding/shoving against its edge specifically, not just each other. */
+const BUBBLE_REPEL_PAD = 0.015;
+const BUBBLE_REPEL_ACCEL = 7;
+const BUBBLE_MOTHER_REPEL_ACCEL = 10;
+/** Velocity damping rate (1/s), applied every frame after integrating repulsion. */
+const BUBBLE_DAMPING_RATE = 4;
+/** Soft outer clamp (dish-uv units from dish centre) — the colony never escapes the zoomed-out climax view. */
+const BUBBLE_MAX_DIST = 1.1;
+/** The one act the colony exists in, looked up by name (not a hardcoded index) so this window can never silently drift out of sync with sections.ts. */
+const BUBBLE_ACT_INDEX = ACTS.findIndex((a) => a.name === 'full-biosphere');
+const BUBBLE_ACT_START = CUES[BUBBLE_ACT_INDEX];
+const BUBBLE_ACT_END = CUES[BUBBLE_ACT_INDEX + 1];
+
 interface AgeSlot {
   age: number;
   active: boolean;
 }
 
 /**
+ * One daughter bubble's CPU-side physics state. Its position/radius/seed
+ * live directly in the pooled `bubbleValues[i]` Vector4 (shared BY
+ * REFERENCE with the dishShader uBubble uniform, the same idiom as
+ * foodValues/burstVisValues) — this slot only holds what doesn't fit a
+ * Vector4: this spawn's own hash-varied growth target (EFFECTIVE target is
+ * this scaled by the act's `bubbles` param — see ActParams.bubbles' doc),
+ * velocity (for the pairwise-repulsion "pushing each other aside" physics),
+ * and age (guards against freeing a slot on the very frame it spawns).
+ */
+interface BubbleSlot {
+  active: boolean;
+  growTargetR: number;
+  vx: number;
+  vy: number;
+  age: number;
+}
+
+/**
  * "Icky, Sticky, & Thriving" — the petri-dish biosphere. Composes
  * PhysarumSim (physarum.ts, the GPU slime-mold network) + the dish
- * composite quad (dishShader.ts) + drifting spore motes (spores.ts), all in
- * one self-owned orthographic scene/camera (VizHost's ctx.scene/ctx.camera
- * are unused — same pattern as a1-primordial/a2-hive's fullscreen-shader
- * modules; `render()` is implemented so VizHost's default
+ * composite quad (dishShader.ts) + drifting spore motes (spores.ts) + a CPU
+ * daughter-cell bubble colony (full-biosphere act only — see the
+ * BUBBLE_* constants and BubbleSlot above), all in one self-owned
+ * orthographic scene/camera (VizHost's ctx.scene/ctx.camera are unused —
+ * same pattern as a1-primordial/a2-hive's fullscreen-shader modules;
+ * `render()` is implemented so VizHost's default
  * renderer.render(this.scene, this.camera) is bypassed).
  *
  * Debug: `?solo=veins|spores|fruit` isolates a layer, `?burst=always`
  * forces a steady ambient burst stream, `?food=always` forces a steady
  * nutrient-drop stream (verification affordances for their respective
- * pools), plus the standard `?t=`, `?q=`, `?debug=1`.
+ * pools), plus the standard `?t=`, `?q=`, `?debug=1`. The bubble colony has
+ * no force-always switch — it's gated by ActParams.bubbles (not audio
+ * onsets), so a `?t=` deep link into full-biosphere plus a few repeated
+ * screenshots (each advances a beat of real time — see BRIEFING.md's pane-
+ * physics note) is enough to watch it accumulate.
  */
 class Biosphere implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -114,6 +175,11 @@ class Biosphere implements Viz {
   private burstVisSlots: AgeSlot[] = [];
   private burstVisValues!: THREE.Vector4[];
 
+  private bubbleSlotCount = BUBBLE_SLOTS_FULL;
+  private bubbleSlots: BubbleSlot[] = [];
+  private bubbleValues!: THREE.Vector4[];
+  private bubbleTimeToNext = 0;
+
   /** Set until the first update() call runs the initial warmup — mirrors a1's warmup gate, and (since init() reruns on a mid-song quality toggle) transparently covers quality-reload warmup too. */
   private firstUpdate = true;
   /** Cached from the most recent update(dt, ...) call so render() (called by VizHost after update(), with no dt of its own) can advance sim.step() by the same dt this frame's simulation used. */
@@ -154,6 +220,11 @@ class Biosphere implements Viz {
     this.burstVisValues = [];
     for (let i = 0; i < this.burstVisSlotCount; i++) this.burstVisValues.push(new THREE.Vector4(0, 0, 0, 0));
 
+    this.bubbleSlotCount = this.full ? BUBBLE_SLOTS_FULL : BUBBLE_SLOTS_LITE;
+    for (let i = 0; i < this.bubbleSlotCount; i++) this.bubbleSlots.push({ active: false, growTargetR: 0, vx: 0, vy: 0, age: 0 });
+    this.bubbleValues = [];
+    for (let i = 0; i < this.bubbleSlotCount; i++) this.bubbleValues.push(new THREE.Vector4(0, 0, 0, 0));
+
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     if (solo) {
@@ -171,7 +242,7 @@ class Biosphere implements Viz {
     const trailTexSize = this.full ? TRAIL_TEX_FULL : TRAIL_TEX_LITE;
     this.dishMaterial = new THREE.ShaderMaterial({
       vertexShader: DISH_VERT,
-      fragmentShader: buildDishFragmentShader(this.full, this.foodSlotCount, this.burstVisSlotCount),
+      fragmentShader: buildDishFragmentShader(this.full, this.foodSlotCount, this.burstVisSlotCount, this.bubbleSlotCount),
       depthTest: false,
       depthWrite: false,
       uniforms: {
@@ -192,6 +263,7 @@ class Biosphere implements Viz {
         uFruitGlow: { value: 0 },
         uFood: { value: this.foodValues },
         uBurstVis: { value: this.burstVisValues },
+        uBubble: { value: this.bubbleValues },
         uSoloMode: { value: soloMode },
       },
     });
@@ -317,6 +389,193 @@ class Biosphere implements Viz {
     }
   }
 
+  /**
+   * Spawns one daughter bubble, if a slot is free. Unlike the burst/food
+   * pools this never force-evicts slot 0 when the pool is full — popping a
+   * still-growing daughter to reuse its slot would read as a visible glitch,
+   * so a spawn attempt against a full pool simply misses.
+   *
+   * Position: 50/50 either freshly off the MOTHER's own rim, or off the rim
+   * of an existing "large" daughter (reservoir-sampled among active bubbles
+   * with radius > BUBBLE_LARGE_R, zero allocation) — "colonies budding off
+   * colonies", per the plan. Falls back to the mother's rim if no large
+   * daughter exists yet.
+   */
+  private trySpawnBubble() {
+    let idx = -1;
+    for (let i = 0; i < this.bubbleSlots.length; i++) {
+      if (!this.bubbleSlots[i].active) { idx = i; break; }
+    }
+    if (idx < 0) return;
+
+    let parent = -1;
+    if (this.rand() < 0.5) {
+      let seen = 0;
+      for (let i = 0; i < this.bubbleSlots.length; i++) {
+        if (this.bubbleSlots[i].active && this.bubbleValues[i].z > BUBBLE_LARGE_R) {
+          seen++;
+          if (this.rand() < 1 / seen) parent = i;
+        }
+      }
+    }
+
+    const theta = this.rand() * Math.PI * 2;
+    let cx: number;
+    let cy: number;
+    if (parent >= 0) {
+      const pv = this.bubbleValues[parent];
+      cx = pv.x + Math.cos(theta) * (pv.z + 0.5 * BUBBLE_START_R);
+      cy = pv.y + Math.sin(theta) * (pv.z + 0.5 * BUBBLE_START_R);
+    } else {
+      cx = 0.5 + Math.cos(theta) * (DISH_R + 0.5 * BUBBLE_START_R);
+      cy = 0.5 + Math.sin(theta) * (DISH_R + 0.5 * BUBBLE_START_R);
+    }
+
+    const slot = this.bubbleSlots[idx];
+    slot.active = true;
+    slot.age = 0;
+    slot.growTargetR = BUBBLE_TARGET_R_MIN + this.rand() * (BUBBLE_TARGET_R_MAX - BUBBLE_TARGET_R_MIN);
+    slot.vx = 0;
+    slot.vy = 0;
+    this.bubbleValues[idx].set(cx, cy, BUBBLE_START_R, this.rand());
+    this.activateBurstVis(cx, cy, BUBBLE_SPAWN_FLASH_STRENGTH);
+  }
+
+  /**
+   * Poisson baseline spawn schedule (same exponential-inter-arrival idiom as
+   * scheduleBursts/scheduleFood above): the interval accelerates from
+   * BUBBLE_SPAWN_INTERVAL_START to _END across the first
+   * BUBBLE_SPAWN_PHASE_WINDOW of the full-biosphere act's own window
+   * (BUBBLE_ACT_START..END, looked up by name — see its doc), then holds at
+   * the fast end for the rest of the act — "one bubble after another...
+   * really accelerating", per the artist's note. Gated on `p.bubbles`
+   * (crossfades to 0 into the exhale act, so spawning stops there
+   * naturally) rather than on song time directly, so a debug override that
+   * forced `bubbles` nonzero elsewhere would still spawn correctly.
+   */
+  private scheduleBubbleSpawns(dt: number, p: ActParams, songTime: number) {
+    if (p.bubbles <= 0.001) return;
+    const phase = Math.min(1, Math.max(0, (songTime - BUBBLE_ACT_START) / Math.max(1e-3, BUBBLE_ACT_END - BUBBLE_ACT_START)));
+    const interval = BUBBLE_SPAWN_INTERVAL_START
+      + (BUBBLE_SPAWN_INTERVAL_END - BUBBLE_SPAWN_INTERVAL_START) * Math.min(1, phase / BUBBLE_SPAWN_PHASE_WINDOW);
+    const rate = 1 / interval;
+    this.bubbleTimeToNext -= dt;
+    while (this.bubbleTimeToNext <= 0) {
+      this.trySpawnBubble();
+      const u = Math.max(1e-6, this.rand());
+      this.bubbleTimeToNext += -Math.log(u) / rate;
+    }
+  }
+
+  /**
+   * Per-frame daughter-bubble physics: radius eases toward its
+   * bubbles-scaled target (see ActParams.bubbles' doc — this is also how
+   * the exhale drain works, with no extra bookkeeping); pairwise circle
+   * repulsion pushes overlapping daughters apart (weighted by r^2 so the
+   * larger one moves less) plus repulsion from the immovable mother disk
+   * (radius DISH_R at the dish centre) so daughters crowd AGAINST the
+   * mother's edge and each other and visibly shove, per the artist's note;
+   * velocity damps every frame; a soft outer clamp keeps the whole colony
+   * inside the zoomed-out climax view. N <= 14, so the pairwise O(N^2) pass
+   * is trivial. Zero per-frame allocation: everything below is scalar math
+   * into the pooled BubbleSlot/Vector4 arrays.
+   */
+  private updateBubbles(dt: number, p: ActParams) {
+    const slots = this.bubbleSlots;
+    const values = this.bubbleValues;
+    const n = slots.length;
+    const growEase = 1 - Math.exp(-dt / BUBBLE_GROW_TAU);
+
+    for (let i = 0; i < n; i++) {
+      const slot = slots[i];
+      if (!slot.active) continue;
+      slot.age += dt;
+      const v = values[i];
+      const target = slot.growTargetR * p.bubbles;
+      v.z += (target - v.z) * growEase;
+      if (v.z < 0.01 && slot.age > 0.1) {
+        slot.active = false;
+        v.set(0, 0, 0, 0);
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (!slots[i].active) continue;
+      const vi = values[i];
+      for (let j = i + 1; j < n; j++) {
+        if (!slots[j].active) continue;
+        const vj = values[j];
+        const dx = vj.x - vi.x;
+        const dy = vj.y - vi.y;
+        const dist = Math.max(1e-5, Math.hypot(dx, dy));
+        const minDist = vi.z + vj.z + BUBBLE_REPEL_PAD;
+        if (dist >= minDist) continue;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const overlap = minDist - dist;
+        // Movement share grows with the OTHER bubble's r^2 — the larger of
+        // the pair moves less.
+        const wj = (vi.z * vi.z) / (vi.z * vi.z + vj.z * vj.z + 1e-6);
+        const wi = 1 - wj;
+        const accel = overlap * BUBBLE_REPEL_ACCEL * dt;
+        slots[i].vx -= nx * accel * wi;
+        slots[i].vy -= ny * accel * wi;
+        slots[j].vx += nx * accel * wj;
+        slots[j].vy += ny * accel * wj;
+      }
+
+      // Repel from the mother (an immovable circle, radius DISH_R, at the
+      // dish centre) — daughters spawn straddling its rim by construction,
+      // so this is in mild effect for nearly every active bubble, gently
+      // pushing outward against it.
+      const dxm = vi.x - 0.5;
+      const dym = vi.y - 0.5;
+      const distm = Math.max(1e-5, Math.hypot(dxm, dym));
+      const minDistm = DISH_R + vi.z + BUBBLE_REPEL_PAD;
+      if (distm < minDistm) {
+        const nx = dxm / distm;
+        const ny = dym / distm;
+        const accel = (minDistm - distm) * BUBBLE_MOTHER_REPEL_ACCEL * dt;
+        slots[i].vx += nx * accel;
+        slots[i].vy += ny * accel;
+      }
+    }
+
+    const damp = Math.exp(-BUBBLE_DAMPING_RATE * dt);
+    for (let i = 0; i < n; i++) {
+      const slot = slots[i];
+      if (!slot.active) continue;
+      const v = values[i];
+      v.x += slot.vx * dt;
+      v.y += slot.vy * dt;
+      slot.vx *= damp;
+      slot.vy *= damp;
+
+      const ddx = v.x - 0.5;
+      const ddy = v.y - 0.5;
+      const dCenter = Math.hypot(ddx, ddy);
+      if (dCenter > BUBBLE_MAX_DIST) {
+        v.x = 0.5 + (ddx / dCenter) * BUBBLE_MAX_DIST;
+        v.y = 0.5 + (ddy / dCenter) * BUBBLE_MAX_DIST;
+        slot.vx = 0;
+        slot.vy = 0;
+      }
+    }
+  }
+
+  /** Deactivates every daughter bubble and re-zeros its uniform slot — called on loop-wrap so a new play never inherits the previous play's colony. */
+  private resetBubbles() {
+    for (let i = 0; i < this.bubbleSlots.length; i++) {
+      const slot = this.bubbleSlots[i];
+      slot.active = false;
+      slot.vx = 0;
+      slot.vy = 0;
+      slot.age = 0;
+      this.bubbleValues[i].set(0, 0, 0, 0);
+    }
+    this.bubbleTimeToNext = 0;
+  }
+
   /** Runs the staged warmup: seed agents (if requested) and step the sim `steps` times at a fixed WARMUP_TICK_DT so the network is already formed, regardless of the caller's frame rate. */
   private warmup(p: ActParams, steps: number, reseed: boolean) {
     if (reseed) this.sim.seedAgents(this.rand);
@@ -336,6 +595,20 @@ class Biosphere implements Viz {
       // true) — all three land on a formed network instead of a bare dish
       // waiting for agents to organize live.
       this.warmup(p, WARMUP_STEPS_INIT, true);
+      // Colony seed (the a2 seed-pass rule): a deep link into the climax
+      // must land on an already-crowded colony, not an empty mother that
+      // only starts budding after load. Replays the REAL spawn/physics code
+      // paths from the act start to the current clock at a coarse fixed dt
+      // — deterministic per play seed, and any spawn-flash rings it fires
+      // are aged out by the same loop.
+      if (p.bubbles > 0.001 && audio.time > BUBBLE_ACT_START) {
+        const SEED_DT = 0.25;
+        for (let st = BUBBLE_ACT_START; st < audio.time; st += SEED_DT) {
+          this.scheduleBubbleSpawns(SEED_DT, p, st);
+          this.updateBubbles(SEED_DT, p);
+          this.updateBurstVisAges(SEED_DT);
+        }
+      }
     }
 
     // Loop-wrap: song time jumping backward by more than 10s means the
@@ -345,6 +618,7 @@ class Biosphere implements Viz {
     if (this.lastSongTime >= 0 && audio.time < this.lastSongTime - 10) {
       this.sim.clearTrail();
       this.warmup(p, WARMUP_STEPS_LOOP, true);
+      this.resetBubbles();
     }
 
     // The two scripted hits land as discrete state changes, not crossfades
@@ -371,6 +645,10 @@ class Biosphere implements Viz {
       const [x, y] = this.randomDishPoint();
       this.triggerBurst(x, y, BURST_RADIUS_AMBIENT, BURST_STRENGTH_AMBIENT);
       this.kickFlash(FLASH_KICK_ONSET);
+      // Beat-locked division: every bass onset buds one more daughter, if a
+      // slot is free — the plan's "beat-locked division" on top of the
+      // Poisson baseline below.
+      if (p.bubbles > 0.001) this.trySpawnBubble();
       this.onsetCooldown = ONSET_COOLDOWN;
     }
 
@@ -380,6 +658,9 @@ class Biosphere implements Viz {
 
     this.scheduleFood(dt, this.forceFoodAlways ? DEBUG_FOOD_RATE : 0);
     this.updateFoodAges(dt);
+
+    this.scheduleBubbleSpawns(dt, p, audio.time);
+    this.updateBubbles(dt, p);
 
     this.flash *= Math.exp(-FLASH_DECAY * dt);
 

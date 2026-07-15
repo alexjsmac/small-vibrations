@@ -109,6 +109,16 @@ describe('b1-biosphere sections', () => {
     expect(rot.deposit).toBeLessThan(firstBloom.deposit);
     expect(rot.sat).toBeLessThan(firstBloom.sat);
   });
+
+  it('bubbles (the daughter-cell colony) is nonzero ONLY in full-biosphere', () => {
+    for (const act of ACTS) {
+      if (act.name === 'full-biosphere') {
+        expect(act.bubbles).toBeGreaterThan(0);
+      } else {
+        expect(act.bubbles).toBe(0);
+      }
+    }
+  });
 });
 
 describe('b1-biosphere arcAt', () => {
