@@ -80,14 +80,50 @@ const BUBBLE_SPAWN_FLASH_STRENGTH = 0.55;
 const BUBBLE_REPEL_PAD = 0.015;
 const BUBBLE_REPEL_ACCEL = 7;
 const BUBBLE_MOTHER_REPEL_ACCEL = 10;
-/** Velocity damping rate (1/s), applied every frame after integrating repulsion. */
-const BUBBLE_DAMPING_RATE = 4;
+/** Velocity damping rate (1/s), applied every frame after integrating repulsion+orbit+wander. Lowered from an earlier 4 (round-1 taste note: "everything seems quite static") so motion sustains instead of snapping dead each frame. */
+const BUBBLE_DAMPING_RATE = 2.2;
+/** Tangential (orbit) acceleration magnitude around the CURRENT mother centre (dish-uv/s^2) — direction (CW/CCW) is hash-fixed per bubble from its stored seed, so the colony visibly circulates and daughters overtake/shove past one another. */
+const BUBBLE_ORBIT_ACCEL = 0.10;
+/** Per-bubble sinusoidal wander acceleration magnitude (dish-uv/s^2) — organic jitter on top of the orbit so paths never look mechanical; frequencies/phases are hash-derived from the bubble's seed each frame (no stored state). */
+const BUBBLE_WANDER_ACCEL = 0.08;
+/** Hard speed cap (dish-uv/s) applied to a daughter's velocity after integration — keeps the added orbit/wander/lowered-damping combo from runaway speeds. */
+const BUBBLE_MAX_SPEED = 0.14;
 /** Soft outer clamp (dish-uv units from dish centre) — the colony never escapes the zoomed-out climax view. */
 const BUBBLE_MAX_DIST = 1.1;
 /** The one act the colony exists in, looked up by name (not a hardcoded index) so this window can never silently drift out of sync with sections.ts. */
 const BUBBLE_ACT_INDEX = ACTS.findIndex((a) => a.name === 'full-biosphere');
 const BUBBLE_ACT_START = CUES[BUBBLE_ACT_INDEX];
 const BUBBLE_ACT_END = CUES[BUBBLE_ACT_INDEX + 1];
+
+/**
+ * The mother becomes a physics body (round-2 taste note): a spring-anchored
+ * disc at (0.5, 0.5) that daughters jostle via the reaction half of the
+ * existing mother-repulsion term, plus a crowd-dependent radius that eases
+ * smaller while the colony is dense and back to full DISH_R once it drains
+ * in the exhale (paired with the existing zoom return to 1.0 — "take the
+ * full scene back").
+ */
+/** Spring rate pulling the mother back toward its (0.5, 0.5) anchor (dish-uv/s^2 per unit displacement). */
+const MOTHER_SPRING_RATE = 3.0;
+/** Hard displacement cap (dish-uv units) — "moving slightly", never drifting away. Velocity zeroes on hitting it. Kept firmly small because the roaming colony is often lopsided enough that the MOTHER_COM_PUSH anchor saturates this cap, so this value (not the push) is the real amplitude governor for the sway. */
+const MOTHER_MAX_OFFSET = 0.03;
+/** How hard the mother is pushed away from the colony's mass centroid (fraction of the centroid's own offset from centre) — the non-cancelling driver of the "slight rock" (see updateMother). The MOTHER_MAX_OFFSET cap still bounds the result. */
+const MOTHER_COM_PUSH = 0.12;
+/** Max fractional radius shrink at crowd=1 ("shrink slightly"). */
+const MOTHER_SHRINK_MAX = 0.10;
+/** Radius easing time constant (seconds) toward the crowd-dependent target. */
+const MOTHER_RADIUS_TAU = 3.0;
+
+/**
+ * Pure hash of a bubble's stored seed (`bubbleValues[i].w`) into [0,1),
+ * independent of the shared `rand` stream so a daughter's orbit direction
+ * and wander phase/frequency are fixed for its lifetime and reproducible
+ * every frame from pure math alone — no extra fields, no allocation.
+ */
+function bubbleSeedHash(x: number): number {
+  const s = Math.sin(x * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
+}
 
 interface AgeSlot {
   age: number;
@@ -180,6 +216,14 @@ class Biosphere implements Viz {
   private bubbleValues!: THREE.Vector4[];
   private bubbleTimeToNext = 0;
 
+  /** Mother physics body (CPU state — see the MOTHER_* constants' doc): position, velocity, and current (crowd-eased) radius. Anchor is (0.5, 0.5), rest radius is DISH_R. `motherUniformVec` is the owned THREE.Vector4 bound BY REFERENCE to the dish shader's uMother uniform (same "own the object, mutate in place" idiom as uPan/bubbleValues) — updated via .set() each frame, zero per-frame allocation. */
+  private motherX = 0.5;
+  private motherY = 0.5;
+  private motherVX = 0;
+  private motherVY = 0;
+  private motherR = DISH_R;
+  private motherUniformVec = new THREE.Vector4(0.5, 0.5, DISH_R, 0);
+
   /** Set until the first update() call runs the initial warmup — mirrors a1's warmup gate, and (since init() reruns on a mid-song quality toggle) transparently covers quality-reload warmup too. */
   private firstUpdate = true;
   /** Cached from the most recent update(dt, ...) call so render() (called by VizHost after update(), with no dt of its own) can advance sim.step() by the same dt this frame's simulation used. */
@@ -264,6 +308,7 @@ class Biosphere implements Viz {
         uFood: { value: this.foodValues },
         uBurstVis: { value: this.burstVisValues },
         uBubble: { value: this.bubbleValues },
+        uMother: { value: this.motherUniformVec },
         uSoloMode: { value: soloMode },
       },
     });
@@ -427,8 +472,12 @@ class Biosphere implements Viz {
       cx = pv.x + Math.cos(theta) * (pv.z + 0.5 * BUBBLE_START_R);
       cy = pv.y + Math.sin(theta) * (pv.z + 0.5 * BUBBLE_START_R);
     } else {
-      cx = 0.5 + Math.cos(theta) * (DISH_R + 0.5 * BUBBLE_START_R);
-      cy = 0.5 + Math.sin(theta) * (DISH_R + 0.5 * BUBBLE_START_R);
+      // Rim-spawn off the CURRENT mother position/radius (a physics body
+      // now, not the fixed (0.5, DISH_R) of round 1) — a `?t=` deep link
+      // seeding this loop against an already-displaced/shrunk mother lands
+      // daughters on its actual rim, not a phantom fixed one.
+      cx = this.motherX + Math.cos(theta) * (this.motherR + 0.5 * BUBBLE_START_R);
+      cy = this.motherY + Math.sin(theta) * (this.motherR + 0.5 * BUBBLE_START_R);
     }
 
     const slot = this.bubbleSlots[idx];
@@ -472,15 +521,25 @@ class Biosphere implements Viz {
    * bubbles-scaled target (see ActParams.bubbles' doc — this is also how
    * the exhale drain works, with no extra bookkeeping); pairwise circle
    * repulsion pushes overlapping daughters apart (weighted by r^2 so the
-   * larger one moves less) plus repulsion from the immovable mother disk
-   * (radius DISH_R at the dish centre) so daughters crowd AGAINST the
-   * mother's edge and each other and visibly shove, per the artist's note;
-   * velocity damps every frame; a soft outer clamp keeps the whole colony
-   * inside the zoomed-out climax view. N <= 14, so the pairwise O(N^2) pass
-   * is trivial. Zero per-frame allocation: everything below is scalar math
-   * into the pooled BubbleSlot/Vector4 arrays.
+   * larger one moves less) plus repulsion from the mother disk (now a
+   * physics body — CURRENT motherX/Y/R, not the fixed (0.5, DISH_R) of
+   * round 1) so daughters crowd AGAINST the mother's edge and each other and
+   * visibly shove; the reaction half of that mother-repel push is applied
+   * to the mother's own velocity (see updateMother below), scaled by the
+   * daughter/mother mass ratio r^2, so the mother rocks from being bumped.
+   * On top of that (round-2 taste note: "these bubbles should be
+   * energetically moving around the scene"), each active daughter also gets
+   * a tangential orbit acceleration around the current mother centre
+   * (direction hash-fixed per bubble from its seed) plus a sinusoidal
+   * wander acceleration (hash-varied phase/frequency from the same seed,
+   * pure math, no stored state) so orbits never look mechanical. Velocity
+   * damps every frame (lower rate than round 1 so motion sustains) and is
+   * speed-capped after integration; a soft outer clamp keeps the whole
+   * colony inside the zoomed-out climax view. N <= 14, so the pairwise
+   * O(N^2) pass is trivial. Zero per-frame allocation: everything below is
+   * scalar math into the pooled BubbleSlot/Vector4 arrays.
    */
-  private updateBubbles(dt: number, p: ActParams) {
+  private updateBubbles(dt: number, p: ActParams, t: number) {
     const slots = this.bubbleSlots;
     const values = this.bubbleValues;
     const n = slots.length;
@@ -524,21 +583,52 @@ class Biosphere implements Viz {
         slots[j].vy += ny * accel * wj;
       }
 
-      // Repel from the mother (an immovable circle, radius DISH_R, at the
-      // dish centre) — daughters spawn straddling its rim by construction,
-      // so this is in mild effect for nearly every active bubble, gently
-      // pushing outward against it.
-      const dxm = vi.x - 0.5;
-      const dym = vi.y - 0.5;
+      // Repel from the mother — now a physics body at (motherX, motherY)
+      // with radius motherR, not an immovable fixed circle. Daughters spawn
+      // straddling its rim by construction, so this is in mild effect for
+      // nearly every active bubble, gently pushing outward against it.
+      const dxm = vi.x - this.motherX;
+      const dym = vi.y - this.motherY;
       const distm = Math.max(1e-5, Math.hypot(dxm, dym));
-      const minDistm = DISH_R + vi.z + BUBBLE_REPEL_PAD;
+      const minDistm = this.motherR + vi.z + BUBBLE_REPEL_PAD;
       if (distm < minDistm) {
         const nx = dxm / distm;
         const ny = dym / distm;
-        const accel = (minDistm - distm) * BUBBLE_MOTHER_REPEL_ACCEL * dt;
-        slots[i].vx += nx * accel;
-        slots[i].vy += ny * accel;
+        const accelMag = (minDistm - distm) * BUBBLE_MOTHER_REPEL_ACCEL * dt;
+        slots[i].vx += nx * accelMag;
+        slots[i].vy += ny * accelMag;
+        // Reaction on the mother: same accel magnitude, opposite direction,
+        // scaled by the mass ratio (daughterR^2 / motherR^2) — a big
+        // daughter (~0.16 vs 0.48) is ~1/9, "moving slightly"; typical
+        // daughters land closer to 1/16-1/50.
+        const massRatio = (vi.z * vi.z) / (this.motherR * this.motherR);
+        this.motherVX -= nx * accelMag * massRatio;
+        this.motherVY -= ny * accelMag * massRatio;
       }
+
+      // Orbit: tangential acceleration around the current mother centre,
+      // direction hash-fixed per bubble from its stored seed (values[i].w)
+      // so a given daughter always circulates the same way for its life.
+      const rx = vi.x - this.motherX;
+      const ry = vi.y - this.motherY;
+      const rlen = Math.max(1e-5, Math.hypot(rx, ry));
+      const dir = bubbleSeedHash(vi.w * 3.7 + 1.1) < 0.5 ? 1 : -1;
+      const tx = (-ry / rlen) * dir;
+      const ty = (rx / rlen) * dir;
+      slots[i].vx += tx * BUBBLE_ORBIT_ACCEL * dt;
+      slots[i].vy += ty * BUBBLE_ORBIT_ACCEL * dt;
+
+      // Wander: per-bubble sinusoidal drift, hash-varied phase/frequency
+      // derived fresh from the seed every frame — pure math, no allocation,
+      // no extra stored fields.
+      const w1 = 0.5 + bubbleSeedHash(vi.w * 5.21 + 2.3) * 0.8;
+      const w2 = 0.5 + bubbleSeedHash(vi.w * 7.77 + 9.4) * 0.8;
+      const phi1 = bubbleSeedHash(vi.w * 3.14 + 6.6) * Math.PI * 2;
+      const phi2 = bubbleSeedHash(vi.w * 4.44 + 8.8) * Math.PI * 2;
+      const wx = Math.sin(t * w1 + phi1);
+      const wy = Math.cos(t * w2 + phi2);
+      slots[i].vx += wx * BUBBLE_WANDER_ACCEL * dt;
+      slots[i].vy += wy * BUBBLE_WANDER_ACCEL * dt;
     }
 
     const damp = Math.exp(-BUBBLE_DAMPING_RATE * dt);
@@ -550,6 +640,15 @@ class Biosphere implements Viz {
       v.y += slot.vy * dt;
       slot.vx *= damp;
       slot.vy *= damp;
+
+      // Speed cap: the orbit+wander+lowered-damping combo can otherwise run
+      // away over many frames. N <= 14, plain hypot is plenty cheap.
+      const speed = Math.hypot(slot.vx, slot.vy);
+      if (speed > BUBBLE_MAX_SPEED) {
+        const sc = BUBBLE_MAX_SPEED / speed;
+        slot.vx *= sc;
+        slot.vy *= sc;
+      }
 
       const ddx = v.x - 0.5;
       const ddy = v.y - 0.5;
@@ -563,7 +662,91 @@ class Biosphere implements Viz {
     }
   }
 
-  /** Deactivates every daughter bubble and re-zeros its uniform slot — called on loop-wrap so a new play never inherits the previous play's colony. */
+  /**
+   * Per-frame mother physics (round-2 taste note): a spring pulls it back
+   * toward its (0.5, 0.5) anchor against the jostle velocity accumulated by
+   * updateBubbles' mother-repel reaction above, with its own damping and a
+   * hard displacement cap (zeroes velocity on hitting it) — the mother
+   * visibly rocks back and forth as daughters bump it, never drifts away.
+   * Radius eases toward a crowd-dependent target: denser colony -> smaller
+   * mother ("shrink slightly"); crowd -> 0 in the exhale as the colony
+   * drains -> motherR eases back to full DISH_R, which combined with the
+   * existing zoom return to 1.0 "takes the full scene back" with no extra
+   * staging. Writes the result into motherUniformVec (uMother) in place —
+   * zero per-frame allocation.
+   */
+  private updateMother(dt: number) {
+    // Colony mass balance: sum daughter mass (r^2) for the crowd-shrink AND
+    // the mass-weighted centroid for the sway. Instantaneous collision
+    // reactions (updateBubbles' massRatio kicks) mostly cancel across a
+    // near-symmetric ring, so on their own the mother barely twitches
+    // (~1e-4 uv — verified invisible). The centroid does NOT cancel: as the
+    // roaming colony is momentarily lopsided (and as it orbits), its centre
+    // of mass sweeps around, and the mother is pushed the OPPOSITE way — a
+    // continuous, legible "slight rock... based on the interactions with the
+    // other smaller bubbles" (round-2 taste note) rather than a dead value.
+    let crowd = 0;
+    let comX = 0;
+    let comY = 0;
+    let totalW = 0;
+    const slots = this.bubbleSlots;
+    const values = this.bubbleValues;
+    for (let i = 0; i < slots.length; i++) {
+      if (!slots[i].active) continue;
+      const v = values[i];
+      const w = v.z * v.z;
+      crowd += w;
+      comX += v.x * w;
+      comY += v.y * w;
+      totalW += w;
+    }
+    // Anchor: nudged away from the colony's centre of mass. With no colony
+    // (totalW 0) this is exactly (0.5, 0.5), so acts 1-5 and a drained
+    // exhale spring to the true centre — unchanged.
+    let anchorX = 0.5;
+    let anchorY = 0.5;
+    if (totalW > 1e-6) {
+      anchorX = 0.5 - MOTHER_COM_PUSH * (comX / totalW - 0.5);
+      anchorY = 0.5 - MOTHER_COM_PUSH * (comY / totalW - 0.5);
+    }
+
+    // Spring back toward the (COM-biased) anchor.
+    const dx = this.motherX - anchorX;
+    const dy = this.motherY - anchorY;
+    this.motherVX += -MOTHER_SPRING_RATE * dx * dt;
+    this.motherVY += -MOTHER_SPRING_RATE * dy * dt;
+
+    this.motherX += this.motherVX * dt;
+    this.motherY += this.motherVY * dt;
+
+    const damp = Math.exp(-2.5 * dt);
+    this.motherVX *= damp;
+    this.motherVY *= damp;
+
+    // Hard displacement cap (measured from the true centre, not the anchor):
+    // zero velocity on hitting it so the mother never overshoots into a
+    // visible drift.
+    const ddx = this.motherX - 0.5;
+    const ddy = this.motherY - 0.5;
+    const d = Math.hypot(ddx, ddy);
+    if (d > MOTHER_MAX_OFFSET) {
+      this.motherX = 0.5 + (ddx / d) * MOTHER_MAX_OFFSET;
+      this.motherY = 0.5 + (ddy / d) * MOTHER_MAX_OFFSET;
+      this.motherVX = 0;
+      this.motherVY = 0;
+    }
+
+    // Crowd shrink: target radius from the summed daughter mass (r^2),
+    // relative to the mother's own rest area.
+    crowd /= DISH_R * DISH_R;
+    const targetR = DISH_R * (1 - MOTHER_SHRINK_MAX * Math.min(1, crowd));
+    const radiusEase = 1 - Math.exp(-dt / MOTHER_RADIUS_TAU);
+    this.motherR += (targetR - this.motherR) * radiusEase;
+
+    this.motherUniformVec.set(this.motherX, this.motherY, this.motherR, 0);
+  }
+
+  /** Deactivates every daughter bubble and re-zeros its uniform slot, and resets the mother to its rest state (0.5, 0.5, DISH_R, zero velocity) — called on loop-wrap so a new play never inherits the previous play's colony or a jostled/shrunk mother. */
   private resetBubbles() {
     for (let i = 0; i < this.bubbleSlots.length; i++) {
       const slot = this.bubbleSlots[i];
@@ -574,6 +757,12 @@ class Biosphere implements Viz {
       this.bubbleValues[i].set(0, 0, 0, 0);
     }
     this.bubbleTimeToNext = 0;
+    this.motherX = 0.5;
+    this.motherY = 0.5;
+    this.motherVX = 0;
+    this.motherVY = 0;
+    this.motherR = DISH_R;
+    this.motherUniformVec.set(0.5, 0.5, DISH_R, 0);
   }
 
   /** Runs the staged warmup: seed agents (if requested) and step the sim `steps` times at a fixed WARMUP_TICK_DT so the network is already formed, regardless of the caller's frame rate. */
@@ -605,7 +794,8 @@ class Biosphere implements Viz {
         const SEED_DT = 0.25;
         for (let st = BUBBLE_ACT_START; st < audio.time; st += SEED_DT) {
           this.scheduleBubbleSpawns(SEED_DT, p, st);
-          this.updateBubbles(SEED_DT, p);
+          this.updateBubbles(SEED_DT, p, st);
+          this.updateMother(SEED_DT);
           this.updateBurstVisAges(SEED_DT);
         }
       }
@@ -660,7 +850,8 @@ class Biosphere implements Viz {
     this.updateFoodAges(dt);
 
     this.scheduleBubbleSpawns(dt, p, audio.time);
-    this.updateBubbles(dt, p);
+    this.updateBubbles(dt, p, audio.time);
+    this.updateMother(dt);
 
     this.flash *= Math.exp(-FLASH_DECAY * dt);
 

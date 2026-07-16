@@ -78,6 +78,13 @@ uniform vec4 uBurstVis[${burstSlots}];
 // rotation, and hue lean. Pooled Vector4s mutated in place by index.ts, zero
 // per-frame allocation on either side.
 uniform vec4 uBubble[${bubbleSlots}];
+// Mother physics body (index.ts's updateMother, round-2 taste pass): xy =
+// current dish-uv centre (spring-anchored to (0.5,0.5), displaced by
+// daughter jostle), z = current (crowd-eased) radius, w unused. Default
+// (0.5, 0.5, DISH_R, 0) — every mother formula below is written so that
+// default value reduces algebraically to the pre-round-2 fixed-dish code
+// (offset 0, scale 1), so acts 1-5 and solo modes stay pixel-identical.
+uniform vec4 uMother;
 // 0 = all layers (ground+veins+fruit+events), 1 = veins-only isolation
 // (?solo=veins), 2 = fruit-only isolation (?solo=fruit) — both isolation
 // modes force a flat neutral ground so the additive layer reads on
@@ -189,7 +196,10 @@ vec2 hash2(float p) {
 
 void main() {
   vec2 dishUv = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan;
-  float distC = length(dishUv - vec2(0.5));
+  // distC is now measured from the mother's CURRENT centre (uMother.xy),
+  // not the fixed (0.5, 0.5) — at the default uMother this is identical to
+  // round-1's distC.
+  float distC = length(dishUv - uMother.xy);
 
 ${full ? `  float aa = fwidth(distC) * 1.5;` : `  float aa = 0.006;`} // fixed epsilon on Lite: no derivatives on that path
 
@@ -201,30 +211,46 @@ ${full ? `  float aa = fwidth(distC) * 1.5;` : `  float aa = 0.006;`} // fixed e
   // a faint glass-rim highlight (sells "petri dish"). Solo modes (veins/
   // fruit isolation) override to a flat neutral so the additive layer
   // above reads on contrast instead of near-black. Mother-only — daughters
-  // get their own ground inside cellRender in the bubble loop below. ----
+  // get their own ground inside cellRender in the bubble loop below. edgeDist
+  // uses uMother.z (the mother's current, crowd-eased radius) in place of
+  // the fixed DISH_R; noise sampling (dishUv) is left in screen/dish space,
+  // NOT remapped — only the trail-derived veins/fruit sample below rides the
+  // mother's jostle+shrink. ----
   vec3 ground;
   if (uSoloMode > 0.5) {
     ground = vec3(0.5, 0.5, 0.5);
   } else {
-    ground = groundAt(dishUv, DISH_R - distC, aa, 1.0, uTime);
+    ground = groundAt(dishUv, uMother.z - distC, aa, 1.0, uTime);
   }
+
+  // Mother trail-sample uv: the shrunken/displaced mother window remapped
+  // back into the trail's fixed DISH_R sim space, so the vein/fruit network
+  // compresses INTO the shrunken dish and rides its jostle (the sim itself
+  // stays in fixed space — physarum.ts is untouched). At the default uMother
+  // (0.5, 0.5, DISH_R) this reduces to dishUv exactly (offset 0, scale 1).
+  vec2 motherSampleUv = vec2(0.5) + (dishUv - uMother.xy) * (DISH_R / uMother.z);
 
   // ---- veins: the mother's own sample of the shared veinsAt above (hueLean
   // 0 = the plain, unleaned palette). ----
-  vec3 veins = veinsAt(dishUv, throbAmt, uShimmer, uHigh, energyLift, 0.0, uTime);
+  vec3 veins = veinsAt(motherSampleUv, throbAmt, uShimmer, uHigh, energyLift, 0.0, uTime);
 
   // ---- fruiting bodies: from the trail's A channel (the slow persistence
   // integrator, physarum.ts's trail-diffuse pass) — soft glowing colonies
   // with a slow breathing pulse; brightness also lifts on uFlash.
   // Mother-only (the plan's daughter spec covers ground+veins+rim only). ----
-  vec4 trailSample = texture2D(uTrail, dishUv);
+  vec4 trailSample = texture2D(uTrail, motherSampleUv);
   float fruit = trailSample.a;
   float fruitBand = smoothstep(0.35, 0.75, fruit);
   float breathe = 0.7 + 0.3 * sin(uTime * 0.6 + dishUv.x * 12.0 + dishUv.y * 7.0);
   vec3 fruitCol = vec3(1.0, 0.85, 0.35) * fruitBand * breathe * uFruitGlow * (1.0 + uFlash * 0.7) * (0.6 + 0.4 * uEnergy);
 
   // ---- events: burst flashes (radial gold ring, ~0.5s attack/decay) and
-  // faint warm glow at nutrient drops. Mother-only. ----
+  // faint warm glow at nutrient drops. Mother-only. Positions (b.xy/fo.xy)
+  // stay in FIXED sim space (index.ts's randomDishPoint/pointer mapping,
+  // unremapped) rather than following uMother — their sub-pixel display
+  // drift under the mother's small (<=0.05) offset is acceptable, and these
+  // are momentary flashes, not the persistent trail network that needs to
+  // visually compress with the dish. ----
   vec3 events = vec3(0.0);
   for (int i = 0; i < ${burstSlots}; i++) {
     vec4 b = uBurstVis[i];
@@ -244,10 +270,11 @@ ${full ? `  float aa = fwidth(distC) * 1.5;` : `  float aa = 0.006;`} // fixed e
   // right up to the rim and the trail blur bleeds a little past it, so
   // unmasked veins smear ugly gold blobs OUTSIDE the dish (verified live at
   // the climax — a growth escaping at 3 o'clock). Trail-derived layers
-  // (veins, fruit) are clipped just past DISH_R; EVENTS are exempt — burst
-  // rings are momentary flashes, not trail smear, and daughter bubbles
-  // spawn (and flash) OUTSIDE the mother's rim by construction. ----
-  float inside = 1.0 - smoothstep(DISH_R - 0.004, DISH_R + 0.012, distC);
+  // (veins, fruit) are clipped just past uMother.z (the mother's current
+  // radius, replacing the fixed DISH_R); EVENTS are exempt — burst rings
+  // are momentary flashes, not trail smear, and daughter bubbles spawn (and
+  // flash) OUTSIDE the mother's rim by construction. ----
+  float inside = 1.0 - smoothstep(uMother.z - 0.004, uMother.z + 0.012, distC);
   veins *= inside;
   fruitCol *= inside;
 
