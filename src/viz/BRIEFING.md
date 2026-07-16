@@ -255,6 +255,55 @@ something that happens *now*, at a moment, and is gone.
   visual on one. Share structural constants (seed cells, split chunks) as
   exported source-of-truth data/GLSL text instead.
 
+## Lessons from b1 "Icky, Sticky, & Thriving" (the petri dish — ratchet, July 2026)
+
+- **GPU Physarum is now a proven house pattern** (`b1-biosphere/physarum.ts`):
+  agent state in a ping-pong FBO (one texel per agent), a trail FBO with
+  3×3 diffuse + per-channel decay, and deposits written by a `THREE.Points`
+  draw whose VERTEX shader texture-fetches the agent texture (one static
+  `aUv` attribute; the `webgl_gpgpu_birds` idiom). 262k agents Full / 65k
+  Lite runs at 380/180 fps in the throttled dev pane. Species can be
+  DERIVED from the texel coordinate (`floor(vUv.y * 3)`) instead of stored
+  — every pass agrees for free.
+- **`THREE.AdditiveBlending` multiplies source RGB by source ALPHA**
+  (`SrcAlphaFactor`). A data-texture pass that deliberately writes alpha
+  0 (to protect a channel owned by another pass) silently zeroes its whole
+  output under the preset. Use `CustomBlending` with ONE/ONE on RGB and
+  ZERO/ONE on alpha. Symptom: an all-zero readback from a pass that
+  "obviously" writes.
+- **dt-scale every accumulation rate in a multi-tick sim.** Decay used
+  `exp(-rate*dt)` but deposit/gain were flat per-tick amounts — so the
+  equilibrium depended on tick RATE, and the fixed-dt warmup loop (plus
+  Lite-vs-Full substep counts) saturated the trail to solid white in
+  seconds. Every "amount added per tick" must be a per-second rate × the
+  substep's own dt, or warmup, Lite, and Full all live in different worlds.
+- **Additive multi-channel palettes wash to white at saturation.** Summing
+  three species colours where all channels clamp to 1 turned the climax
+  into a pale plasma ball. Fix: hue-preserving intensity compression —
+  blend the HUE by per-channel weight, cap the total intensity, and add a
+  small cream lift only above a high total. Below the cap it is
+  algebraically identical to the plain sum, so sparse acts are untouched.
+- **Mask additive layers to the world's physical bounds.** The trail blur
+  bleeds past the dish rim; the ground darkened out there but the additive
+  vein layer didn't care, smearing glow outside the glass. One
+  `smoothstep` interior mask on every additive term.
+- **An authored envelope needs a named consumer.** `arcAt` (the energy
+  curve with the discrete boundary steps) was built, exported, and fully
+  unit-tested — and consumed by nothing; every check passed. When
+  reviewing: for each exported curve/param, name the uniform it feeds.
+- **Browser-pane clock advances ONLY while fronted, and only screenshots
+  front it.** `wait` does not run rAF; a "wait 3s then read state" plan
+  reads the same frame twice. To verify time-gated events: either force
+  the event via the instance handle (`__sv.host.current` — private methods
+  are callable from JS) and screenshot immediately, or deep-link past the
+  boundary with `?t=` and read uniforms. Clicks in the pane land in
+  SCREENSHOT-pixel space, not native canvas pixels.
+- **Sim + seeded-warmup answers the `?t=` deep-link problem for
+  self-organizing systems**: ~180 fixed-dt ticks at the current act's
+  params lands every cold load / quality reload on a formed network
+  (fresh per-play seed means each load is a different specimen — a
+  feature, not a bug).
+
 ## Workflow: from master WAV to shipped visuals
 
 1. Profile the track's master (2s RMS + low/high bands) → section table.
@@ -319,12 +368,15 @@ Starting sketches only — concept per track is decided with the user:
 
 - **a1 They Come Marching** ✅ — void → stirring dust → fragments →
   condensation into first forms → the march → dissolve.
-- **a2 Homemakers** — construction/architecture: cells, combs, tunnels
-  assembling; geometry accreting piece by piece.
+- **a2 Homemakers** ✅ — the golden wall: hex comb + human rooms negotiating
+  one wax surface; crawler agents build it; chalk-line wounds heal.
 - **a3 Biome Dominoes** — interdependence and cascade: chains of elements
   triggering one another; one falls, others follow.
-- **b1 Icky, Sticky, & Thriving** — maximal teeming life: dense, wet,
-  swarming textures; the album's peak of biomass.
+- **b1 Icky, Sticky, & Thriving** ✅ — the petri-dish biosphere: GPU
+  Physarum vein networks (spore gold/orchid/chartreuse on aubergine),
+  fruiting bodies, spore bursts; tap drops a nutrient. Alex's premise:
+  "full life... many components and forms coming together, with all the
+  ugliness... a full biosphere."
 - **b2 Terminal Taxonomy** — cataloguing the dying: specimens isolated,
   pinned, labeled; order imposed as life drains; rust ascendant.
 - **b3 Sterile Breath** — the emptied world: barely anything left; the a1
