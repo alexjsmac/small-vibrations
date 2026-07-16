@@ -69,7 +69,7 @@ test('browse entry: mic-skip reveals nav controls and hides the overlay', async 
   await page.click('#mic-skip');
 
   await expect(page.locator('#mic-overlay')).toBeHidden();
-  // controls() is rendered 3x (rail + two sheet variants for mobile) —
+  // controls() is rendered 2x (rail + the sheet's single shared cluster) —
   // scope to the rail's copy so the locator isn't a strict-mode violation.
   await expect(page.locator('#rail .js-next')).toBeVisible();
   await expect(page.locator('#rail .js-prev')).toBeVisible();
@@ -104,3 +104,42 @@ for (const q of ['full', 'lite'] as const) {
     expect(luminance).toBeGreaterThan(MIN_MEAN_LUMINANCE);
   });
 }
+
+test('mobile: stage is full-bleed and never shrinks for the sheet overlay; liner notes read in browse', async ({ page }) => {
+  // The mobile redesign's core regressions: (1) the stage used to be a flex
+  // sibling of the sheet, losing real estate to it in every mode; (2) the
+  // sheet's now-playing/liner block used to be matched-only, so liner notes
+  // were unreachable while browsing on mobile. Pin both here.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('');
+  await page.click('#mic-skip'); // → browse mode, no mic
+
+  await waitForRenderLoop(page);
+
+  // dvh/dvw can differ from the raw viewport by a subpixel or two depending
+  // on rounding — assert "fills the viewport", not bit-exact equality.
+  const closeTo = (actual: number, expected: number, tolerance = 2) =>
+    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tolerance);
+
+  const stageBox = await page.locator('.stage').boundingBox();
+  expect(stageBox).not.toBeNull();
+  closeTo(stageBox!.x, 0);
+  closeTo(stageBox!.y, 0);
+  closeTo(stageBox!.width, 375);
+  closeTo(stageBox!.height, 812);
+
+  // The sheet is a fixed overlay, not a layout sibling — it must be
+  // positioned within/against the viewport (not pushed off below it) while
+  // the stage above stays untouched at full size.
+  const sheetBox = await page.locator('#sheet').boundingBox();
+  expect(sheetBox).not.toBeNull();
+  expect(sheetBox!.y).toBeLessThan(812);
+  const stageBoxAfterSheet = await page.locator('.stage').boundingBox();
+  closeTo(stageBoxAfterSheet!.width, 375);
+  closeTo(stageBoxAfterSheet!.height, 812);
+
+  // The liner-notes fix: on mobile this block used to be `display:none`
+  // outside `matched` — it must carry real text in browse too.
+  const linerText = await page.locator('#sheet-liner').textContent();
+  expect(linerText?.trim().length).toBeGreaterThan(0);
+});

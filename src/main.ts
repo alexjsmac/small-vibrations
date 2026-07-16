@@ -28,15 +28,45 @@ let visual: VisualState = 'choose';
 let idx = 0;
 let trackStart = performance.now();
 
+// --- chrome auto-fade timer ---
+//
+// #app.chrome-idle fades the floating overlays (mic status, brand mark,
+// plate frame, now-plate, peek bar) — see styles.css. Purely event-driven
+// (setTimeout, no rAF/per-frame work). `sheetSnap` (declared below with the
+// sheet drag logic) gates arming: reading the sheet at half/full suppresses
+// the fade entirely; on desktop there's no sheet to open, so it always arms.
+//
+// Suppression also requires the sheet to actually be on screen (computed
+// display, not just the `display:none` check baked into the mobile media
+// query) — sheetSnap is plain JS state, so it doesn't reset itself when a
+// mobile viewport left at half/full is then resized past the breakpoint
+// into desktop; without this check that stale snap would wrongly suppress
+// the desktop fade forever.
+const CHROME_IDLE_MS = 4000;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function armChromeIdle() {
+  if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+  const sheetOnScreen = getComputedStyle(refs.sheet).display !== 'none';
+  if (sheetOnScreen && (sheetSnap === 'half' || sheetSnap === 'full')) return; // you're reading — don't fade
+  idleTimer = setTimeout(() => root.classList.add('chrome-idle'), CHROME_IDLE_MS);
+}
+function wakeChrome() {
+  root.classList.remove('chrome-idle');
+  armChromeIdle();
+}
+
 function setVisual(v: VisualState) {
   visual = v;
   renderChrome(refs, v, idx);
+  wakeChrome(); // a mode change (e.g. a match landing) should surface the chrome
 }
 
 async function go(nextIdx: number) {
   idx = (nextIdx + TRACKS.length) % TRACKS.length;
   trackStart = performance.now();
   renderChrome(refs, visual, idx);
+  wakeChrome(); // a new track — matched or manually browsed — wakes the chrome
   try {
     await host.load(TRACKS[idx]);
   } catch (err) {
@@ -128,33 +158,101 @@ if (!refs.stage.requestFullscreen) {
 refs.railToggle.addEventListener('click', () => refs.rail.classList.add('collapsed'));
 refs.spineToggle.addEventListener('click', () => refs.rail.classList.remove('collapsed'));
 
-// --- mobile bottom sheet (tap to toggle, drag to resize) ---
+// --- mobile bottom sheet (tap peek↔half, drag between peek/half/full) ---
+//
+// The sheet is a fixed overlay (see styles.css); only its `transform:
+// translateY(...)` moves. We track the currently-settled snap as state
+// (`sheetSnap`) and, while dragging, the live "visible height" in px
+// (distance from the peek bar's top edge down to the viewport bottom).
+// Settled positions are recomputed from window.innerHeight so a resize
+// (rotation, PWA chrome changing) doesn't leave a stale snap point.
 
-const SHEET_OPEN = 392, SHEET_CLOSED = 58;
-let sheetOpen = true, sy = 0, sh0 = 0, sheetMoved = false, sheetDragging = false;
+type SheetSnap = 'peek' | 'half' | 'full';
+let sheetSnap: SheetSnap = 'peek';
+let sy = 0, dragStart = 0, dragVisible = 0, sheetMoved = false, sheetDragging = false;
 
-function setSheetHeight(h: number, dragging: boolean) {
-  refs.sheet.style.height = `${h}px`;
-  refs.sheet.style.transition = dragging ? 'none' : 'height 0.5s cubic-bezier(0.7,0,0.2,1)';
+/** Visible height (px) of the sheet at each snap point, recomputed live —
+ *  peek tracks the peek bar's actual rendered size (safe-area included). */
+function snapVisiblePx(snap: SheetSnap): number {
+  if (snap === 'peek') return refs.sheetPeek.getBoundingClientRect().height;
+  const vh = window.innerHeight;
+  return snap === 'half' ? vh * 0.46 : vh * 0.85;
 }
-refs.sheetHandle.addEventListener('pointerdown', (e) => {
-  try { refs.sheetHandle.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-  sy = e.clientY; sh0 = sheetOpen ? SHEET_OPEN : SHEET_CLOSED; sheetMoved = false; sheetDragging = true;
-  setSheetHeight(sh0, true);
+
+function applySheetTransform(visiblePx: number, dragging: boolean) {
+  const total = refs.sheet.getBoundingClientRect().height; // fixed at 85dvh regardless of snap
+  refs.sheet.style.transition = dragging ? 'none' : '';
+  refs.sheet.style.transform = `translateY(${Math.max(0, total - visiblePx)}px)`;
+}
+
+/** Re-apply the currently-settled snap's position (e.g. after a resize) without treating it as a new interaction. */
+function reapplySheetSnap() {
+  refs.root.dataset.sheet = sheetSnap;
+  applySheetTransform(snapVisiblePx(sheetSnap), false);
+}
+
+function setSheetSnap(snap: SheetSnap) {
+  sheetSnap = snap;
+  reapplySheetSnap();
+  wakeChrome(); // lifts fade suppression immediately if we just left half/full
+}
+
+reapplySheetSnap(); // establish the initial peek position before first paint-relevant work
+window.addEventListener('resize', reapplySheetSnap);
+
+refs.sheetPeek.addEventListener('pointerdown', (e) => {
+  try { refs.sheetPeek.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  sy = e.clientY;
+  dragStart = snapVisiblePx(sheetSnap);
+  dragVisible = dragStart;
+  sheetMoved = false; sheetDragging = true;
+  applySheetTransform(dragVisible, true);
 });
-refs.sheetHandle.addEventListener('pointermove', (e) => {
+refs.sheetPeek.addEventListener('pointermove', (e) => {
   if (!sheetDragging) return;
   const dy = sy - e.clientY;
   if (Math.abs(dy) > 4) sheetMoved = true;
-  setSheetHeight(Math.max(SHEET_CLOSED, Math.min(SHEET_OPEN, sh0 + dy)), true);
+  const min = snapVisiblePx('peek'), max = snapVisiblePx('full');
+  dragVisible = Math.max(min, Math.min(max, dragStart + dy));
+  applySheetTransform(dragVisible, true);
 });
-refs.sheetHandle.addEventListener('pointerup', () => {
+function finishSheetDrag() {
   if (!sheetDragging) return;
   sheetDragging = false;
-  const cur = parseFloat(refs.sheet.style.height) || SHEET_OPEN;
-  sheetOpen = sheetMoved ? cur > 200 : !sheetOpen;
-  setSheetHeight(sheetOpen ? SHEET_OPEN : SHEET_CLOSED, false);
+  if (!sheetMoved) {
+    // Tap: toggle peek↔half (a tap while full collapses it to peek).
+    setSheetSnap(sheetSnap === 'peek' ? 'half' : 'peek');
+    return;
+  }
+  let nearest: SheetSnap = 'peek', best = Infinity;
+  (['peek', 'half', 'full'] as const).forEach((candidate) => {
+    const d = Math.abs(snapVisiblePx(candidate) - dragVisible);
+    if (d < best) { best = d; nearest = candidate; }
+  });
+  setSheetSnap(nearest);
+}
+refs.sheetPeek.addEventListener('pointerup', finishSheetDrag);
+refs.sheetPeek.addEventListener('pointercancel', finishSheetDrag);
+
+// --- chrome wake sources ---
+//
+// Any pointer interaction with the chrome (sheet/peek bar, rail, any
+// button) wakes it — EXCEPT the canvas itself: feeding the organisms
+// mid-recording must not summon UI. A single delegated listener excluding
+// the one element that must stay silent is simpler and cheaper than
+// enumerating every chrome container.
+root.addEventListener('pointerdown', (e) => {
+  if (e.target === host.canvas) return;
+  wakeChrome();
 });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') wakeChrome();
+});
+
+// --- ?clean=1: unconditional zero-chrome capture mode ---
+if (new URLSearchParams(location.search).get('clean') === '1') {
+  root.classList.add('clean');
+}
 
 // --- keyboard ---
 
@@ -209,8 +307,10 @@ setInterval(() => {
   if (visual !== 'matched' && visual !== 'browse') return;
   const dur = TRACKS[idx].duration;
   const el = Math.min(dur, (performance.now() - trackStart) / 1000);
-  refs.progressBar.style.height = `${dur ? Math.round((el / dur) * 100) : 0}%`;
+  const pct = dur ? Math.round((el / dur) * 100) : 0;
+  refs.progressBar.style.height = `${pct}%`;
   refs.progressClock.textContent = `${mmss(el)} / ${mmss(dur)}`;
+  refs.sheetHairline.style.width = `${pct}%`; // mobile peek bar's progress hairline
 }, 500);
 
 // NOTE: no top-level await here. The entry chunk must finish evaluating before
