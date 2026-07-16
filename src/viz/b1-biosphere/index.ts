@@ -250,6 +250,11 @@ class Biosphere implements Viz {
     this.forceBurstAlways = params.get('burst') === 'always';
     this.forceFoodAlways = params.get('food') === 'always';
     const soloMode = solo === 'veins' ? 1 : solo === 'fruit' ? 2 : 0;
+    // [PROTOTYPE] Background treatment toggle (?bg=1 / ?bg=microscope): the
+    // culture-medium substrate + microscope optic. Default 0 = the committed
+    // black look, so the shader is unchanged unless explicitly opted in.
+    const bgParam = params.get('bg');
+    const bgStrength = bgParam && bgParam !== '0' && bgParam !== 'off' ? 1 : 0;
 
     this.full = quality.level === 'full';
     this.foodSlotCount = this.full ? FOOD_SLOTS_FULL : FOOD_SLOTS_LITE;
@@ -310,6 +315,7 @@ class Biosphere implements Viz {
         uBubble: { value: this.bubbleValues },
         uMother: { value: this.motherUniformVec },
         uSoloMode: { value: soloMode },
+        uBg: { value: bgStrength },
       },
     });
     this.dishQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.dishMaterial);
