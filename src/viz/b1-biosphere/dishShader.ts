@@ -92,12 +92,6 @@ uniform vec4 uMother;
 // daughter-bubble colony is skipped entirely in solo modes (a mother-only
 // debug affordance).
 uniform float uSoloMode;
-// [PROTOTYPE] Background treatment strength: 0 (default) = the committed
-// black/vignette look, 1 = the culture-medium substrate + microscope optic
-// prototype. Wired from index.ts's ?bg= debug param so the default preview
-// stays clean and the look can be A/B'd. Every prototype term below
-// multiplies through uBg, so at 0 the shader is pixel-identical to round 2.
-uniform float uBg;
 
 const float DISH_R = ${DISH_R.toFixed(4)};
 // Fixed AA epsilon for daughter-bubble rims — daughters never have screen-
@@ -200,20 +194,21 @@ vec2 hash2(float p) {
   return vec2(a, b) * 2.0 - 1.0;
 }
 
-// [PROTOTYPE] Culture medium — the living substrate the dish sits IN, filling
-// the negative space instead of collapsing to black. Slow-churning aubergine
-// fbm plus faint "ghosted hyphae": a shrunken, heavily-dimmed sample of the
-// same trail network spread across the whole field, so the biosphere reads as
-// extending beyond the glass. Kept well below the dish's own brightness so the
-// dish stays the in-focus subject.
+// Culture medium — the living substrate the dish sits IN, filling the
+// negative space instead of collapsing to black. Slow-churning aubergine fbm
+// plus faint "ghosted hyphae": a shrunken, heavily-dimmed sample of the same
+// trail network spread across the whole field, so the biosphere reads as
+// extending beyond the glass. Tuned ~30% below the evaluation prototype so it
+// stays well under the dish's own brightness and never competes with the
+// colony — the dish is always the in-focus subject.
 vec3 cultureMedium(vec2 p, float t) {
   float m = fbm(p * 3.0 + t * 0.02);
   float m2 = fbm(p * 6.5 - t * 0.015);
-  vec3 base = vec3(0.08, 0.035, 0.10) * (0.55 + 1.0 * m);
-  base += vec3(0.04, 0.018, 0.055) * m2;
+  vec3 base = vec3(0.056, 0.025, 0.072) * (0.55 + 1.0 * m);
+  base += vec3(0.028, 0.013, 0.04) * m2;
   vec3 ghost = texture2D(uTrail, p * 0.42 + 0.29).rgb;
   float gl = ghost.r + ghost.g + ghost.b * 0.7;
-  base += vec3(0.22, 0.15, 0.08) * gl * 0.4;
+  base += vec3(0.22, 0.15, 0.08) * gl * 0.28;
   return base;
 }
 
@@ -244,11 +239,10 @@ ${full ? `  float aa = fwidth(distC) * 1.5;` : `  float aa = 0.006;`} // fixed e
     ground = vec3(0.5, 0.5, 0.5);
   } else {
     ground = groundAt(dishUv, uMother.z - distC, aa, 1.0, uTime);
-    // [PROTOTYPE, uBg-gated] Outside the dish rim, blend the near-black ground
-    // toward the living culture medium so the negative space is substrate, not
-    // void. uBg 0 (default) = a no-op → identical to the committed look.
+    // Outside the dish rim, blend the near-black ground toward the living
+    // culture medium so the negative space is substrate, not void.
     float outside = smoothstep(uMother.z - 0.01, uMother.z + 0.06, distC);
-    ground = mix(ground, cultureMedium(dishUv, uTime), outside * uBg);
+    ground = mix(ground, cultureMedium(dishUv, uTime), outside);
   }
 
   // Mother trail-sample uv: the shrunken/displaced mother window remapped
@@ -369,21 +363,18 @@ ${full ? `  float aa = fwidth(distC) * 1.5;` : `  float aa = 0.006;`} // fixed e
   col = mix(vec3(lum), col, uSat);
   col = mix(col, col * vec3(1.08, 0.85, 1.12), uPalMix);
 
-  // [PROTOTYPE] Microscope optic over the whole frame: aspect-corrected so
-  // the vignette and rings are truly circular on a wide canvas (uCover is
-  // (aspect, 1)). Faint concentric lens rings + a cool chromatic fringe at
-  // the periphery + a deep circular optic vignette — the black becomes the
-  // eyepiece, and the whole frame reads as "specimen under the scope".
+  // Microscope optic over the whole frame: aspect-corrected so the vignette
+  // and rings are truly circular on a wide canvas (uCover is (aspect, 1)).
+  // Faint concentric lens rings + a cool chromatic fringe at the periphery +
+  // a circular optic vignette — the negative space becomes the eyepiece, and
+  // the whole frame reads as "specimen under the scope". Rings/fringe tuned
+  // ~30% below the evaluation prototype so they frame without competing.
   vec2 fp = (vUv - 0.5) * uCover;
   float rf = length(fp);
   float rings = 0.5 + 0.5 * sin(rf * 90.0);
-  col += vec3(0.55, 0.5, 0.7) * pow(rings, 6.0) * 0.04 * smoothstep(0.05, 0.5, rf) * uBg;
-  col = mix(col, col * vec3(0.8, 0.9, 1.2), smoothstep(0.4, 0.95, rf) * 0.7 * uBg);
-  // Vignette: crossfade from the original elliptical one to the aspect-correct
-  // circular optic as uBg rises (0 = committed look, 1 = microscope prototype).
-  float vigOrig = smoothstep(1.25, 0.35, length(vUv - 0.5) * 1.6);
-  float vigOptic = smoothstep(1.02, 0.32, rf * 1.35);
-  float vig = mix(vigOrig, vigOptic, uBg);
+  col += vec3(0.55, 0.5, 0.7) * pow(rings, 6.0) * 0.026 * smoothstep(0.05, 0.5, rf);
+  col = mix(col, col * vec3(0.8, 0.9, 1.2), smoothstep(0.4, 0.95, rf) * 0.48);
+  float vig = smoothstep(1.02, 0.32, rf * 1.35);
   col *= vig;
   col = 1.0 - exp(-col * 2.2);
   gl_FragColor = vec4(col, 1.0);
