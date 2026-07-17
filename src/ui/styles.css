@@ -312,31 +312,122 @@ html, body {
 }
 .link-btn:hover { color: var(--cream); }
 
-/* --- Mobile bottom sheet --- */
+/* --- Mobile bottom sheet ---
+   A fixed overlay (never a flex sibling of .stage — the canvas must not
+   resize when this moves). Total box height is pinned at 85dvh; the three
+   snap states (peek/half/full) only change its `transform: translateY(...)`,
+   set from main.ts (compositor-friendly, matches the sheet's own CSS
+   transition unless a drag is in progress, in which case main.ts sets
+   `transition: none` inline for 1:1 finger tracking). */
 
 .sheet {
-  display: none; flex: none; height: 392px;
-  background: var(--deep-2); border-top: 1px solid var(--line);
+  display: none; flex-direction: column;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  height: 85dvh;
+  background: var(--rail-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
   overflow: hidden;
-  transition: height 0.5s cubic-bezier(0.7, 0, 0.2, 1);
+  transition: transform 0.5s cubic-bezier(0.7, 0, 0.2, 1);
+  will-change: transform;
 }
-.sheethandle {
-  width: 100%; padding: 14px 0 10px; background: transparent; border: none;
+
+/* peek bar — always present (grip + one-line label + progress hairline),
+   the drag/tap target for all three snap states. Its own bottom padding
+   carries the safe-area inset so the peek row clears the home indicator
+   even when it's the only part of the sheet on screen. */
+.sheetpeek {
+  position: relative; flex: none; width: 100%;
+  padding: 11px 20px calc(11px + env(safe-area-inset-bottom));
   cursor: grab; user-select: none; touch-action: none;
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
 }
-.sheethandle:active { cursor: grabbing; }
-.sheetgrip { width: 34px; height: 4px; border-radius: 2px; background: rgba(236, 228, 207, 0.3); }
-.sheethandle:active .sheetgrip { background: rgba(236, 228, 207, 0.55); }
-.sheetbody { padding: 2px 22px 20px; }
+.sheetpeek:active { cursor: grabbing; }
+.sheethairline {
+  position: absolute; top: 0; left: 0; width: 0%; height: 1px;
+  background: var(--cream); box-shadow: 0 0 4px rgba(236, 228, 207, 0.6);
+  transition: width 0.5s linear, opacity 0.6s ease;
+}
+.sheetgrip {
+  width: 34px; height: 4px; border-radius: 2px; background: rgba(236, 228, 207, 0.3);
+  transition: opacity 0.6s ease;
+}
+.sheetpeek:active .sheetgrip { background: rgba(236, 228, 207, 0.55); }
+.sheetpeek-label { transition: opacity 0.6s ease; }
+
+/* scrollable body — hidden at peek (the sheet's own height clips it, this
+   just also stops it from capturing scroll/focus while off-screen) */
+.sheetbody {
+  flex: 1; min-height: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 4px 22px calc(20px + env(safe-area-inset-bottom));
+}
+#app[data-sheet="peek"] .sheetbody { display: none; }
+
 .sheet .trow { padding: 6px 8px; }
 .sheet .ttitle { font-size: 13px; }
+
+/* full-state tracklist */
+.sheet-tracklist { display: none; }
+#app[data-sheet="full"] .sheet-tracklist { display: block; }
+
+/* now-playing/liner block — shown in BOTH half and full, and (per showTrack
+   in Frame.ts) in both browse and matched. This is the liner-notes fix:
+   it used to be a matched-only block. */
 .sheet-nowplaying { display: none; }
-.sheet-now-title { font-size: 26px; margin-top: 8px; margin-bottom: 12px; }
-#app[data-mode="matched"] .sheet-tracklist { display: none; }
-#app[data-mode="matched"] .sheet-nowplaying { display: block; }
-.sheet .railctls { gap: 8px; }
+#app[data-sheet="half"] .sheet-nowplaying,
+#app[data-sheet="full"]  .sheet-nowplaying { display: block; }
+.sheet-now-title { font-size: 26px; margin-top: 8px; margin-bottom: 4px; }
+.sheet-now-meta {
+  font: 400 11px var(--mono); letter-spacing: 0.14em;
+  color: rgba(236, 228, 207, 0.5); margin-bottom: 16px;
+}
+
+/* fixed album colophon — full-state only, below the now-playing/liner block */
+.sheet-album-note { display: none; }
+#app[data-sheet="full"] .sheet-album-note { display: block; }
+
+.sheet .railctls { display: none; gap: 8px; margin-top: 18px; }
+#app[data-sheet="half"] .sheet .railctls,
+#app[data-sheet="full"]  .sheet .railctls { display: flex; }
 .sheet .ctl { flex: 1; text-align: center; justify-content: center; }
+
+/* --- Chrome auto-fade (main.ts arms/wakes a 4s idle timer) ---
+   Floating overlays fade to invisible when #app carries .chrome-idle.
+   Canvas taps never wake it (feeding the viz mid-recording must not summon
+   UI); the sheet at half/full suppresses arming entirely (you're reading).
+   The rail itself does NOT fade — it has its own fold already. */
+.mic-status, .brand-mobile, .plate-frame, .now-plate {
+  transition: opacity 0.6s ease;
+}
+#app.chrome-idle .mic-status,
+#app.chrome-idle .brand-mobile,
+#app.chrome-idle .plate-frame,
+#app.chrome-idle .now-plate,
+#app.chrome-idle .sheetpeek-label,
+#app.chrome-idle .sheethairline {
+  opacity: 0;
+}
+/* the grip stays as a faint affordance rather than vanishing entirely */
+#app.chrome-idle .sheetgrip {
+  opacity: 0.12;
+}
+
+/* --- ?clean=1: unconditional zero-chrome capture mode ---
+   Reels capture + the July 30 projection-rig mode. The choose overlay and
+   listening ripple are modal states, not chrome, so they're untouched —
+   this is for browse/matched viewing only. Debug HUD is exempt (a dev
+   tool, gated separately by ?debug=1) — deliberately not listed below. */
+#app.clean .rail,
+#app.clean .mic-status,
+#app.clean .brand-mobile,
+#app.clean .plate-frame,
+#app.clean .now-plate,
+#app.clean .sheet {
+  display: none !important;
+}
 
 /* --- Debug HUD (?debug=1) --- */
 
@@ -348,15 +439,22 @@ html, body {
 
 button[hidden] { display: none !important; }
 
-/* --- Mobile layout --- */
+/* --- Mobile layout ---
+   Widened past a plain width check so a landscape phone (short viewport,
+   coarse pointer) gets this treatment too, not the 392px desktop rail. */
 
-@media (max-width: 720px) {
-  #app { flex-direction: column; }
+@media (max-width: 720px), ((pointer: coarse) and (max-height: 520px)) {
   .rail { display: none; }
-  .sheet { display: block; }
-  /* The sleeve only appears once there's a track to read (matched/browse). */
-  #app[data-mode="choose"] .sheet,
-  #app[data-mode="listening"] .sheet { display: none; }
+  .sheet { display: flex; }
+
+  /* The stage is the whole screen in EVERY mode — fixed inset:0, never a
+     flex sibling sized by the sheet. dvh/dvw so the iOS URL-bar collapse
+     doesn't leave a stale gap. The sheet moves over it as an overlay
+     (transform only, see above) — the canvas never resizes on sheet drag. */
+  .stage {
+    position: fixed; inset: 0;
+    width: 100dvw; height: 100dvh;
+  }
 
   .plate-frame { inset: 14px; }
   .mic-status { top: calc(40px + env(safe-area-inset-top)); right: 22px; }
@@ -368,8 +466,15 @@ button[hidden] { display: none !important; }
     font-size: 9px; letter-spacing: 0.32em;
   }
 
-  .now-plate { bottom: 26px; left: 22px; }
-  .plate-title { font-size: 34px; }
+  /* The museum plate's identity moves into the peek label + sheet on
+     mobile — desktop keeps .now-plate as-is. Matches the base rule's
+     selector specificity (id + attribute + class) so this override wins
+     on source order rather than needing !important. */
+  #app[data-mode="matched"] .now-plate,
+  #app[data-mode="browse"]  .now-plate,
+  .now-plate {
+    display: none;
+  }
 
   .choose-title { font-size: 30px; }
   .choose-sub { font-size: 13px; margin-bottom: 24px; }
@@ -380,6 +485,4 @@ button[hidden] { display: none !important; }
   .ripple span:nth-child(3) { inset: 44px; }
   .listening-head { font-size: 10px; letter-spacing: 0.28em; }
   .listening-sub { font-size: 14px; }
-
-  .sheet { padding-bottom: env(safe-area-inset-bottom); }
 }

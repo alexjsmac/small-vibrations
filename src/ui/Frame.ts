@@ -42,8 +42,17 @@ export interface FrameRefs {
 
   // mobile bottom sheet
   sheet: HTMLDivElement;
-  sheetHandle: HTMLDivElement;
+  /** The peek bar — always visible; drag target (peek↔half↔full) + tap target (peek↔half). */
+  sheetPeek: HTMLDivElement;
+  sheetPeekLabel: HTMLSpanElement;
+  /** 1px playback-progress hairline across the peek bar's top edge. */
+  sheetHairline: HTMLDivElement;
+  sheetBody: HTMLDivElement;
+  /** now-playing/liner block — shown in both half and full (browse AND matched, see showTrack). */
+  sheetPlateEyebrow: HTMLDivElement;
   sheetNowTitle: HTMLDivElement;
+  sheetNowMeta: HTMLDivElement;
+  sheetLinerLabel: HTMLSpanElement;
   sheetLiner: HTMLDivElement;
 }
 
@@ -99,6 +108,7 @@ function controls(fsTarget: string): string {
 
 export function mountFrame(root: HTMLElement): FrameRefs {
   root.dataset.mode = 'choose';
+  root.dataset.sheet = 'peek'; // mobile sheet starts collapsed so visuals lead — see main.ts snap logic
   root.innerHTML = `
     <aside class="rail" id="rail">
       <div class="railbody">
@@ -183,24 +193,34 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     </div>
 
     <div class="sheet" id="sheet">
-      <div class="sheethandle" id="sheet-handle">
+      <div class="sheetpeek" id="sheet-peek">
+        <div class="sheethairline" id="sheet-hairline"></div>
         <span class="sheetgrip"></span>
-        <span class="eyebrow" id="sheet-label">Inner Sleeve</span>
+        <span class="eyebrow sheetpeek-label" id="sheet-peek-label">Inner Sleeve</span>
       </div>
-      <div class="sheetbody">
-        <div class="sheet-tracklist">
+      <div class="sheetbody" id="sheet-body">
+        <div class="sheet-tracklist" id="sheet-tracklist">
           <div class="eyebrow">Side A</div>
           ${rowsFor('A')}
           <div class="eyebrow gap">Side B</div>
           ${rowsFor('B')}
-          ${controls('stage')}
         </div>
-        <div class="sheet-nowplaying">
-          <div class="eyebrow soft">Now playing · matched by ear</div>
+
+        <div class="sheet-nowplaying" id="sheet-nowplaying">
+          <div class="eyebrow soft" id="sheet-plate-eyebrow">Plate A1 · Specimen 01</div>
           <div class="disp sheet-now-title" id="sheet-now-title">—</div>
+          <div class="sheet-now-meta" id="sheet-now-meta"></div>
+          <div class="eyebrow liner-label">Liner Notes — <span id="sheet-liner-label">Small Vibrations</span></div>
           <div class="liner-text" id="sheet-liner"></div>
-          ${controls('stage')}
         </div>
+
+        <div class="sheet-album-note" id="sheet-album-note">
+          <div class="rule"></div>
+          <div class="eyebrow liner-label">${ALBUM.catalog} · Album Note</div>
+          <div class="liner-text">${esc(ALBUM_NOTE)}</div>
+        </div>
+
+        ${controls('stage')}
       </div>
     </div>
   `;
@@ -227,10 +247,16 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     railNowMeta:   q<HTMLDivElement>('#rail-now-meta'),
     linerLabel:    q<HTMLSpanElement>('#liner-label'),
     linerText:     q<HTMLDivElement>('#liner-text'),
-    sheet:         q<HTMLDivElement>('#sheet'),
-    sheetHandle:   q<HTMLDivElement>('#sheet-handle'),
-    sheetNowTitle: q<HTMLDivElement>('#sheet-now-title'),
-    sheetLiner:    q<HTMLDivElement>('#sheet-liner'),
+    sheet:             q<HTMLDivElement>('#sheet'),
+    sheetPeek:         q<HTMLDivElement>('#sheet-peek'),
+    sheetPeekLabel:    q<HTMLSpanElement>('#sheet-peek-label'),
+    sheetHairline:     q<HTMLDivElement>('#sheet-hairline'),
+    sheetBody:         q<HTMLDivElement>('#sheet-body'),
+    sheetPlateEyebrow: q<HTMLDivElement>('#sheet-plate-eyebrow'),
+    sheetNowTitle:     q<HTMLDivElement>('#sheet-now-title'),
+    sheetNowMeta:      q<HTMLDivElement>('#sheet-now-meta'),
+    sheetLinerLabel:   q<HTMLSpanElement>('#sheet-liner-label'),
+    sheetLiner:        q<HTMLDivElement>('#sheet-liner'),
   };
 }
 
@@ -246,22 +272,27 @@ export function renderChrome(refs: FrameRefs, state: VisualState, idx: number) {
   const showTrack = state === 'matched' || state === 'browse';
 
   // museum plate + rail/sheet now-playing
-  refs.plateEyebrow.textContent = `Plate ${sideId(t)} · Specimen 0${idx + 1}`;
+  const eyebrow = `Plate ${sideId(t)} · Specimen 0${idx + 1}`;
+  refs.plateEyebrow.textContent = eyebrow;
   refs.plateTitle.textContent = t.title;
   refs.plateMeta.textContent = plateMeta(t);
   refs.railNowTitle.textContent = t.title;
   refs.railNowMeta.textContent = plateMeta(t);
+  refs.sheetPlateEyebrow.textContent = eyebrow;
   refs.sheetNowTitle.textContent = t.title;
+  refs.sheetNowMeta.textContent = plateMeta(t);
 
-  // liner notes
+  // liner notes — showTrack (matched||browse) gates the track-specific note,
+  // exactly like the desktop rail; the sheet mirrors this on mobile in BOTH
+  // browse and matched (the liner-notes fix — it used to be matched-only).
   refs.linerLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : ALBUM.title;
   const liner = showTrack ? (NOTES[t.id] ?? ALBUM_NOTE) : ALBUM_NOTE;
   refs.linerText.textContent = liner;
+  refs.sheetLinerLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : ALBUM.title;
   refs.sheetLiner.textContent = liner;
 
-  // sheet handle label
-  const sheetLabel = refs.sheet.querySelector('#sheet-label') as HTMLElement;
-  if (sheetLabel) sheetLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : 'Inner Sleeve';
+  // peek bar label — one line, identity at a glance even collapsed
+  refs.sheetPeekLabel.textContent = showTrack ? `Plate ${sideId(t)} · ${t.title}` : 'Inner Sleeve';
 
   // active track row (only highlighted while browsing)
   refs.root.querySelectorAll<HTMLElement>('.trow[data-idx]').forEach((row) => {
