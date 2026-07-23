@@ -255,6 +255,49 @@ something that happens *now*, at a moment, and is gone.
   visual on one. Share structural constants (seed cells, split chunks) as
   exported source-of-truth data/GLSL text instead.
 
+## Lessons from a3 "Biome Dominoes" (the excitable lattice — ratchet, July 2026)
+
+- **Excitable medium is a new house pattern** (`a3-biome-dominoes/
+  excitableField.ts`): a Barkley/FitzHugh-Nagumo reaction in a single ping-pong
+  half-float FBO — `.r`=activation `u` (diffuses → travelling waves), `.g`=
+  recovery `v` (the refractory "dominoes stand back up" channel). ONE fragment
+  pass/tick (no agent/deposit passes — simpler than Physarum). Clamp `u` to
+  [0,1] each tick so the reaction term stays bounded/stable. **Fixed virtual
+  laplacian grid** (`SIM_GRID`, `uTexel = 1/256`) decoupled from storage
+  resolution keeps wave speed/chain-length identical across Lite/Full/warmup —
+  tie the laplacian to texel size and doubling resolution halves uv-space wave
+  speed (retunes the whole piece). Rendered per-cell through a Voronoi shader
+  (whole cell samples the field at its feature point → a continuous wave reads
+  as discrete domino hops).
+- **Spare texture channels carry per-cell state cheaply.** The lattice-rewire
+  feature (walls that break apart + reform as waves pass) reuses the field
+  FBO's unused `.b`/`.a`: `.b` = an integer GENERATION counter (bumped on the
+  upward `u` crossing of `FIRE_T=0.6`), `.a` = a 0..1 transition PHASE. Zero new
+  passes/targets. The display slides each cell's nucleus between generation
+  targets over the phase → the tessellation genuinely reorganizes. `INIT_FRAG`'s
+  `(0,0,0,1)` = generation 0 settled, so clearField/loop-wrap reset for free,
+  and a `rate=0` act freezes the lattice by construction (offset ≡ anchor). 25
+  cache-friendly `.ba` fetches for a moved-feature-point Voronoi cost nothing
+  measurable (413 fps Lite at the densest act).
+- **Texel-SNAP any per-cell read of an integer stored in a LINEAR texture.**
+  Reading a generation counter at a cell's home uv bilinearly blends the 4
+  covering texels; across a wave seam that blends e.g. 3↔4 → `floor()` flickers
+  and replays the slide backward. Snap to the storage-texel centre (`(floor(uv*
+  size)+0.5)/size`) and `round()` — then every fragment of the cell reads one
+  coherent value. (Needs a `uFieldSize` = storage texels uniform.)
+- **Gate a per-cell transition on the previous one finishing** (`phase>=0.999`
+  before re-triggering) so a rapid re-fire mid-slide can't pop the animated
+  quantity — caps one pending transition per cell by construction.
+- **Confine hash-placed Voronoi feature points to ~[0.12,0.88]** (clamp, not a
+  smaller hash range) — the clamp is what keeps an n±2 5×5 search window exact
+  and feature points non-coincident *at any jump magnitude*, so the motion
+  amplitude stays a free taste knob. Restructure the two Voronoi passes into one
+  n-centred window that precomputes offsets into a `vec2 offs[N]` array (capture
+  the winner in scalars inside the `d<md` branch — never post-loop dynamic-index
+  the array). three ^0.169 is WebGL2-only (dropped WebGL1 at r163), so ES3
+  dynamic array indexing is legal, but loop-index-only indexing is the robust
+  choice.
+
 ## Lessons from b1 "Icky, Sticky, & Thriving" (the petri dish — ratchet, July 2026)
 
 - **GPU Physarum is now a proven house pattern** (`b1-biosphere/physarum.ts`):
