@@ -97,13 +97,27 @@ uniform float uA;      // excitation threshold slope (higher = easier to excite)
 uniform float uB;      // excitation threshold offset (higher = harder to excite)
 uniform float uVRate;  // recovery/refractory rate (higher = recharge sooner)
 uniform float uDrive;  // global drive toward firing (synchrony act only)
+uniform float uRewireRate; // lattice-rewire phase speed (1/s); 0 = frozen lattice
 uniform vec4 uSeeds[${igniteSlots}]; // xy pos, z radius (uv), w strength (0 = inactive)
 uniform vec4 uSuppress; // xy centre, z radius, w strength (collapse de-activation ring)
 
+// Activation level a cell must cross UPWARD to count as "fired" (and re-wire
+// the display lattice). Well above the Barkley rest threshold ((v+uB)/uA ~
+// 0.03-0.07) so a gaussian ignition SKIRT that lifts a marginal/refractory
+// texel a little then decays does not count; well below the ~1.0 excited
+// plateau, and u rises monotonically through it, so a real firing crosses
+// exactly once regardless of substep count.
+const float FIRE_T = 0.6;
+
 void main() {
   vec4 c = texture2D(uPrev, vUv);
+  float prevU = c.r;
   float u = c.r;
   float v = c.g;
+  // .b = integer rewire GENERATION counter, .a = 0..1 transition PHASE — see
+  // the firing-edge block below and latticeShader.ts's anchor+jump offsets.
+  float genB = c.b;
+  float phaseA = c.a;
   // uTexel is the FIXED virtual sim-grid spacing (1/SIM_GRID), not the
   // storage texel size — see SIM_GRID's doc.
   vec2 tx = uTexel;
@@ -148,7 +162,21 @@ void main() {
 
   u = clamp(u, 0.0, 1.0);
   v = clamp(v, 0.0, 2.0);
-  gl_FragColor = vec4(u, v, 0.0, 1.0);
+
+  // Lattice rewiring state. A cell "fires" on the upward crossing of FIRE_T,
+  // but ONLY once its previous slide has settled (phaseA >= 0.999) — that gate
+  // caps one pending transition per cell, so a rapid re-fire mid-slide can
+  // never pop the display nucleus. On firing: bump the generation counter and
+  // restart the phase; otherwise ease the phase toward settled (dt-scaled, so
+  // warmup / Lite / Full advance the same rewire per wall-second). Suppression
+  // only lowers u, so collapse dead zones never fire and freeze for free.
+  if (prevU < FIRE_T && u >= FIRE_T && phaseA >= 0.999) {
+    genB += 1.0;
+    phaseA = 0.0;
+  } else {
+    phaseA = min(1.0, phaseA + uRewireRate * uDt);
+  }
+  gl_FragColor = vec4(u, v, genB, phaseA);
 }
 `;
 }
@@ -163,6 +191,7 @@ export interface FieldUniforms {
   uB: { value: number };
   uVRate: { value: number };
   uDrive: { value: number };
+  uRewireRate: { value: number };
   uSeeds: { value: THREE.Vector4[] };
   uSuppress: { value: THREE.Vector4 };
 }
@@ -186,6 +215,8 @@ export class ExcitableField {
   private params: ActParams | null = null;
   /** Multiplicative diffusion modifier — index.ts's one job for smoothed audio.mid (wave propagation speed). 1 = no change. */
   private diffMod = 1;
+  /** Multiplicative rewire-rate modifier — the `?rewire=fast` debug switch (multiplies the act's rewireRate without mutating the shared/lerped ActParams). 1 = no change. */
+  private rewireMod = 1;
 
   constructor(renderer: THREE.WebGLRenderer, full: boolean, igniteSlots: number) {
     this.renderer = renderer;
@@ -227,6 +258,7 @@ export class ExcitableField {
       uB: { value: 0.02 },
       uVRate: { value: 1.6 },
       uDrive: { value: 0 },
+      uRewireRate: { value: 0 },
       uSeeds: { value: this.seeds },
       uSuppress: { value: this.suppress },
     };
@@ -264,6 +296,11 @@ export class ExcitableField {
     this.diffMod = mod;
   }
 
+  /** `?rewire=fast` debug multiplier on the act's rewire rate — 1 = no change. */
+  setRewireMod(mod: number): void {
+    this.rewireMod = mod;
+  }
+
   private applyParams(p: ActParams): void {
     this.uniforms.uDiff.value = p.diff * this.diffMod;
     this.uniforms.uEps.value = p.eps;
@@ -271,6 +308,7 @@ export class ExcitableField {
     this.uniforms.uB.value = p.exB;
     this.uniforms.uVRate.value = p.vRate;
     this.uniforms.uDrive.value = p.drive;
+    this.uniforms.uRewireRate.value = p.rewireRate * this.rewireMod;
   }
 
   /** Runs `n` simulation ticks, each advancing by dt/n (total advance equals dt regardless of substep count). */

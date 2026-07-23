@@ -5,6 +5,7 @@ import {
   IGNITE_SLOTS_FULL, IGNITE_SLOTS_LITE,
   SIM_STEPS_FULL, SIM_STEPS_LITE,
   WARMUP_STEPS_INIT, WARMUP_STEPS_LOOP, WARMUP_TICK_DT,
+  FIELD_TEX_FULL, FIELD_TEX_LITE,
 } from './excitableField';
 import { LATTICE_VERT, buildLatticeFragment } from './latticeShader';
 import { paramsAt, arcAt, ACTS, CUES, type ActParams } from './sections';
@@ -137,6 +138,7 @@ class BiomeDominoes implements Viz {
   private spark = 0;
   private sparkSeed = 0;
   private forceSparkAlways = false;
+  private forceRewireFast = false;
   private sparkDebugTimer = 0;
 
   private igniteTimeToNext = 0;
@@ -170,9 +172,10 @@ class BiomeDominoes implements Viz {
 
     const params = new URLSearchParams(location.search);
     const solo = params.get('solo');
-    const soloMode = solo === 'field' ? 1 : 0;
+    const soloMode = solo === 'field' ? 1 : solo === 'rewire' ? 2 : 0;
     this.forceIgniteAlways = params.get('ignite') === 'always';
     this.forceSparkAlways = params.get('spark') === 'always';
+    this.forceRewireFast = params.get('rewire') === 'fast';
 
     this.full = quality.level === 'full';
     this.igniteSlotCount = this.full ? IGNITE_SLOTS_FULL : IGNITE_SLOTS_LITE;
@@ -208,6 +211,9 @@ class BiomeDominoes implements Viz {
         uPan: { value: this.pan },
         uZoom: { value: 1 },
         uCellFreq: { value: 9 },
+        uFieldSize: { value: this.full ? FIELD_TEX_FULL : FIELD_TEX_LITE },
+        uRewireJump: { value: 0 },
+        uRewireCrack: { value: 0 },
         uTime: { value: 0 },
         uFlash: { value: 0 },
         uSparkle: { value: 0 },
@@ -415,6 +421,9 @@ class BiomeDominoes implements Viz {
 
     // mid's one job: smoothed wave-speed (diffusion) modulation.
     this.field.setDiffMod(1 + this.midE * MID_DIFF_GAIN);
+    // `?rewire=fast` accelerates the lattice rewiring for verification (does not
+    // mutate the shared/lerped ActParams — see setRewireMod).
+    this.field.setRewireMod(this.forceRewireFast ? 8 : 1);
     this.field.setActParams(p);
 
     // Camera choreography (see the PULLBACK/SEED/BREATH constants' doc).
@@ -458,6 +467,11 @@ class BiomeDominoes implements Viz {
     u.uMicroTex.value = p.microTex;
     u.uWarmth.value = p.warmth;
     u.uDust.value = p.dust;
+    // Lattice rewiring: the sim advances the per-cell generation/phase state
+    // (fed rewireRate via field.setActParams); the display reads how far the
+    // nucleus travels (jump) and how hard the edges crack (crack).
+    u.uRewireJump.value = p.rewireJump;
+    u.uRewireCrack.value = p.rewireCrack;
     u.uFlash.value = this.flash;
     u.uSparkle.value = this.highE;
     u.uSparkKick.value = this.spark;

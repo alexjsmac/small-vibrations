@@ -87,6 +87,19 @@ export interface ActParams {
   suppress: number;
   /** 0..1 atmospheric dust-haze density. */
   dust: number;
+  /**
+   * Lattice-rewire phase speed (1/s). 0 = frozen lattice (the seed/collapse/
+   * cold acts). When > 0, each cell an activation wave passes slides its
+   * nucleus to a new hash-picked spot over ~1/rewireRate seconds — walls flex,
+   * adjacencies change, and later waves light a different sequence of cells.
+   * Keep nonzero values >= ~0.3 so the a>=0.999 rewire gate never stalls under
+   * half-float precision. Mirrors the frozen->fluid->frozen energy arc.
+   */
+  rewireRate: number;
+  /** 0..1 nucleus travel amplitude — how FAR a cell's centre wanders per firing (subtle drift -> dramatic reroute; the escalation knob). */
+  rewireJump: number;
+  /** 0..1 edge break/crack-shimmer intensity while a cell is mid-rewire (0 = smooth drift, high = visible break-and-reform). */
+  rewireCrack: number;
 }
 
 /** Boundary times in seconds, from the master's 2s RMS/band profile. Track duration: 259.835s. */
@@ -101,6 +114,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 8, zoom: 1.35, bloomGain: 0.55, sat: 0.7,
     frontGain: 0.5, refractGlow: 0.4, filament: 0.35, microTex: 0.2,
     warmth: 0.05, suppress: 0, dust: 0.25,
+    rewireRate: 0.0, rewireJump: 0.0, rewireCrack: 0.0,
   },
   { // 2. First chains — sparks multiply; short chains of 3-5 cells fire in
     // sequence. More ignition, waves reach a little further, refractory
@@ -110,6 +124,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 9, zoom: 1.2, bloomGain: 0.75, sat: 0.82,
     frontGain: 0.7, refractGlow: 0.5, filament: 0.55, microTex: 0.35,
     warmth: 0.1, suppress: 0, dust: 0.3,
+    rewireRate: 0.6, rewireJump: 0.25, rewireCrack: 0.1,
   },
   { // 3. Wiring up — the build: chains lengthen into travelling waves; target
     // and spiral patterns emerge as excitability climbs; palette warms and
@@ -119,6 +134,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 10, zoom: 1.08, bloomGain: 0.9, sat: 0.9,
     frontGain: 0.85, refractGlow: 0.6, filament: 0.7, microTex: 0.5,
     warmth: 0.2, suppress: 0, dust: 0.3,
+    rewireRate: 1.0, rewireJump: 0.45, rewireCrack: 0.3,
   },
   { // 4. Synchrony — discrete hit at 120s: THE single maximum (bloom/front/
     // filament/sat all peak here, exactly once). A small global drive tips
@@ -130,6 +146,7 @@ export const ACTS: ActParams[] = [
     drive: 0.006, cellFreq: 17, zoom: 0.72, bloomGain: 1.0, sat: 1.0,
     frontGain: 1.0, refractGlow: 0.7, filament: 0.95, microTex: 0.6,
     warmth: 0.3, suppress: 0, dust: 0.35,
+    rewireRate: 1.5, rewireJump: 0.8, rewireCrack: 0.7,
   },
   { // 5. Strain — heavy bass, highs drop: waves denser and colliding, hotter
     // and darker; the system straining. Excitability still high but drive
@@ -140,6 +157,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 15, zoom: 0.85, bloomGain: 0.85, sat: 0.88,
     frontGain: 0.8, refractGlow: 0.75, filament: 0.75, microTex: 0.45,
     warmth: 0.6, suppress: 0, dust: 0.4,
+    rewireRate: 1.4, rewireJump: 0.75, rewireCrack: 0.85,
   },
   { // 6. Fraying — energy leaking: waves lose coherence, excitability drops,
     // dark gaps open in the lattice. Fewer ignitions, slower recharge, dimmer.
@@ -148,6 +166,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 14, zoom: 0.92, bloomGain: 0.65, sat: 0.78,
     frontGain: 0.6, refractGlow: 0.65, filament: 0.5, microTex: 0.35,
     warmth: 0.55, suppress: 0, dust: 0.45,
+    rewireRate: 0.8, rewireJump: 0.5, rewireCrack: 0.4,
   },
   { // 7. Collapse — the drop at 204s. The field stays EXCITABLE (exA high, so
     // the un-swept region keeps firing); `suppress` goes to 1 and index.ts
@@ -162,6 +181,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 12, zoom: 1.0, bloomGain: 0.85, sat: 0.8,
     frontGain: 0.7, refractGlow: 0.65, filament: 0.55, microTex: 0.4,
     warmth: 0.5, suppress: 1, dust: 0.4,
+    rewireRate: 0.0, rewireJump: 0.0, rewireCrack: 0.0,
   },
   { // 8. Cold lattice — fade to silence: one last lonely blip hops on the
     // dark web, then fades. Loop closure back toward act 1's seed (zoom
@@ -171,6 +191,7 @@ export const ACTS: ActParams[] = [
     drive: 0, cellFreq: 9, zoom: 1.3, bloomGain: 0.45, sat: 0.55,
     frontGain: 0.45, refractGlow: 0.45, filament: 0.3, microTex: 0.15,
     warmth: 0.15, suppress: 0, dust: 0.25,
+    rewireRate: 0.0, rewireJump: 0.0, rewireCrack: 0.0,
   },
 ];
 

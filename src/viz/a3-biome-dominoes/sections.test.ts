@@ -125,6 +125,31 @@ describe('a3-biome-dominoes sections', () => {
     expect(collapse.ignitionRate).toBeGreaterThan(20);
   });
 
+  it('lattice rewiring is frozen at the rigid endpoints (seed, collapse, cold-lattice) and fluid in between', () => {
+    const frozen = new Set(['seed', 'collapse', 'cold-lattice']);
+    for (const act of ACTS) {
+      if (frozen.has(act.name)) {
+        expect(act.rewireRate).toBe(0);
+        expect(act.rewireJump).toBe(0);
+        expect(act.rewireCrack).toBe(0);
+      } else {
+        expect(act.rewireRate).toBeGreaterThanOrEqual(0.3); // the a>=0.999 gate must not stall
+      }
+    }
+  });
+
+  it('rewire intensity escalates: synchrony & strain hold the jump/crack maxima', () => {
+    const maxJump = Math.max(...ACTS.map((a) => a.rewireJump));
+    const maxCrack = Math.max(...ACTS.map((a) => a.rewireCrack));
+    const peakActs = ACTS.filter((a) => a.name === 'synchrony' || a.name === 'strain');
+    // the two most intense acts own the maxima (drift early -> break-and-reform at the peak)
+    expect(peakActs.some((a) => a.rewireJump === maxJump)).toBe(true);
+    expect(peakActs.some((a) => a.rewireCrack === maxCrack)).toBe(true);
+    // and the build act stays below the peak (restraint before the reorganizing climax)
+    const build = ACTS.find((a) => a.name === 'wiring-up')!;
+    expect(build.rewireJump).toBeLessThan(maxJump);
+  });
+
   it('cold-lattice resolves toward the seed act — loop closure (zoom returns close, ignition near zero)', () => {
     const seed = ACTS.find((a) => a.name === 'seed')!;
     const cold = ACTS.find((a) => a.name === 'cold-lattice')!;

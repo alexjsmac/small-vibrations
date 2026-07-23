@@ -33,7 +33,15 @@ void main() {
 }
 `;
 
-export function buildLatticeFragment(rippleSlots: number): string {
+export function buildLatticeFragment(rippleSlots: number, reach: number = 2): string {
+  // Voronoi search window half-width. reach=2 (5x5, 25 cells) is exact for the
+  // filament threshold given the [0.12,0.88] offset confinement; reach=1
+  // (3x3, 9 cells) is the cheaper Lite fallback (occasional filament gaps near
+  // triple junctions). Loop bounds/array size are interpolated so the loops
+  // still unroll with constant literals.
+  const R = Math.max(1, Math.floor(reach));
+  const W = 2 * R + 1;
+  const N = W * W;
   return `
 precision highp float;
 varying vec2 vUv;
@@ -43,6 +51,9 @@ uniform vec2 uCover;
 uniform vec2 uPan;
 uniform float uZoom;
 uniform float uCellFreq;
+uniform float uFieldSize;   // storage texels per side of the field target (for texel-snapped .ba reads)
+uniform float uRewireJump;  // 0..1 nucleus travel amplitude (lattice rewiring)
+uniform float uRewireCrack; // 0..1 edge break/crack-shimmer intensity
 uniform float uTime;
 uniform float uFlash;     // full-scene event flash (0..~1.6, slow channel)
 uniform float uSparkle;   // smoothed high-band shimmer (0..1)
@@ -85,30 +96,70 @@ float fbm(vec2 p) {
   return s;
 }
 
-// iq Voronoi with edge distance (2007). Returns the nearest feature point's
-// integer cell coords (out cellCoord), the feature point position in the
-// SAME scaled space (out cellPoint), and the distance to the nearest cell
-// border (out edgeDist).
-void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist) {
+// Lattice rewiring: a cell's feature point (nucleus) = a static organic ANCHOR
+// plus an activation-driven JUMP. The sim (excitableField.ts) writes a per-cell
+// generation counter (.b) and transition phase (.a) each time a wave fires the
+// cell; here the nucleus slides from the previous generation's target to the
+// current one's over the phase, so walls flex and adjacencies change while the
+// cell is refractory ("the fallen domino is rebuilt in a new orientation").
+// jump=0 -> nucleus stays at the anchor for every generation -> frozen AND
+// organic (matches the shipped lattice).
+const float RW_MAXJUMP = 0.30;
+const vec2 RW_KEY = vec2(13.73, 7.51);
+
+// Returns the cell's current feature offset (within-cell, confined to
+// [0.12,0.88] so the ${W}x${W} search stays exact) and its transition phase.
+vec2 cellOffset(vec2 cc, out float phase) {
+  vec2 anchor = vec2(0.12) + 0.76 * hash22(cc);
+  // Read rewire state at the cell's STATIC home centre (never the moving
+  // nucleus - that would be circular), snapped to the storage-texel centre so
+  // LINEAR filtering can't bilinearly blend the integer generation counter
+  // across a wave seam (which would flicker / replay the slide backward).
+  vec2 home = (cc + 0.5) / uCellFreq + 0.5;
+  vec2 snapped = (floor(home * uFieldSize) + 0.5) / uFieldSize;
+  vec2 ba = texture2D(uField, snapped).ba;
+  float gen = floor(ba.x + 0.5);
+  phase = smoothstep(0.0, 1.0, ba.y);
+  float jumpR = uRewireJump * RW_MAXJUMP;
+  // Per-generation target: anchor + a hashed unit-vector step, clamped in-window
+  // (the clamp is what guarantees the search stays exact at any jump amplitude).
+  // mod(gen, 64) keeps the hash argument small (float32 sin precision).
+  float ang0 = hash21(cc + mod(gen - 1.0, 64.0) * RW_KEY) * 6.2831853;
+  float ang1 = hash21(cc + mod(gen, 64.0) * RW_KEY) * 6.2831853;
+  vec2 t0 = clamp(anchor + jumpR * vec2(cos(ang0), sin(ang0)), vec2(0.12), vec2(0.88));
+  vec2 t1 = clamp(anchor + jumpR * vec2(cos(ang1), sin(ang1)), vec2(0.12), vec2(0.88));
+  return mix(t0, t1, phase);
+}
+
+// iq Voronoi with edge distance (2007), over a single n-centred ${W}x${W} window
+// (offsets precomputed once into offs[] so both the nearest-search and the
+// edge-distance pass read the same rewired feature points). Also returns the
+// winning cell's transition phase for the break-and-reform rendering.
+void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist, out float winPhase) {
   vec2 n = floor(p);
   vec2 f = fract(p);
+  vec2 offs[${N}];
   vec2 mg = vec2(0.0);
   vec2 mr = vec2(0.0);
+  vec2 winOff = vec2(0.5);
   float md = 8.0;
-  for (int j = -1; j <= 1; j++) {
-    for (int i = -1; i <= 1; i++) {
+  float winPh = 1.0;
+  for (int j = -${R}; j <= ${R}; j++) {
+    for (int i = -${R}; i <= ${R}; i++) {
       vec2 g = vec2(float(i), float(j));
-      vec2 o = hash22(n + g);
+      float ph;
+      vec2 o = cellOffset(n + g, ph);
+      offs[(i + ${R}) + (j + ${R}) * ${W}] = o;
       vec2 r = g + o - f;
       float d = dot(r, r);
-      if (d < md) { md = d; mr = r; mg = g; }
+      if (d < md) { md = d; mr = r; mg = g; winOff = o; winPh = ph; }
     }
   }
   float mdEdge = 8.0;
-  for (int j = -2; j <= 2; j++) {
-    for (int i = -2; i <= 2; i++) {
-      vec2 g = mg + vec2(float(i), float(j));
-      vec2 o = hash22(n + g);
+  for (int j = -${R}; j <= ${R}; j++) {
+    for (int i = -${R}; i <= ${R}; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 o = offs[(i + ${R}) + (j + ${R}) * ${W}];
       vec2 r = g + o - f;
       vec2 diff = mr - r;
       if (dot(diff, diff) > 0.00001) {
@@ -117,8 +168,9 @@ void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist)
     }
   }
   cellCoord = n + mg;
-  cellPoint = n + mg + hash22(n + mg);
+  cellPoint = n + mg + winOff;
   edgeDist = mdEdge;
+  winPhase = winPh;
 }
 
 void main() {
@@ -131,7 +183,10 @@ void main() {
 
   vec2 cellCoord, cellPoint;
   float edgeDist;
-  voronoi(p, cellCoord, cellPoint, edgeDist);
+  float winPhase;
+  voronoi(p, cellCoord, cellPoint, edgeDist, winPhase);
+  // Peaks mid-slide (0 when settled): drives the visible break-and-reform.
+  float rearr = winPhase * (1.0 - winPhase) * 4.0;
 
   // Sample the excitable field at the CELL's feature point (whole cell shares
   // one activation value -> the domino read) and at the FRAGMENT (continuous,
@@ -147,6 +202,13 @@ void main() {
   if (uSoloMode == 1) {
     // Raw field heat for sim debugging: u->red/orange, v->green.
     gl_FragColor = vec4(fragF.r, fragF.g * 0.7, fragF.r * 0.3, 1.0);
+    return;
+  }
+  if (uSoloMode == 2) {
+    // Rewire debug: generation counter (.b) as a cycling hue, phase (.a) green.
+    float g = texture2D(uField, cellUv).b;
+    vec3 gcol = 0.5 + 0.5 * cos(6.2831853 * (g * 0.16 + vec3(0.0, 0.33, 0.67)));
+    gl_FragColor = vec4(gcol * (0.4 + 0.6 * winPhase), 1.0);
     return;
   }
 
@@ -191,6 +253,13 @@ void main() {
   float refractory = clamp(v - u * 1.1, 0.0, 1.0);
   col += REFRACT * uRefractGlow * refractory;
 
+  // --- break apart: open a black seam along a rewiring cell's borders (widest
+  // mid-slide), knitting closed as it settles. The nucleus is already sliding
+  // (cellPoint moved) so the tessellation is genuinely reorganizing; this makes
+  // the fracture legible. Zero when the lattice is frozen (rearr = 0).
+  float gapW = rearr * uRewireCrack * 0.03;
+  col *= smoothstep(gapW, gapW + 0.008, edgeDist);
+
   // --- edge filaments (the "chain links") ---
   // A thin bright line along cell borders, brightened where the border is
   // active (fragU high) so links between firing cells read as connections.
@@ -203,6 +272,11 @@ void main() {
   linkGlow += uSparkKick * 0.5;
   vec3 filColor = mix(FRONT, vec3(0.9, 1.0, 0.95), front);
   col += filColor * uFilament * line * linkGlow;
+
+  // Crack-shimmer: a hot hairline tracing the reforming boundary of a fracturing
+  // cell (a bit wider than the filament line so it reads as the fresh fracture,
+  // not the settled wall). Peaks mid-slide with rearr; zero when frozen.
+  col += FRONT * rearr * uRewireCrack * smoothstep(0.05, 0.0, edgeDist);
 
   // --- sparkle: smoothed high-band twinkle on active cell interiors ---
   float tw = hash21(cellCoord * 7.3 + floor(uTime * 12.0));
