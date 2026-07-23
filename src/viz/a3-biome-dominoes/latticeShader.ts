@@ -49,6 +49,7 @@ uniform float uSparkle;   // smoothed high-band shimmer (0..1)
 uniform float uSparkKick; // high-ONSET fast kick+decay channel (a2 tempo-separation idiom)
 uniform float uSparkSeed; // per-spark-event counter — re-rolls WHICH cells flash each event
 uniform vec4 uRipple[${rippleSlots}]; // tap ripples: xy field pos, z age (s), w strength (0 = inactive)
+uniform vec4 uRing;       // collapse de-activation ring: xy centre (field uv), z radius, w strength — shared BY REFERENCE with the sim's uSuppress
 uniform float uEnergy;   // arcAt continuous energy envelope (0..1)
 uniform float uBloomGain;
 uniform float uSat;
@@ -61,7 +62,8 @@ uniform float uDust;
 uniform int uSoloMode;
 
 const vec3 SUBSTRATE = vec3(0.055, 0.028, 0.13);   // deep indigo
-const vec3 BLOOM     = vec3(0.68, 1.0, 0.20);      // chartreuse / lime (life)
+const vec3 SUBSTRATE_HOT = vec3(0.10, 0.030, 0.085); // bruised maroon (strain lean)
+const vec3 BLOOM     = vec3(0.55, 1.0, 0.12);      // electric chartreuse (life)
 const vec3 FRONT     = vec3(0.16, 0.94, 0.86);     // hot cyan leading edge
 const vec3 REFRACT   = vec3(0.70, 0.28, 0.95);     // magenta-violet afterglow
 const vec3 WARM      = vec3(1.0, 0.26, 0.52);       // hot-pink warmth accent
@@ -151,9 +153,12 @@ void main() {
   float cellRand = hash21(cellCoord + 3.17);
 
   // --- cell fill ---
-  vec3 col = SUBSTRATE;
+  // Substrate leans from cool indigo toward bruised maroon as warmth rises
+  // (strain must read HOT, not bleached).
+  vec3 base = mix(SUBSTRATE, SUBSTRATE_HOT, uWarmth * 0.6);
+  vec3 col = base;
   // Faint idle breathing so dormant cells aren't dead-flat.
-  col += SUBSTRATE * 0.5 * (0.4 + 0.6 * vnoise(cellCoord * 1.3 + uTime * 0.05));
+  col += base * 0.5 * (0.4 + 0.6 * vnoise(cellCoord * 1.3 + uTime * 0.05));
 
   // Micro-biome interior texture: fbm keyed to the cell, modulating the bloom.
   float interior = fbm(cellCoord * 2.0 + p * 0.6 + cellRand * 10.0);
@@ -170,17 +175,21 @@ void main() {
   float bloom = smoothstep(0.1, 0.72, u);
   float front = smoothstep(0.5, 0.85, u) * (1.0 - smoothstep(0.12, 0.4, v));
   vec3 hot = mix(BLOOM, FRONT, front * 0.85 * uFrontGain);
+  // Warmth is a true HUE rotation of the excited body toward hot pink — the
+  // old additive pink accent whitened through the tone-map and strain read
+  // bleached instead of hot.
+  hot = mix(hot, WARM, uWarmth * 0.55);
   col += hot * uBloomGain * bloom * micro;
 
-  // A small near-white kiss at the very leading edge.
+  // A small near-white kiss at the very leading edge (kept subtle — it is
+  // the main whitening pressure on excited cells).
   col += vec3(0.85, 1.0, 0.92) * uFrontGain * front * 0.3;
 
   // Magenta-violet refractory afterglow: v high while u has decayed away.
-  float refractory = clamp(v - u * 1.3, 0.0, 1.0);
+  // Loose threshold (1.1, was 1.3) — the recharge state is half the domino
+  // concept ("standing back up") and deserves screen time.
+  float refractory = clamp(v - u * 1.1, 0.0, 1.0);
   col += REFRACT * uRefractGlow * refractory;
-
-  // Warmth lean: push blooming/active cells toward hot pink as warmth rises.
-  col = mix(col, col + WARM * (bloom * 0.5 + front * 0.4), uWarmth);
 
   // --- edge filaments (the "chain links") ---
   // A thin bright line along cell borders, brightened where the border is
@@ -226,6 +235,21 @@ void main() {
     float r = 0.02 + rp.z * 0.30;
     float ring = exp(-pow((d - r) * 70.0, 2.0)) * rp.w * exp(-rp.z * 2.8);
     col += vec3(0.92, 0.97, 1.0) * ring;
+  }
+
+  // --- collapse death-front rim: a thin hot edge on the advancing
+  // de-activation ring, so the sweep itself is a visible object crossing the
+  // web (the killed darkness alone reads as "already off"). Torus-wrapped
+  // like the ripples; fades naturally once the radius outgrows the tile.
+  if (uRing.w > 0.0) {
+    vec2 rgd = field - uRing.xy;
+    rgd -= floor(rgd + 0.5);
+    float rgDist = length(rgd);
+    // Thin and restrained: a hot hairline where cells are dying, not a neon
+    // ring (the first pass at 42.0/0.85 dominated the whole frame).
+    float rim = exp(-pow((rgDist - uRing.z) * 110.0, 2.0)) * uRing.w;
+    col += WARM * rim * 0.38;
+    col += vec3(0.95, 0.9, 1.0) * rim * 0.07;
   }
 
   // --- global lifts ---

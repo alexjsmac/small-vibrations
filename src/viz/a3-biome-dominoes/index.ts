@@ -214,6 +214,9 @@ class BiomeDominoes implements Viz {
         uSparkKick: { value: 0 },
         uSparkSeed: { value: 0 },
         uRipple: { value: this.rippleValues },
+        // Shared BY REFERENCE with the sim's suppress uniform — the display
+        // rim always tracks the exact ring the sim is killing with.
+        uRing: { value: this.field.suppress },
         uEnergy: { value: 0 },
         uBloomGain: { value: 0.6 },
         uSat: { value: 0.8 },

@@ -62,7 +62,10 @@ export const IGNITE_SLOTS_FULL = 6;
 export const IGNITE_SLOTS_LITE = 4;
 export const SIM_STEPS_FULL = 3;
 export const SIM_STEPS_LITE = 2;
-export const WARMUP_STEPS_INIT = 150;
+// 300 ticks ≈ 10s of sim time: enough for synchrony's slow drive charge to
+// reach steady state, so a `?t=` deep link lands as dense as continuous play
+// (150 ticks left the peak visibly sparser than arriving there naturally).
+export const WARMUP_STEPS_INIT = 300;
 export const WARMUP_STEPS_LOOP = 60;
 /** Fixed per-tick dt used while warming up (not real elapsed time) — the field settles to a formed, mid-propagation state regardless of the caller's frame rate. */
 export const WARMUP_TICK_DT = 1 / 30;

@@ -99,25 +99,25 @@ export const ACTS: ActParams[] = [
     name: 'seed',
     ignitionRate: 14, diff: 0.35, eps: 11, exA: 0.7, exB: 0.02, vRate: 1.0,
     drive: 0, cellFreq: 8, zoom: 1.35, bloomGain: 0.55, sat: 0.7,
-    frontGain: 0.5, refractGlow: 0.25, filament: 0.35, microTex: 0.2,
+    frontGain: 0.5, refractGlow: 0.4, filament: 0.35, microTex: 0.2,
     warmth: 0.05, suppress: 0, dust: 0.25,
   },
   { // 2. First chains — sparks multiply; short chains of 3-5 cells fire in
     // sequence. More ignition, waves reach a little further, refractory
     // still visible so chains read as sequential.
     name: 'first-chains',
-    ignitionRate: 42, diff: 0.45, eps: 12, exA: 0.76, exB: 0.02, vRate: 1.1,
+    ignitionRate: 80, diff: 0.45, eps: 12, exA: 0.8, exB: 0.02, vRate: 1.1,
     drive: 0, cellFreq: 9, zoom: 1.2, bloomGain: 0.75, sat: 0.82,
-    frontGain: 0.7, refractGlow: 0.35, filament: 0.55, microTex: 0.35,
+    frontGain: 0.7, refractGlow: 0.5, filament: 0.55, microTex: 0.35,
     warmth: 0.1, suppress: 0, dust: 0.3,
   },
   { // 3. Wiring up — the build: chains lengthen into travelling waves; target
     // and spiral patterns emerge as excitability climbs; palette warms and
     // saturates. Restraint before the peak (sat/bloom below act 4's max).
     name: 'wiring-up',
-    ignitionRate: 78, diff: 0.55, eps: 13, exA: 0.82, exB: 0.02, vRate: 1.2,
+    ignitionRate: 110, diff: 0.65, eps: 13, exA: 0.88, exB: 0.02, vRate: 1.2,
     drive: 0, cellFreq: 10, zoom: 1.08, bloomGain: 0.9, sat: 0.9,
-    frontGain: 0.85, refractGlow: 0.45, filament: 0.7, microTex: 0.5,
+    frontGain: 0.85, refractGlow: 0.6, filament: 0.7, microTex: 0.5,
     warmth: 0.2, suppress: 0, dust: 0.3,
   },
   { // 4. Synchrony — discrete hit at 120s: THE single maximum (bloom/front/
@@ -128,7 +128,7 @@ export const ACTS: ActParams[] = [
     name: 'synchrony',
     ignitionRate: 70, diff: 0.7, eps: 15, exA: 0.9, exB: 0.02, vRate: 1.3,
     drive: 0.006, cellFreq: 17, zoom: 0.72, bloomGain: 1.0, sat: 1.0,
-    frontGain: 1.0, refractGlow: 0.55, filament: 0.95, microTex: 0.6,
+    frontGain: 1.0, refractGlow: 0.7, filament: 0.95, microTex: 0.6,
     warmth: 0.3, suppress: 0, dust: 0.35,
   },
   { // 5. Strain — heavy bass, highs drop: waves denser and colliding, hotter
@@ -137,16 +137,16 @@ export const ACTS: ActParams[] = [
     // reads as tension, not release.
     name: 'strain',
     ignitionRate: 95, diff: 0.6, eps: 14, exA: 0.86, exB: 0.03, vRate: 1.2,
-    drive: 0, cellFreq: 15, zoom: 0.85, bloomGain: 0.85, sat: 0.8,
-    frontGain: 0.8, refractGlow: 0.6, filament: 0.75, microTex: 0.45,
+    drive: 0, cellFreq: 15, zoom: 0.85, bloomGain: 0.85, sat: 0.88,
+    frontGain: 0.8, refractGlow: 0.75, filament: 0.75, microTex: 0.45,
     warmth: 0.6, suppress: 0, dust: 0.4,
   },
   { // 6. Fraying — energy leaking: waves lose coherence, excitability drops,
     // dark gaps open in the lattice. Fewer ignitions, slower recharge, dimmer.
     name: 'fraying',
-    ignitionRate: 46, diff: 0.45, eps: 12, exA: 0.72, exB: 0.05, vRate: 1.1,
-    drive: 0, cellFreq: 14, zoom: 0.92, bloomGain: 0.65, sat: 0.68,
-    frontGain: 0.6, refractGlow: 0.5, filament: 0.5, microTex: 0.35,
+    ignitionRate: 70, diff: 0.45, eps: 12, exA: 0.78, exB: 0.05, vRate: 1.1,
+    drive: 0, cellFreq: 14, zoom: 0.92, bloomGain: 0.65, sat: 0.78,
+    frontGain: 0.6, refractGlow: 0.65, filament: 0.5, microTex: 0.35,
     warmth: 0.55, suppress: 0, dust: 0.45,
   },
   { // 7. Collapse — the drop at 204s. The field stays EXCITABLE (exA high, so
@@ -158,9 +158,9 @@ export const ACTS: ActParams[] = [
     // dimming at once. Ignition holds so the surviving outer ring still glows
     // against the advancing dark — the contrast that makes the sweep read.
     name: 'collapse',
-    ignitionRate: 34, diff: 0.5, eps: 13, exA: 0.82, exB: 0.02, vRate: 1.3,
-    drive: 0, cellFreq: 12, zoom: 1.0, bloomGain: 0.85, sat: 0.72,
-    frontGain: 0.7, refractGlow: 0.5, filament: 0.55, microTex: 0.4,
+    ignitionRate: 55, diff: 0.5, eps: 13, exA: 0.82, exB: 0.02, vRate: 1.3,
+    drive: 0, cellFreq: 12, zoom: 1.0, bloomGain: 0.85, sat: 0.8,
+    frontGain: 0.7, refractGlow: 0.65, filament: 0.55, microTex: 0.4,
     warmth: 0.5, suppress: 1, dust: 0.4,
   },
   { // 8. Cold lattice — fade to silence: one last lonely blip hops on the
@@ -169,7 +169,7 @@ export const ACTS: ActParams[] = [
     name: 'cold-lattice',
     ignitionRate: 5, diff: 0.3, eps: 10, exA: 0.66, exB: 0.04, vRate: 1.0,
     drive: 0, cellFreq: 9, zoom: 1.3, bloomGain: 0.45, sat: 0.55,
-    frontGain: 0.45, refractGlow: 0.3, filament: 0.3, microTex: 0.15,
+    frontGain: 0.45, refractGlow: 0.45, filament: 0.3, microTex: 0.15,
     warmth: 0.15, suppress: 0, dust: 0.25,
   },
 ];
