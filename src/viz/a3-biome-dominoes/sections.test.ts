@@ -157,6 +157,12 @@ describe('a3-biome-dominoes sections', () => {
     expect(Math.abs(cold.zoom - seed.zoom)).toBeLessThan(0.15);
     expect(cold.ignitionRate).toBeLessThan(seed.ignitionRate);
   });
+
+  it('every act has interior cell-life (always alive), peaking at synchrony', () => {
+    for (const act of ACTS) expect(act.cellLife).toBeGreaterThan(0);
+    const maxLife = Math.max(...ACTS.map((a) => a.cellLife));
+    expect(ACTS.find((a) => a.name === 'synchrony')!.cellLife).toBe(maxLife);
+  });
 });
 
 describe('a3-biome-dominoes arcAt', () => {

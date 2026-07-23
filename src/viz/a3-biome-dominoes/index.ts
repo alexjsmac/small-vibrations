@@ -230,6 +230,7 @@ class BiomeDominoes implements Viz {
         uRefractGlow: { value: 0.3 },
         uFilament: { value: 0.4 },
         uMicroTex: { value: 0.3 },
+        uCellLife: { value: 0 },
         uWarmth: { value: 0 },
         uDust: { value: 0.3 },
         uSoloMode: { value: soloMode },
@@ -465,6 +466,7 @@ class BiomeDominoes implements Viz {
     u.uRefractGlow.value = p.refractGlow;
     u.uFilament.value = p.filament;
     u.uMicroTex.value = p.microTex;
+    u.uCellLife.value = p.cellLife;
     u.uWarmth.value = p.warmth;
     u.uDust.value = p.dust;
     // Lattice rewiring: the sim advances the per-cell generation/phase state

@@ -68,6 +68,7 @@ uniform float uFrontGain;
 uniform float uRefractGlow;
 uniform float uFilament;
 uniform float uMicroTex;
+uniform float uCellLife;   // 0..1 intra-cell interior life intensity
 uniform float uWarmth;
 uniform float uDust;
 uniform int uSoloMode;
@@ -135,7 +136,7 @@ vec2 cellOffset(vec2 cc, out float phase) {
 // (offsets precomputed once into offs[] so both the nearest-search and the
 // edge-distance pass read the same rewired feature points). Also returns the
 // winning cell's transition phase for the break-and-reform rendering.
-void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist, out float winPhase) {
+void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist, out float winPhase, out vec2 nucVec) {
   vec2 n = floor(p);
   vec2 f = fract(p);
   vec2 offs[${N}];
@@ -171,6 +172,7 @@ void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist,
   cellPoint = n + mg + winOff;
   edgeDist = mdEdge;
   winPhase = winPh;
+  nucVec = mr;
 }
 
 void main() {
@@ -184,7 +186,8 @@ void main() {
   vec2 cellCoord, cellPoint;
   float edgeDist;
   float winPhase;
-  voronoi(p, cellCoord, cellPoint, edgeDist, winPhase);
+  vec2 nucVec;
+  voronoi(p, cellCoord, cellPoint, edgeDist, winPhase, nucVec);
   // Peaks mid-slide (0 when settled): drives the visible break-and-reform.
   float rearr = winPhase * (1.0 - winPhase) * 4.0;
 
@@ -235,13 +238,47 @@ void main() {
   // wavefront is cyan. Built as a hue MIX, not two bright colours summed, so a
   // fully excited cell never washes to white (the b1 lesson).
   float bloom = smoothstep(0.1, 0.72, u);
+
+  // ---- intra-cell life: each cell is its own little organism. nucVec is the
+  // fragment->nucleus vector (cell units); lr is 0 at the nucleus and grows to
+  // the cell edge. Per-cell hashes make every cell's interior DIFFERENT (some
+  // churn like plasma, some pulse clean rings, some glow from a tight core) so
+  // the field never looks tiled. Always-on at rest, flaring on activation.
+  float lr = length(nucVec);
+  float ang = atan(nucVec.y, nucVec.x);
+  float h1 = hash21(cellCoord + 11.3);
+  float h2 = hash21(cellCoord + 27.9);
+  float h3 = hash21(cellCoord + 51.7);
+  float ph = cellRand * 6.2831853;
+  float core = exp(-lr * lr * (4.0 + 8.0 * h2));
+  float cScale = 3.0 + 3.5 * h1;
+  float cSpeed = 0.10 + 0.20 * h3;
+  float cwarp = fbm(nucVec * cScale + ph + uTime * cSpeed);
+  float churn = fbm(nucVec * (cScale * 1.4) + cwarp + ph);
+  float arms = 2.0 + floor(4.0 * h3);
+  float cdir = h1 < 0.5 ? -1.0 : 1.0;
+  float swirl = 0.5 + 0.5 * sin(ang * arms + cdir * uTime * 0.6 + lr * (6.0 + 6.0 * h2) + ph);
+  float ringFreq = 10.0 + 12.0 * h1;
+  float ripple = (0.5 + 0.5 * sin(lr * ringFreq - v * (14.0 + 8.0 * h2)))
+               * smoothstep(0.03, 0.4, v)
+               * (1.0 - smoothstep(0.55, 1.0, lr));
+  float wCore   = 0.35 + 0.7 * h2;
+  float wChurn  = 0.35 + 0.7 * h1;
+  float wRipple = 0.5  + 0.9 * h3;
+  float idleLife   = wCore * core * 0.55 + wChurn * churn * swirl * 0.5;
+  float activeLife = wRipple * ripple * 1.1
+                   + wChurn * churn * (0.4 + 0.8 * swirl) * bloom
+                   + wCore * core * bloom * 0.7;
+  col += (base + vec3(0.05, 0.08, 0.13)) * idleLife * uCellLife * 1.6;
+
   float front = smoothstep(0.5, 0.85, u) * (1.0 - smoothstep(0.12, 0.4, v));
   vec3 hot = mix(BLOOM, FRONT, front * 0.85 * uFrontGain);
   // Warmth is a true HUE rotation of the excited body toward hot pink — the
   // old additive pink accent whitened through the tone-map and strain read
   // bleached instead of hot.
   hot = mix(hot, WARM, uWarmth * 0.55);
-  col += hot * uBloomGain * bloom * micro;
+  col += hot * uBloomGain * bloom * micro * (0.5 + 0.9 * activeLife * uCellLife);
+  col += hot * uBloomGain * (wRipple * ripple * 0.6 + wCore * core * 0.35) * bloom * uCellLife;
 
   // A small near-white kiss at the very leading edge (kept subtle — it is
   // the main whitening pressure on excited cells).
