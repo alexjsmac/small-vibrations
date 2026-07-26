@@ -136,11 +136,14 @@ describe('b2-terminal-taxonomy sections', () => {
     }
   });
 
-  it('machineFrac and classifiedFloor are non-decreasing across ACTS in order (the classified ratchet never un-labels)', () => {
+  it('machineFrac, machineOrder, and classifiedFloor are non-decreasing across ACTS in order (the machine never retreats)', () => {
     for (let i = 1; i < ACTS.length; i++) {
       expect(ACTS[i].machineFrac).toBeGreaterThanOrEqual(ACTS[i - 1].machineFrac);
+      expect(ACTS[i].machineOrder).toBeGreaterThanOrEqual(ACTS[i - 1].machineOrder);
       expect(ACTS[i].classifiedFloor).toBeGreaterThanOrEqual(ACTS[i - 1].classifiedFloor);
     }
+    // The residue act ends fully ordered: the drawer wins the page.
+    expect(ACTS[ACTS.length - 1].machineOrder).toBe(1);
   });
 
   it('thriving-field (act 0) is machine-free, and holds the maximum hueSat', () => {
@@ -149,6 +152,7 @@ describe('b2-terminal-taxonomy sections', () => {
     expect(first.scanRate).toBe(0);
     expect(first.gridStrength).toBe(0);
     expect(first.machineFrac).toBe(0);
+    expect(first.machineOrder).toBe(0);
     expect(first.classifiedFloor).toBe(0);
     expect(first.misProb).toBe(0);
     for (const act of ACTS) {

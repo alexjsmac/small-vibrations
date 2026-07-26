@@ -291,6 +291,7 @@ class TerminalTaxonomy implements Viz {
         uChatter: { value: 0 },
         uGlyphDensity: { value: 0 },
         uMachineFrac: { value: 0 },
+        uMachineOrder: { value: 0 },
         uClassified: { value: 0 },
         uGridStrength: { value: 0 },
         uGridFine: { value: 0 },
@@ -512,7 +513,7 @@ class TerminalTaxonomy implements Viz {
     this.field.clearField();
     this.field.setActParams(p);
     const floor = this.pinnedClassified ?? p.classifiedFloor;
-    this.field.seedField(floor, p.commFreq);
+    this.field.seedField(floor, p.commFreq, p.machineOrder);
     this.classified = floor;
     for (let i = 0; i < steps; i++) {
       this.scheduleScans(WARMUP_TICK_DT, p.scanRate, p);
@@ -701,6 +702,7 @@ class TerminalTaxonomy implements Viz {
     u.uClassified.value = this.classified;
     u.uDesat.value = Math.min(1, this.classified * 0.6);
     u.uMachineFrac.value = p.machineFrac;
+    u.uMachineOrder.value = p.machineOrder;
     u.uGridStrength.value = p.gridStrength;
     u.uGridFine.value = p.gridFine;
     u.uGlyphDensity.value = p.glyphDensity;

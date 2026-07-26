@@ -2,12 +2,15 @@ import { COMM_CELL_GLSL } from './communityField';
 
 /**
  * Fullscreen display shader for b2 "Terminal Taxonomy": a pale-bone catalogue
- * world where a patchwork of living micro-communities (each with its own
- * hue, Turing-ish interior pattern, and unreadable glyph script) is scanned,
- * labeled, and flattened by a rust-toned machine. Sibling of a3's
- * latticeShader.ts — same vertex-shader shape, same n-window Voronoi search
- * (here over community anchors from communityField.ts's `commAnchor`), same
- * `1.0 - exp(-col * k)` hue-preserving tonemap, same house screen->field
+ * world where discrete SPECIMENS — living micro-communities, each with its
+ * own hue, Turing-ish skin, and unreadable glyph script — lie on paper and
+ * are scanned, labeled, and flattened by a rust-toned machine. Deliberately
+ * NOT a tiling cell lattice (that geometry is a3's): communities render as
+ * organic ink-rimmed silhouettes via a nearest-specimen-SDF search
+ * (`specimenSearch`), with real bone ground between them, and their
+ * placement drifts from natural scatter to aligned museum-drawer rows as
+ * `uMachineOrder` rises. Shares a3's vertex-shader shape, the
+ * `1.0 - exp(-col * k)` hue-preserving tonemap, and the house screen->field
  * mapping formula (b1's dish shader, shared with pointer.ts / index.ts):
  *
  *   field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan
@@ -92,6 +95,7 @@ uniform float uChurn;
 uniform float uChatter;
 uniform float uGlyphDensity;
 uniform float uMachineFrac;
+uniform float uMachineOrder;
 uniform float uClassified;
 uniform float uGridStrength;
 uniform float uGridFine;
@@ -151,43 +155,51 @@ float ttSegDist(vec2 p, vec2 a, vec2 b, float bow) {
   return length(p - closest);
 }
 
-// iq Voronoi with edge distance (F2-F1 style, a3's idiom) over a single
-// n-centred ${W}x${W} window of community anchors (commAnchor). The second
-// pass RECOMPUTES each anchor instead of caching into a local array — same
-// as a3's two-pass search: local arrays indexed in loops can spill to
-// memory on some drivers, and the redundant hashes are cheaper than that
-// risk.
-void commVoronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist) {
+// Signed distance to community cc's SPECIMEN silhouette at community-space
+// point p: an organic, elongated, wobble-outlined blob around the cell's
+// anchor. This deliberately replaces any Voronoi-cell rendering — b2's
+// world is discrete organisms laid out on catalogue paper, never a tiling
+// lattice (that geometry belongs to a3). As the machine order rises the
+// blob's rotation aligns to the page axes, its proportions normalize, and
+// its outline simplifies — a living form becoming a filed entry.
+float specimenSd(vec2 p, vec2 cc, float order) {
+  vec2 anchor = commAnchor(cc, order);
+  vec2 local = p - (cc + anchor);
+  float o = commOrderAmt(cc, order);
+  float h1 = ttHash21(cc + vec2(21.0, 8.8));
+  float h2 = ttHash21(cc + vec2(33.0, 1.2));
+  float h3 = ttHash21(cc + vec2(41.0, 6.6));
+  float ang = mix(h3 * 6.2831853, 0.0, o);
+  float elong = mix(0.62, 1.55, h2);
+  elong = mix(elong, clamp(elong, 0.85, 1.2), o);
+  vec2 sl = ttRot(-ang) * local;
+  sl.x /= elong;
+  float th = atan(sl.y, sl.x);
+  float wobAmp = mix(1.0, 0.3, o);
+  float wob = (0.07 * sin(3.0 * th + h1 * 6.2831853)
+             + 0.045 * sin(5.0 * th + h2 * 6.2831853)
+             + 0.028 * sin(7.0 * th + h3 * 6.2831853)) * wobAmp;
+  float R0 = (0.21 + 0.13 * h1) * mix(1.0, 0.9, o);
+  return length(sl) - R0 * (1.0 + wob);
+}
+
+// Nearest-specimen search over the ${W}x${W} window: the fragment belongs
+// to whichever specimen silhouette it is deepest inside (or nearest to).
+// No perpendicular-bisector clipping — blobs are drawn whole, and where
+// two organic neighbours reach each other they layer like leaves instead
+// of cutting a straight Voronoi chord.
+void specimenSearch(vec2 p, float order, out vec2 cellCoord, out vec2 cellPoint, out float sd) {
   vec2 n = floor(p);
-  vec2 f = fract(p);
-  vec2 mg = vec2(0.0);
-  vec2 mr = vec2(0.0);
-  vec2 winOff = vec2(0.5);
-  float md = 8.0;
+  cellCoord = n;
+  cellPoint = n + vec2(0.5);
+  sd = 9.0;
   for (int j = -${R}; j <= ${R}; j++) {
     for (int i = -${R}; i <= ${R}; i++) {
-      vec2 g = vec2(float(i), float(j));
-      vec2 o = commAnchor(n + g);
-      vec2 r = g + o - f;
-      float d = dot(r, r);
-      if (d < md) { md = d; mr = r; mg = g; winOff = o; }
+      vec2 cc = n + vec2(float(i), float(j));
+      float d = specimenSd(p, cc, order);
+      if (d < sd) { sd = d; cellCoord = cc; cellPoint = cc + commAnchor(cc, order); }
     }
   }
-  float mdEdge = 8.0;
-  for (int j = -${R}; j <= ${R}; j++) {
-    for (int i = -${R}; i <= ${R}; i++) {
-      vec2 g = vec2(float(i), float(j));
-      vec2 o = commAnchor(n + g);
-      vec2 r = g + o - f;
-      vec2 diff = mr - r;
-      if (dot(diff, diff) > 0.00001) {
-        mdEdge = min(mdEdge, dot(0.5 * (mr + r), normalize(r - mr)));
-      }
-    }
-  }
-  cellCoord = n + mg;
-  cellPoint = n + mg + winOff;
-  edgeDist = mdEdge;
 }
 
 void main() {
@@ -198,8 +210,9 @@ void main() {
   vec2 p = (field - 0.5) * uCommFreq;
 
   vec2 cc, cellPoint;
-  float edgeDist;
-  commVoronoi(p, cc, cellPoint, edgeDist);
+  float sd;
+  specimenSearch(p, uMachineOrder, cc, cellPoint, sd);
+  float ordAmt = commOrderAmt(cc, uMachineOrder);
 
   // Whole-patch read (anchor's field-uv - the "flattening" read, every
   // fragment in a community shares one vitality/classified value) and the
@@ -246,22 +259,32 @@ void main() {
   float nI = ttFbm3(rl + advect);
   float band = smoothstep(0.46, 0.54, nI);
   float patternContrast = band * cellVitality * (1.0 - classFlat);
-  commCol *= mix(0.8, 1.22, patternContrast);
 
-  // --- ground compositing: communities occupy their patch, ground shows
-  // through near patch edges (the "specimens on paper" read) ---
-  float patchEdgeMask = smoothstep(0.0, 0.05, edgeDist);
-  float patchStrength = mix(0.35, 1.0, cellVitality) * patchEdgeMask;
-  vec3 patchworkCol = mix(GROUND, commCol, patchStrength);
+  // --- specimen-on-paper compositing: organic ink-rimmed silhouette with
+  // a soft cast shadow, bone paper everywhere between specimens ---
+  float saa = fwidth(sd) * 1.2 + 0.001;
+  float specimenMask = smoothstep(saa, -saa, sd);
+  float rim = 1.0 - smoothstep(0.0, saa * 3.0, abs(sd));
+  // Shadow: the winner's own silhouette shifted down-right, drawn only on
+  // the paper (an object resting on the page, not a glow).
+  float sdSh = specimenSd(p - vec2(0.05, -0.06), cc, uMachineOrder);
+  float shadow = (1.0 - smoothstep(-0.02, 0.1, sdSh)) * (1.0 - specimenMask) * 0.2;
+
+  vec3 paper = mix(GROUND, GROUND * vec3(0.8, 0.76, 0.72), shadow);
+  vec3 skinCol = commCol * mix(0.8, 1.22, patternContrast);
+  // Field-guide outline ink: dark, leaning toward the community's own hue.
+  vec3 inkLine = mix(vec3(0.16, 0.1, 0.08), commCol * 0.35, 0.4);
+  vec3 patchworkCol = mix(paper, skinCol, specimenMask);
+  patchworkCol = mix(patchworkCol, inkLine, rim * mix(0.85, 0.55, classFlat));
   patchworkCol += commCol * fragState.b * 0.6; // local poke re-ignition glow
 
   vec3 col = patchworkCol;
   vec3 machineCol = GROUND;
 
-  // Archive ink: faint rust label-rows on the ground where a community has
-  // been scanned before (persistent, independent of current vitality).
+  // Archive ink: faint rust label-rows on the PAPER where scans have
+  // happened (persistent, independent of current vitality).
   float inkRow = step(0.5, fract(field.y * 40.0)) * step(fract(field.x * 3.0), 0.6);
-  float inkAlpha = fragState.a * uInkPersist * inkRow * patchEdgeMask;
+  float inkAlpha = fragState.a * uInkPersist * inkRow * (1.0 - specimenMask * 0.85);
   col = mix(col, RUST * 0.32, inkAlpha * 0.7);
   machineCol = mix(machineCol, RUST * 0.32, inkAlpha * 0.7);
 
@@ -275,8 +298,11 @@ void main() {
   float cols = 2.0 + step(0.5, lbColsH);
   float baseIdx = floor(lbBaseH * 4.0);
   float langAngle = baseIdx < 0.5 ? 0.0 : (baseIdx < 1.5 ? 0.26 : (baseIdx < 2.5 ? -0.26 : 0.52));
+  // The script's baseline straightens to the page axes as this community is
+  // pulled into machine order — even the writing loses its slant.
+  langAngle = mix(langAngle, 0.0, ordAmt);
 
-  vec2 gg = (ttRot(langAngle) * local) * 7.0;
+  vec2 gg = (ttRot(langAngle) * local) * 10.0;
   vec2 gid = floor(gg);
   vec2 q = fract(gg);
   vec2 fwg = fwidth(gg);
@@ -291,7 +317,8 @@ void main() {
   float colFrac = fract(colIdxF);
   float colGate = step(colFrac, 0.62) * step(0.0, colIdxFloor) * step(colIdxFloor, cols - 0.5);
 
-  float marginMask = smoothstep(0.02, 0.07, edgeDist);
+  // Script lives INSIDE the specimen, clear of the outline rim.
+  float marginMask = smoothstep(0.015, 0.05, -sd);
 
   // Per-glyph staggered re-roll (the "chatter") - ttHash21(gid) offsets each
   // cell's re-roll phase so consecutive re-rolls never land on every glyph
@@ -331,7 +358,7 @@ void main() {
   livingInkColor = mix(livingInkColor, commCol * 1.5, uGlyphKick * kickSel);
 
   // --- machine code: fixed grammar, single column, raster-order row pulse ---
-  vec2 gm = local * 7.0;
+  vec2 gm = local * 10.0;
   vec2 gmid = floor(gm);
   vec2 gmq = fract(gm);
   float inCol = gmid.x == 0.0 ? 1.0 : 0.0;

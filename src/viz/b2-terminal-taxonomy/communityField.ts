@@ -104,16 +104,28 @@ vec2 ttHash22(vec2 p) {
   p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
   return fract(sin(p) * 43758.5453);
 }
-// Feature point (nucleus) inside integer community cell cc, confined to
-// [0.12, 0.88] within the cell (matches a3-biome-dominoes' anchor idiom).
-vec2 commAnchor(vec2 cc) { return vec2(0.12) + 0.76 * ttHash22(cc); }
+// Per-community machine-order amount: how far THIS community has drifted
+// from its organic placement toward the aligned museum-drawer grid, given
+// the global order knob (hash-staggered so communities align at different
+// moments, never all at once).
+float commOrderAmt(vec2 cc, float order) {
+  return clamp(order * (0.75 + 0.5 * ttHash21(cc + vec2(5.5, 2.2))), 0.0, 1.0);
+}
+// Feature point (nucleus) inside integer community cell cc. Organic scatter
+// confined to [0.22, 0.78] of the cell, sliding toward the cell CENTRE
+// (aligned drawer rows) as the machine order rises — the flattening enacted
+// spatially.
+vec2 commAnchor(vec2 cc, float order) {
+  vec2 organic = vec2(0.22) + 0.56 * ttHash22(cc);
+  return mix(organic, vec2(0.5), commOrderAmt(cc, order));
+}
 // Stable 0..1 classification order for a community — the ratchet's global
 // "how early does this community get classified" schedule.
 float commOrder(vec2 cc) { return ttHash21(cc + vec2(7.31, 3.77)); }
 // Nearest community to p (p already in community space = fieldUv * uCommFreq):
 // 3x3 search over integer cells around p, returns the WINNING cell's integer
 // coordinate (not the fractional nucleus position).
-vec2 commCell(vec2 p) {
+vec2 commCell(vec2 p, float order) {
   vec2 n = floor(p);
   vec2 f = fract(p);
   vec2 best = n;
@@ -122,7 +134,7 @@ vec2 commCell(vec2 p) {
     for (int i = -1; i <= 1; i++) {
       vec2 g = vec2(float(i), float(j));
       vec2 cc = n + g;
-      vec2 anchor = commAnchor(cc);
+      vec2 anchor = commAnchor(cc, order);
       vec2 r = g + anchor - f;
       float d = dot(r, r);
       if (d < bestD) { bestD = d; best = cc; }
@@ -252,12 +264,13 @@ varying vec2 vUv;
 uniform float uSeedFloor;
 uniform float uSeedVitality;
 uniform float uCommFreq;
+uniform float uSeedOrder;
 const float FIELD_SIZE = ${texSize.toFixed(1)};
 
 ${COMM_CELL_GLSL}
 
 void main() {
-  vec2 cc = commCell(vUv * uCommFreq);
+  vec2 cc = commCell(vUv * uCommFreq, uSeedOrder);
   float ord = commOrder(cc);
   // Communities with commOrder(cc) < uSeedFloor are already classified.
   float c0 = 1.0 - smoothstep(uSeedFloor - 0.05, uSeedFloor + 0.05, ord);
@@ -298,6 +311,7 @@ interface SeedUniforms {
   uSeedFloor: { value: number };
   uSeedVitality: { value: number };
   uCommFreq: { value: number };
+  uSeedOrder: { value: number };
 }
 
 export class CommunityField {
@@ -391,6 +405,7 @@ export class CommunityField {
       uSeedFloor: { value: 0 },
       uSeedVitality: { value: 0.8 },
       uCommFreq: { value: 6 },
+      uSeedOrder: { value: 0 },
     };
     this.seedMaterial = new THREE.ShaderMaterial({
       vertexShader: ORTHO_VERT,
@@ -440,12 +455,13 @@ export class CommunityField {
     this.renderer.setRenderTarget(prevTarget ?? null);
   }
 
-  /** One-shot analytic seed for `?t=` deep links: writes classified/vitality/ink state straight from the community lattice at `commFreq`, floored by `classifiedFloor` (sections.ts's ActParams.classifiedFloor). Re-seeds BOTH ping-pong targets, correct regardless of parity. */
-  seedField(classifiedFloor: number, commFreq: number): void {
+  /** One-shot analytic seed for `?t=` deep links: writes classified/vitality/ink state straight from the community lattice at `commFreq` (anchors at `machineOrder` spatial drift), floored by `classifiedFloor` (sections.ts's ActParams). Re-seeds BOTH ping-pong targets, correct regardless of parity. */
+  seedField(classifiedFloor: number, commFreq: number, machineOrder: number): void {
     const seedUniforms = this.seedMaterial.uniforms as unknown as SeedUniforms;
     seedUniforms.uSeedFloor.value = classifiedFloor;
     seedUniforms.uSeedVitality.value = this.params?.vitalityTarget ?? 0.8;
     seedUniforms.uCommFreq.value = commFreq;
+    seedUniforms.uSeedOrder.value = machineOrder;
     const prevTarget = this.renderer.getRenderTarget();
     const prevMaterial = this.quad.material;
     this.quad.material = this.seedMaterial;

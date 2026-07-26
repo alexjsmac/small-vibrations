@@ -81,6 +81,8 @@ export interface ActParams {
   chatterRate: number;
   /** 0..1 fraction of script rendered as uniform machine code regardless of local classified state. */
   machineFrac: number;
+  /** 0..1 spatial machine order: specimen anchors drift from organic scatter to aligned museum-drawer rows, rotations align to the page, outlines simplify, scripts straighten. Monotonic across the track. */
+  machineOrder: number;
   /** 0..1 monotonic floor for the classified ratchet (seeds the field on ?t= deep links). */
   classifiedFloor: number;
   /** Voronoi community frequency (cells across field space). */
@@ -115,7 +117,7 @@ export const ACTS: ActParams[] = [
     name: 'thriving-field',
     vitalityTarget: 0.95, churn: 0.9, scanRate: 0, scanDrain: 0, misProb: 0,
     classifyPressure: 0, waveRate: 0, gridStrength: 0, gridFine: 0,
-    glyphDensity: 0.85, chatterRate: 1.2, machineFrac: 0, classifiedFloor: 0,
+    glyphDensity: 0.85, chatterRate: 1.2, machineFrac: 0, machineOrder: 0.0, classifiedFloor: 0,
     commFreq: 6, zoom: 1.18, survivorFocus: 0,
     hueSat: 1.0, warmth: 0.55, rustMix: 0.05, inkPersist: 0,
     vignette: 0.3, motes: 0.15, groundLight: 0.9,
@@ -126,7 +128,7 @@ export const ACTS: ActParams[] = [
     name: 'first-scans',
     vitalityTarget: 0.85, churn: 0.8, scanRate: 5, scanDrain: 0.5, misProb: 0.3,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.18, gridFine: 0.25,
-    glyphDensity: 0.8, chatterRate: 1.0, machineFrac: 0.08, classifiedFloor: 0.06,
+    glyphDensity: 0.8, chatterRate: 1.0, machineFrac: 0.08, machineOrder: 0.05, classifiedFloor: 0.06,
     commFreq: 6, zoom: 1.05, survivorFocus: 0,
     hueSat: 0.92, warmth: 0.5, rustMix: 0.15, inkPersist: 0.5,
     vignette: 0.32, motes: 0.08, groundLight: 0.9,
@@ -137,7 +139,7 @@ export const ACTS: ActParams[] = [
     name: 'accelerating-catalogue',
     vitalityTarget: 0.70, churn: 0.75, scanRate: 16, scanDrain: 0.7, misProb: 0.15,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.42, gridFine: 0.5,
-    glyphDensity: 0.7, chatterRate: 0.9, machineFrac: 0.3, classifiedFloor: 0.28,
+    glyphDensity: 0.7, chatterRate: 0.9, machineFrac: 0.3, machineOrder: 0.25, classifiedFloor: 0.28,
     commFreq: 6, zoom: 0.98, survivorFocus: 0,
     hueSat: 0.8, warmth: 0.45, rustMix: 0.35, inkPersist: 0.8,
     vignette: 0.35, motes: 0.05, groundLight: 0.9,
@@ -149,7 +151,7 @@ export const ACTS: ActParams[] = [
     name: 'last-unclassified',
     vitalityTarget: 0.90, churn: 0.6, scanRate: 1.5, scanDrain: 0.4, misProb: 0,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.10, gridFine: 0.15,
-    glyphDensity: 0.9, chatterRate: 0.7, machineFrac: 0.35, classifiedFloor: 0.34,
+    glyphDensity: 0.9, chatterRate: 0.7, machineFrac: 0.35, machineOrder: 0.3, classifiedFloor: 0.34,
     commFreq: 6, zoom: 2.9, survivorFocus: 1,
     hueSat: 0.85, warmth: 0.5, rustMix: 0.3, inkPersist: 0.5,
     vignette: 0.5, motes: 0.05, groundLight: 0.9,
@@ -161,7 +163,7 @@ export const ACTS: ActParams[] = [
     name: 'total-classification',
     vitalityTarget: 0.25, churn: 0.5, scanRate: 34, scanDrain: 1.0, misProb: 0,
     classifyPressure: 0.35, waveRate: 10, gridStrength: 1.0, gridFine: 1.0,
-    glyphDensity: 0.55, chatterRate: 1.4, machineFrac: 0.9, classifiedFloor: 0.9,
+    glyphDensity: 0.55, chatterRate: 1.4, machineFrac: 0.9, machineOrder: 0.85, classifiedFloor: 0.9,
     commFreq: 6, zoom: 0.82, survivorFocus: 0,
     hueSat: 0.4, warmth: 0.35, rustMix: 0.62, inkPersist: 1.0,
     vignette: 0.38, motes: 0.02, groundLight: 0.9,
@@ -173,7 +175,7 @@ export const ACTS: ActParams[] = [
     name: 'residue',
     vitalityTarget: 0.10, churn: 0.25, scanRate: 0, scanDrain: 0, misProb: 0,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.06, gridFine: 0,
-    glyphDensity: 0.08, chatterRate: 0.3, machineFrac: 1.0, classifiedFloor: 0.93,
+    glyphDensity: 0.08, chatterRate: 0.3, machineFrac: 1.0, machineOrder: 1.0, classifiedFloor: 0.93,
     commFreq: 6, zoom: 1.15, survivorFocus: 0,
     hueSat: 0.2, warmth: 0.3, rustMix: 0.45, inkPersist: 0.35,
     vignette: 0.45, motes: 0.5, groundLight: 1.0,
