@@ -1,0 +1,388 @@
+/**
+ * Voronoi biome-cell display shader for a3 "Biome Dominoes". Renders the
+ * excitable field (excitableField.ts) as a lattice of biome cells: each cell
+ * samples the activation field at its OWN feature point, so the whole cell
+ * lights uniformly as the wave crosses it — a continuous travelling wave read
+ * per-cell as sequential domino hops. Edge filaments between adjacent firing
+ * cells are the visible "chain links".
+ *
+ * Screen -> field mapping is the house formula (b1's dish shader):
+ *   field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan
+ * pointer.ts / index.ts reuse the SAME formula for screen->field, never a
+ * parallel inverse. The field target is RepeatWrapping, so field-space past
+ * [0,1] tiles seamlessly (the synchrony pull-back).
+ *
+ * Palette (electric neural — transmission/signal, distinct from b1's organic
+ * wetness): deep indigo substrate; life-bloom chartreuse; hot cyan leading
+ * edge; magenta-violet refractory afterglow; hot-pink warmth accent.
+ *
+ * Channels read from the field texture: .r = u (activation), .g = v
+ * (recovery/refractory). NO backticks inside the GLSL (template-literal
+ * truncation trap — a2 lesson); the built source is rendered to a file and
+ * read during the build.
+ *
+ * uSoloMode: 0 = full lattice render; 1 = raw field heat (u->red, v->green)
+ * for isolating/debugging the sim itself (?solo=field).
+ */
+
+export const LATTICE_VERT = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+export function buildLatticeFragment(rippleSlots: number, reach: number = 2): string {
+  // Voronoi search window half-width. reach=2 (5x5, 25 cells) is exact for the
+  // filament threshold given the [0.12,0.88] offset confinement; reach=1
+  // (3x3, 9 cells) is the cheaper Lite fallback (occasional filament gaps near
+  // triple junctions). Loop bounds/array size are interpolated so the loops
+  // still unroll with constant literals.
+  const R = Math.max(1, Math.floor(reach));
+  const W = 2 * R + 1;
+  const N = W * W;
+  return `
+precision highp float;
+varying vec2 vUv;
+
+uniform sampler2D uField;
+uniform vec2 uCover;
+uniform vec2 uPan;
+uniform float uZoom;
+uniform float uCellFreq;
+uniform float uFieldSize;   // storage texels per side of the field target (for texel-snapped .ba reads)
+uniform float uRewireJump;  // 0..1 nucleus travel amplitude (lattice rewiring)
+uniform float uRewireCrack; // 0..1 edge break/crack-shimmer intensity
+uniform float uTime;
+uniform float uFlash;     // full-scene event flash (0..~1.6, slow channel)
+uniform float uSparkle;   // smoothed high-band shimmer (0..1)
+uniform float uSparkKick; // high-ONSET fast kick+decay channel (a2 tempo-separation idiom)
+uniform float uSparkSeed; // per-spark-event counter — re-rolls WHICH cells flash each event
+uniform vec4 uRipple[${rippleSlots}]; // tap ripples: xy field pos, z age (s), w strength (0 = inactive)
+uniform vec4 uRing;       // collapse de-activation ring: xy centre (field uv), z radius, w strength — shared BY REFERENCE with the sim's uSuppress
+uniform float uEnergy;   // arcAt continuous energy envelope (0..1)
+uniform float uBloomGain;
+uniform float uSat;
+uniform float uFrontGain;
+uniform float uRefractGlow;
+uniform float uFilament;
+uniform float uMicroTex;
+uniform float uCellLife;   // 0..1 intra-cell interior life intensity
+uniform float uWarmth;
+uniform float uDust;
+uniform int uSoloMode;
+
+const vec3 SUBSTRATE = vec3(0.055, 0.028, 0.13);   // deep indigo
+const vec3 SUBSTRATE_HOT = vec3(0.10, 0.030, 0.085); // bruised maroon (strain lean)
+const vec3 BLOOM     = vec3(0.55, 1.0, 0.12);      // electric chartreuse (life)
+const vec3 FRONT     = vec3(0.16, 0.94, 0.86);     // hot cyan leading edge
+const vec3 REFRACT   = vec3(0.70, 0.28, 0.95);     // magenta-violet afterglow
+const vec3 WARM      = vec3(1.0, 0.26, 0.52);       // hot-pink warmth accent
+
+float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+vec2 hash22(vec2 p) {
+  p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return fract(sin(p) * 43758.5453);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+             mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { s += a * vnoise(p); p *= 2.0; a *= 0.5; }
+  return s;
+}
+
+// Lattice rewiring: a cell's feature point (nucleus) = a static organic ANCHOR
+// plus an activation-driven JUMP. The sim (excitableField.ts) writes a per-cell
+// generation counter (.b) and transition phase (.a) each time a wave fires the
+// cell; here the nucleus slides from the previous generation's target to the
+// current one's over the phase, so walls flex and adjacencies change while the
+// cell is refractory ("the fallen domino is rebuilt in a new orientation").
+// jump=0 -> nucleus stays at the anchor for every generation -> frozen AND
+// organic (matches the shipped lattice).
+const float RW_MAXJUMP = 0.30;
+const vec2 RW_KEY = vec2(13.73, 7.51);
+
+// Returns the cell's current feature offset (within-cell, confined to
+// [0.12,0.88] so the ${W}x${W} search stays exact) and its transition phase.
+vec2 cellOffset(vec2 cc, out float phase) {
+  vec2 anchor = vec2(0.12) + 0.76 * hash22(cc);
+  // Read rewire state at the cell's STATIC home centre (never the moving
+  // nucleus - that would be circular), snapped to the storage-texel centre so
+  // LINEAR filtering can't bilinearly blend the integer generation counter
+  // across a wave seam (which would flicker / replay the slide backward).
+  vec2 home = (cc + 0.5) / uCellFreq + 0.5;
+  vec2 snapped = (floor(home * uFieldSize) + 0.5) / uFieldSize;
+  vec2 ba = texture2D(uField, snapped).ba;
+  float gen = floor(ba.x + 0.5);
+  phase = smoothstep(0.0, 1.0, ba.y);
+  float jumpR = uRewireJump * RW_MAXJUMP;
+  // Per-generation target: anchor + a hashed unit-vector step, clamped in-window
+  // (the clamp is what guarantees the search stays exact at any jump amplitude).
+  // mod(gen, 64) keeps the hash argument small (float32 sin precision).
+  float ang0 = hash21(cc + mod(gen - 1.0, 64.0) * RW_KEY) * 6.2831853;
+  float ang1 = hash21(cc + mod(gen, 64.0) * RW_KEY) * 6.2831853;
+  vec2 t0 = clamp(anchor + jumpR * vec2(cos(ang0), sin(ang0)), vec2(0.12), vec2(0.88));
+  vec2 t1 = clamp(anchor + jumpR * vec2(cos(ang1), sin(ang1)), vec2(0.12), vec2(0.88));
+  return mix(t0, t1, phase);
+}
+
+// iq Voronoi with edge distance (2007), over a single n-centred ${W}x${W} window
+// (offsets precomputed once into offs[] so both the nearest-search and the
+// edge-distance pass read the same rewired feature points). Also returns the
+// winning cell's transition phase for the break-and-reform rendering.
+void voronoi(vec2 p, out vec2 cellCoord, out vec2 cellPoint, out float edgeDist, out float winPhase, out vec2 nucVec) {
+  vec2 n = floor(p);
+  vec2 f = fract(p);
+  vec2 offs[${N}];
+  vec2 mg = vec2(0.0);
+  vec2 mr = vec2(0.0);
+  vec2 winOff = vec2(0.5);
+  float md = 8.0;
+  float winPh = 1.0;
+  for (int j = -${R}; j <= ${R}; j++) {
+    for (int i = -${R}; i <= ${R}; i++) {
+      vec2 g = vec2(float(i), float(j));
+      float ph;
+      vec2 o = cellOffset(n + g, ph);
+      offs[(i + ${R}) + (j + ${R}) * ${W}] = o;
+      vec2 r = g + o - f;
+      float d = dot(r, r);
+      if (d < md) { md = d; mr = r; mg = g; winOff = o; winPh = ph; }
+    }
+  }
+  float mdEdge = 8.0;
+  for (int j = -${R}; j <= ${R}; j++) {
+    for (int i = -${R}; i <= ${R}; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 o = offs[(i + ${R}) + (j + ${R}) * ${W}];
+      vec2 r = g + o - f;
+      vec2 diff = mr - r;
+      if (dot(diff, diff) > 0.00001) {
+        mdEdge = min(mdEdge, dot(0.5 * (mr + r), normalize(r - mr)));
+      }
+    }
+  }
+  cellCoord = n + mg;
+  cellPoint = n + mg + winOff;
+  edgeDist = mdEdge;
+  winPhase = winPh;
+  nucVec = mr;
+}
+
+void main() {
+  // Screen uv -> field uv (house formula, shared with the pointer inverse).
+  vec2 field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan;
+  // Centre-anchored Voronoi scaling: when uCellFreq animates (the synchrony
+  // pull-back lerps 10 -> 17), the pattern must recede from the VIEW CENTRE,
+  // not slide diagonally away from the field's (0,0) corner.
+  vec2 p = (field - 0.5) * uCellFreq;
+
+  vec2 cellCoord, cellPoint;
+  float edgeDist;
+  float winPhase;
+  vec2 nucVec;
+  voronoi(p, cellCoord, cellPoint, edgeDist, winPhase, nucVec);
+  // Peaks mid-slide (0 when settled): drives the visible break-and-reform.
+  float rearr = winPhase * (1.0 - winPhase) * 4.0;
+
+  // Sample the excitable field at the CELL's feature point (whole cell shares
+  // one activation value -> the domino read) and at the FRAGMENT (continuous,
+  // for filament continuity across a shared border between two firing cells).
+  // Invert the centre-anchored scaling above; RepeatWrapping handles out-of-[0,1].
+  vec2 cellUv = cellPoint / uCellFreq + 0.5;
+  vec4 cellF = texture2D(uField, cellUv);
+  vec4 fragF = texture2D(uField, field);
+  float u = cellF.r;          // cell activation
+  float v = cellF.g;          // cell recovery (refractory)
+  float fragU = fragF.r;      // fragment activation (border blend)
+
+  if (uSoloMode == 1) {
+    // Raw field heat for sim debugging: u->red/orange, v->green.
+    gl_FragColor = vec4(fragF.r, fragF.g * 0.7, fragF.r * 0.3, 1.0);
+    return;
+  }
+  if (uSoloMode == 2) {
+    // Rewire debug: generation counter (.b) as a cycling hue, phase (.a) green.
+    float g = texture2D(uField, cellUv).b;
+    vec3 gcol = 0.5 + 0.5 * cos(6.2831853 * (g * 0.16 + vec3(0.0, 0.33, 0.67)));
+    gl_FragColor = vec4(gcol * (0.4 + 0.6 * winPhase), 1.0);
+    return;
+  }
+
+  float cellRand = hash21(cellCoord + 3.17);
+
+  // --- cell fill ---
+  // Substrate leans from cool indigo toward bruised maroon as warmth rises
+  // (strain must read HOT, not bleached).
+  vec3 base = mix(SUBSTRATE, SUBSTRATE_HOT, uWarmth * 0.6);
+  vec3 col = base;
+  // Faint idle breathing so dormant cells aren't dead-flat.
+  col += base * 0.5 * (0.4 + 0.6 * vnoise(cellCoord * 1.3 + uTime * 0.05));
+
+  // Micro-biome interior texture: fbm keyed to the cell, modulating the bloom.
+  float interior = fbm(cellCoord * 2.0 + p * 0.6 + cellRand * 10.0);
+  float micro = mix(1.0, 0.55 + 0.9 * interior, uMicroTex);
+
+  // Activation colour: chartreuse life-bloom in the body, shifting to hot cyan
+  // ONLY at the fresh front. The excited plateau holds u~1 for the whole
+  // active window, so keying the cyan on high-u alone turns every fired cell
+  // pale cyan-white. Instead key it on the FRONT — high u AND recovery v not
+  // yet risen (v climbs within a fraction of a second of firing) — so an
+  // established excited cell reads as saturated lime and only the just-arrived
+  // wavefront is cyan. Built as a hue MIX, not two bright colours summed, so a
+  // fully excited cell never washes to white (the b1 lesson).
+  float bloom = smoothstep(0.1, 0.72, u);
+
+  // ---- intra-cell life: each cell is its own little organism. nucVec is the
+  // fragment->nucleus vector (cell units); lr is 0 at the nucleus and grows to
+  // the cell edge. Per-cell hashes make every cell's interior DIFFERENT (some
+  // churn like plasma, some pulse clean rings, some glow from a tight core) so
+  // the field never looks tiled. Always-on at rest, flaring on activation.
+  float lr = length(nucVec);
+  float ang = atan(nucVec.y, nucVec.x);
+  float h1 = hash21(cellCoord + 11.3);
+  float h2 = hash21(cellCoord + 27.9);
+  float h3 = hash21(cellCoord + 51.7);
+  float ph = cellRand * 6.2831853;
+  float core = exp(-lr * lr * (4.0 + 8.0 * h2));
+  float cScale = 3.0 + 3.5 * h1;
+  float cSpeed = 0.10 + 0.20 * h3;
+  float cwarp = fbm(nucVec * cScale + ph + uTime * cSpeed);
+  float churn = fbm(nucVec * (cScale * 1.4) + cwarp + ph);
+  float arms = 2.0 + floor(4.0 * h3);
+  float cdir = h1 < 0.5 ? -1.0 : 1.0;
+  float swirl = 0.5 + 0.5 * sin(ang * arms + cdir * uTime * 0.6 + lr * (6.0 + 6.0 * h2) + ph);
+  float ringFreq = 10.0 + 12.0 * h1;
+  float ripple = (0.5 + 0.5 * sin(lr * ringFreq - v * (14.0 + 8.0 * h2)))
+               * smoothstep(0.03, 0.4, v)
+               * (1.0 - smoothstep(0.55, 1.0, lr));
+  float wCore   = 0.35 + 0.7 * h2;
+  float wChurn  = 0.35 + 0.7 * h1;
+  float wRipple = 0.5  + 0.9 * h3;
+  float idleLife   = wCore * core * 0.55 + wChurn * churn * swirl * 0.5;
+  float activeLife = wRipple * ripple * 1.1
+                   + wChurn * churn * (0.4 + 0.8 * swirl) * bloom
+                   + wCore * core * bloom * 0.7;
+  col += (base + vec3(0.05, 0.08, 0.13)) * idleLife * uCellLife * 1.6;
+
+  float front = smoothstep(0.5, 0.85, u) * (1.0 - smoothstep(0.12, 0.4, v));
+  vec3 hot = mix(BLOOM, FRONT, front * 0.85 * uFrontGain);
+  // Warmth is a true HUE rotation of the excited body toward hot pink — the
+  // old additive pink accent whitened through the tone-map and strain read
+  // bleached instead of hot.
+  hot = mix(hot, WARM, uWarmth * 0.55);
+  col += hot * uBloomGain * bloom * micro * (0.5 + 0.9 * activeLife * uCellLife);
+  col += hot * uBloomGain * (wRipple * ripple * 0.6 + wCore * core * 0.35) * bloom * uCellLife;
+
+  // A small near-white kiss at the very leading edge (kept subtle — it is
+  // the main whitening pressure on excited cells).
+  col += vec3(0.85, 1.0, 0.92) * uFrontGain * front * 0.3;
+
+  // Magenta-violet refractory afterglow: v high while u has decayed away.
+  // Loose threshold (1.1, was 1.3) — the recharge state is half the domino
+  // concept ("standing back up") and deserves screen time.
+  float refractory = clamp(v - u * 1.1, 0.0, 1.0);
+  col += REFRACT * uRefractGlow * refractory;
+
+  // --- break apart: open a black seam along a rewiring cell's borders (widest
+  // mid-slide), knitting closed as it settles. The nucleus is already sliding
+  // (cellPoint moved) so the tessellation is genuinely reorganizing; this makes
+  // the fracture legible. Zero when the lattice is frozen (rearr = 0).
+  float gapW = rearr * uRewireCrack * 0.03;
+  col *= smoothstep(gapW, gapW + 0.008, edgeDist);
+
+  // --- edge filaments (the "chain links") ---
+  // A thin bright line along cell borders, brightened where the border is
+  // active (fragU high) so links between firing cells read as connections.
+  // Low resting base so the idle lattice stays indigo and active chains pop.
+  float line = smoothstep(0.055, 0.0, edgeDist);
+  float linkGlow = 0.08 + 1.7 * fragU;
+  // High-onset spark events lift the filament web for a beat — kept modest
+  // (the a2 strobe trap: a fast channel must not slam everything it touches;
+  // the per-cell constellation below carries the event's identity).
+  linkGlow += uSparkKick * 0.5;
+  vec3 filColor = mix(FRONT, vec3(0.9, 1.0, 0.95), front);
+  col += filColor * uFilament * line * linkGlow;
+
+  // Crack-shimmer: a hot hairline tracing the reforming boundary of a fracturing
+  // cell (a bit wider than the filament line so it reads as the fresh fracture,
+  // not the settled wall). Peaks mid-slide with rearr; zero when frozen.
+  col += FRONT * rearr * uRewireCrack * smoothstep(0.05, 0.0, edgeDist);
+
+  // --- sparkle: smoothed high-band twinkle on active cell interiors ---
+  float tw = hash21(cellCoord * 7.3 + floor(uTime * 12.0));
+  col += BLOOM * uSparkle * bloom * step(0.85, tw) * 0.8;
+
+  // --- high-ONSET spark events: the fast channel. Each event re-rolls which
+  // cells flash (hash keyed by the per-event counter — the a2 idiom), so
+  // consecutive hi-hat hits light different constellations.
+  float twk = hash21(cellCoord * 5.1 + uSparkSeed * 17.0);
+  col += vec3(0.85, 1.0, 0.95) * uSparkKick * step(0.78, twk) * (0.3 + 0.7 * bloom);
+
+  // --- atmospheric dust haze (very cheap; drifts) ---
+  float haze = fbm(field * 3.5 + uTime * 0.03);
+  col += vec3(0.10, 0.06, 0.18) * uDust * (haze - 0.4);
+  // Sparse bright motes.
+  float mote = hash21(floor(field * 60.0) + floor(uTime * 0.7));
+  col += vec3(0.5, 0.7, 0.9) * uDust * 0.6 * bloom * step(0.995, mote);
+
+  // --- tap ripple rings: near-WHITE so they read on dark AND refractory-
+  // dense acts (the BRIEFING interaction rule) — a refractory cell can't
+  // re-fire, so without this a tap on recently-active tissue is invisible.
+  // Distance is torus-wrapped (d -= floor(d + 0.5)) per the BRIEFING poke
+  // rule, since the view spans wrapped copies of the field tile.
+  for (int i = 0; i < ${rippleSlots}; i++) {
+    vec4 rp = uRipple[i];
+    if (rp.w <= 0.0) continue;
+    vec2 rd = field - rp.xy;
+    rd -= floor(rd + 0.5);
+    float d = length(rd);
+    float r = 0.02 + rp.z * 0.30;
+    float ring = exp(-pow((d - r) * 70.0, 2.0)) * rp.w * exp(-rp.z * 2.8);
+    col += vec3(0.92, 0.97, 1.0) * ring;
+  }
+
+  // --- collapse death-front rim: a thin hot edge on the advancing
+  // de-activation ring, so the sweep itself is a visible object crossing the
+  // web (the killed darkness alone reads as "already off"). Torus-wrapped
+  // like the ripples; fades naturally once the radius outgrows the tile.
+  if (uRing.w > 0.0) {
+    vec2 rgd = field - uRing.xy;
+    rgd -= floor(rgd + 0.5);
+    float rgDist = length(rgd);
+    // Thin and restrained: a hot hairline where cells are dying, not a neon
+    // ring (the first pass at 42.0/0.85 dominated the whole frame).
+    float rim = exp(-pow((rgDist - uRing.z) * 110.0, 2.0)) * uRing.w;
+    col += WARM * rim * 0.38;
+    col += vec3(0.95, 0.9, 1.0) * rim * 0.07;
+  }
+
+  // --- global lifts ---
+  col *= (0.85 + 0.5 * uEnergy);         // energy envelope brightens the whole field
+  col += col * uFlash * 0.7;             // full-scene event flash
+
+  // Saturation control (toward luminance).
+  float luma = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(vec3(luma), col, uSat);
+
+  // Hue-preserving exposure tone-map (the b1 "additive washes to white"
+  // lesson): summed bloom + front + filament would clip a fully excited cell
+  // to pure white; 1 - exp(-col) compresses toward 1 per-channel WITHOUT
+  // collapsing the hue, so the excited core stays hot lime instead of blowing
+  // out. Darks (col << 1) are essentially unchanged.
+  col = vec3(1.0) - exp(-col * 1.15);
+
+  // Soft vignette to seat the lattice in the dark.
+  float vig = smoothstep(1.25, 0.35, length(vUv - 0.5));
+  col *= mix(0.72, 1.0, vig);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+}
