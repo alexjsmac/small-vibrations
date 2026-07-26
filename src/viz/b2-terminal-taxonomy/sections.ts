@@ -1,17 +1,19 @@
 /**
- * "Terminal Taxonomy" — a thriving patchwork of micro-communities, each with
- * its own hue, Turing-like interior pattern, and unreadable glyph script (its
- * "language"), progressively scanned, labeled, and flattened into one
- * uniform rust-toned machine catalogue on a pale bone ground. By the end,
- * only unclassifiable residue remains.
+ * "Terminal Taxonomy" — living micro-communities as discrete SPECIMENS on
+ * pale bone catalogue paper, each with its own hue, Turing-like skin, and
+ * unreadable glyph script (its "language"), progressively scanned, labeled,
+ * and flattened into one uniform rust-toned machine catalogue. By the end,
+ * only unclassifiable residue remains. Deliberately NOT a tiling cell
+ * lattice (that geometry is a3's): specimens are organic ink-rimmed
+ * silhouettes with paper between them, and `machineOrder` drifts the page
+ * from natural scatter to aligned museum-drawer rows as the catalogue wins.
  *
- * The signature element is a pair of GPU layers: a living Voronoi-community
- * field (reaction-diffusion interior texture + per-cell procedural glyph
- * script) and a classification-reticle scan system that stamps each
- * community, drains its vitality, and — once classified — rewrites its
- * script into one uniform machine grammar. The classified ratchet only
- * moves forward (`classifiedFloor`), so the catalogue never un-labels a
- * community; it only spreads.
+ * The signature element is a pair of GPU layers: the living specimen field
+ * (per-community skin + procedural glyph script) and a classification-
+ * reticle scan system that stamps each community, drains its vitality,
+ * and — once classified — rewrites its script into one uniform machine
+ * grammar. The classified ratchet only moves forward (`classifiedFloor`),
+ * so the catalogue never un-labels a community; it only spreads.
  *
  * Staged by song position from the master's 4s RMS/band profile (336.998s):
  *

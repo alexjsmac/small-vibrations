@@ -349,6 +349,20 @@ something that happens *now*, at a moment, and is gone.
 
 ## Lessons from b2 "Terminal Taxonomy" (the catalogue — ratchet, July 2026)
 
+- **Audit new tracks against SHIPPED tracks, not just against ARC.md.**
+  b2's first build rendered communities as a wall-to-wall Voronoi
+  tessellation — technically distinct from a3 in every system, yet Alex
+  immediately read it as "the Biome Dominoes lattice," because the
+  underlying GEOMETRY LANGUAGE (tiling polygon cells + bright walls) was
+  the same. The per-track failure-mode review can't catch this; add a
+  cross-track check to every contact sheet: put the new act stills next
+  to each shipped track's and ask what geometry family each reads as
+  (a1 fluid fields, a2 dual lattice, a3 Voronoi cell tissue, b1 vein
+  networks, b2 discrete silhouettes on ground). Each track must own its
+  geometry, not just its palette. The fix that worked: replace territory
+  tiling with a nearest-SDF search over discrete silhouettes — blobs
+  drawn whole on visible ground, layering like leaves instead of
+  clipping at bisectors.
 - **The 6s crossfade LEAKS the next act's maximum into a quiet act.**
   paramsAt's generic pre-boundary lerp is right for gradual arrivals but
   fatally wrong for a restraint-act → drop-act boundary: act 5's
@@ -461,10 +475,12 @@ Starting sketches only — concept per track is decided with the user:
   ugliness... a full biosphere."
 - **b2 Terminal Taxonomy** ✅ — misclassification as devastation (Alex's
   premise: AI systems evolving past small forgotten languages, erasing the
-  distinction between micro-communities). A Voronoi patchwork of living
-  communities — each with its own hue, Turing-blotch skin, and unreadable
-  procedural glyph script — scanned, labeled, and flattened into one rust
-  machine catalogue on pale bone paper (the album's one light ground).
+  distinction between micro-communities). Discrete SPECIMENS on catalogue
+  paper — organic ink-rimmed silhouettes, each with its own hue,
+  Turing-blotch skin, and unreadable procedural glyph script — scanned,
+  labeled, and flattened into one rust machine catalogue on pale bone
+  (the album's one light ground). `machineOrder` morphs the page from
+  natural scatter to aligned museum-drawer rows as the catalogue wins.
   Signature: classification reticles + per-community glyph languages
   (hash-bit grammars: stroke-angle family, curvature, columns, rotation)
   collapsing to one fixed machine code. Poke = resistance (un-classifies).
