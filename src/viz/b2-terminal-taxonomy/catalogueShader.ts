@@ -111,6 +111,11 @@ uniform float uSurvivorFocus;
 uniform float uDesat;
 uniform int uSoloMode;
 uniform float uFlicker;
+uniform float uLifeClock; // CPU-accumulated lifecycle clock (epochs, beat-accelerated) — drives specLife's appear/disappear cycle
+uniform float uPresence; // 0..1 fraction of specimens present per lifecycle epoch
+uniform float uWriggle; // 0..1 living-outline wriggle amplitude
+uniform float uDrift; // 0..1 anchor micro-wander amount
+uniform vec4 uWaveVis; // xy field-uv centre, z ring radius, w strength (0 = inactive) — the classification wave, shared with the sim's uWave
 uniform vec4 uScanA[${reticleSlots}]; // xy field-uv centre, z age (s), w strength (0 = inactive)
 uniform vec4 uScanB[${reticleSlots}]; // x radius, y mislabel flag, z label seed, w unused
 uniform vec4 uRipple[${rippleSlots}]; // xy field-uv, z age (s), w strength (0 = inactive)
@@ -155,15 +160,57 @@ float ttSegDist(vec2 p, vec2 a, vec2 b, float bow) {
   return length(p - closest);
 }
 
+// Beat-coupled appear/disappear lifecycle for community cc: returns the
+// current epoch's presence/scale envelope (0 = absent, ~1 = fully present,
+// briefly >1 on pop-in) and writes the epoch number (out param) so callers
+// can re-roll the anchor per-epoch (a respawned specimen appears in a NEW
+// spot). HERO OVERRIDE: cc==(0,0) (the opening image / loop-closure
+// identity) is pinned present at epoch 0 forever — it never blinks.
+float specLife(vec2 cc, out float epoch) {
+  if (cc == vec2(0.0)) { epoch = 0.0; return 1.0; }
+  float cycle = uLifeClock + ttHash21(cc + vec2(17.9, 4.4));
+  float e = floor(cycle);
+  float k = fract(cycle);
+  float presentE = step(ttHash21(cc + vec2(e * 7.7, 2.9)), uPresence);
+  float presentE1 = step(ttHash21(cc + vec2((e + 1.0) * 7.7, 2.9)), uPresence);
+  // Crossfade during the last 0.15 of the cycle so a respawn never pops
+  // instantaneously, plus a pop-in overshoot on the incoming epoch.
+  float x = smoothstep(0.85, 1.0, k);
+  float s = mix(presentE, presentE1, x);
+  s *= 1.0 + 0.15 * sin(3.14159 * smoothstep(0.0, 0.25, k)) * presentE;
+  epoch = e;
+  return s;
+}
+
+// Display-side anchor for community cc in its given lifecycle epoch — the
+// display must never call commAnchor directly (that's the sim's stable,
+// non-respawning placement). Organic base is RE-ROLLED PER EPOCH (a
+// respawned specimen lands in a new spot in its cell), drifts with a slow
+// micro-wander that fades out as machine order rises, then the order-mix
+// happens LAST so rows stay rows regardless of epoch/drift.
+vec2 specAnchor(vec2 cc, float epoch) {
+  float o = commOrderAmt(cc, uMachineOrder);
+  vec2 organic = vec2(0.22) + 0.56 * ttHash22(cc + vec2(epoch * 3.3, epoch * 1.7));
+  float h = ttHash21(cc + vec2(2.6, 8.1));
+  organic += 0.035 * vec2(sin(uTime * 0.13 + h * 6.2831853), cos(uTime * 0.11 + h * 4.1)) * uDrift * (1.0 - o);
+  organic = clamp(organic, vec2(0.06), vec2(0.94));
+  return mix(organic, vec2(0.5), o);
+}
+
 // Signed distance to community cc's SPECIMEN silhouette at community-space
 // point p: an organic, elongated, wobble-outlined blob around the cell's
 // anchor. This deliberately replaces any Voronoi-cell rendering — b2's
 // world is discrete organisms laid out on catalogue paper, never a tiling
 // lattice (that geometry belongs to a3). As the machine order rises the
 // blob's rotation aligns to the page axes, its proportions normalize, and
-// its outline simplifies — a living form becoming a filed entry.
+// its outline simplifies — a living form becoming a filed entry. Absent
+// specimens (mid-cycle, not this epoch's roll) return a large constant so
+// they drop out of the nearest-specimen search entirely.
 float specimenSd(vec2 p, vec2 cc, float order) {
-  vec2 anchor = commAnchor(cc, order);
+  float epoch;
+  float scaleEnv = specLife(cc, epoch);
+  if (scaleEnv < 0.01) return 9.0;
+  vec2 anchor = specAnchor(cc, epoch);
   vec2 local = p - (cc + anchor);
   float o = commOrderAmt(cc, order);
   float h1 = ttHash21(cc + vec2(21.0, 8.8));
@@ -175,19 +222,34 @@ float specimenSd(vec2 p, vec2 cc, float order) {
   vec2 sl = ttRot(-ang) * local;
   sl.x /= elong;
   float th = atan(sl.y, sl.x);
-  float wobAmp = mix(1.0, 0.3, o);
-  float wob = (0.07 * sin(3.0 * th + h1 * 6.2831853)
-             + 0.045 * sin(5.0 * th + h2 * 6.2831853)
-             + 0.028 * sin(7.0 * th + h3 * 6.2831853)) * wobAmp;
-  float R0 = (0.21 + 0.13 * h1) * mix(1.0, 0.9, o);
-  return length(sl) - R0 * (1.0 + wob);
+  // Time-animated wriggle: phase motion per wobble harmonic, amplitude
+  // scaled by the act's wriggle knob (ordered specimens still calm).
+  float wobAmp = mix(1.0, 0.3, o) * mix(0.35, 1.0, uWriggle);
+  float wob = (0.07 * sin(3.0 * th + h1 * 6.2831853 + uTime * 1.3)
+             + 0.045 * sin(5.0 * th + h2 * 6.2831853 - uTime * 1.7)
+             + 0.028 * sin(7.0 * th + h3 * 6.2831853 + uTime * 2.3)) * wobAmp;
+  float R0 = (0.21 + 0.13 * h1) * mix(1.0, 0.9, o) * scaleEnv;
+  float sd = length(sl) - R0 * (1.0 + wob);
+
+  // Wave pulse: specimens swell as the classification wave ring crosses
+  // them. uWaveVis.xy/z are FIELD-UV; the specimen anchor's field-uv is
+  // (cc + anchor) / uCommFreq + 0.5 (the house screen->field mapping run
+  // in reverse for a single community-space point).
+  vec2 wd = (cc + anchor) / uCommFreq + 0.5 - uWaveVis.xy;
+  wd -= floor(wd + 0.5);
+  float wp = exp(-pow((length(wd) - uWaveVis.z) * 18.0, 2.0)) * uWaveVis.w;
+  sd -= R0 * 0.06 * wp;
+
+  return sd;
 }
 
 // Nearest-specimen search over the ${W}x${W} window: the fragment belongs
 // to whichever specimen silhouette it is deepest inside (or nearest to).
 // No perpendicular-bisector clipping — blobs are drawn whole, and where
 // two organic neighbours reach each other they layer like leaves instead
-// of cutting a straight Voronoi chord.
+// of cutting a straight Voronoi chord. The winner's epoch/anchor are
+// resolved once more after the loop (specLife is cheap, and this keeps the
+// per-candidate inner loop free of an unused out-param write).
 void specimenSearch(vec2 p, float order, out vec2 cellCoord, out vec2 cellPoint, out float sd) {
   vec2 n = floor(p);
   cellCoord = n;
@@ -197,9 +259,12 @@ void specimenSearch(vec2 p, float order, out vec2 cellCoord, out vec2 cellPoint,
     for (int i = -${R}; i <= ${R}; i++) {
       vec2 cc = n + vec2(float(i), float(j));
       float d = specimenSd(p, cc, order);
-      if (d < sd) { sd = d; cellCoord = cc; cellPoint = cc + commAnchor(cc, order); }
+      if (d < sd) { sd = d; cellCoord = cc; }
     }
   }
+  float winEpoch;
+  specLife(cellCoord, winEpoch);
+  cellPoint = cellCoord + specAnchor(cellCoord, winEpoch);
 }
 
 void main() {
@@ -213,6 +278,10 @@ void main() {
   float sd;
   specimenSearch(p, uMachineOrder, cc, cellPoint, sd);
   float ordAmt = commOrderAmt(cc, uMachineOrder);
+  // Winner's own lifecycle scale — gates the pin+tag ink below (an absent
+  // specimen mid-cycle must not carry a label).
+  float winEpoch;
+  float winScale = specLife(cc, winEpoch);
 
   // Whole-patch read (anchor's field-uv - the "flattening" read, every
   // fragment in a community shares one vitality/classified value) and the
@@ -363,7 +432,8 @@ void main() {
   vec2 gmq = fract(gm);
   float inCol = gmid.x == 0.0 ? 1.0 : 0.0;
   float rowIndex = gmid.y + commOrder(cc) * 23.0;
-  float rowPhase = fract(uTime * 0.5 - rowIndex * 0.07);
+  // Code flickers faster on high onsets (uGlyphKick).
+  float rowPhase = fract(uTime * 0.5 * (1.0 + uGlyphKick * 2.0) - rowIndex * 0.07);
   float pulse = max(0.0, smoothstep(0.0, 0.08, rowPhase) - smoothstep(0.08, 0.22, rowPhase));
   float machCov = step(ttHash21(gmid + cc + 9.0), 0.55);
   float isDot = step(0.6, ttHash21(gmid + cc + 5.0));
@@ -384,6 +454,21 @@ void main() {
 
   col = mix(col, glyphColor, glyphAlpha);
 
+  // --- pin + tag: a classified, still-present specimen is pinned and
+  // labeled on the page — drawn as ink (mix-darken), not glow, so it holds
+  // VALUE contrast on both the bone and rust-graded ground. ---
+  float pinGate = smoothstep(0.5, 0.65, cellClassified) * winScale * uInkPersist;
+  vec2 pl = p - cellPoint;
+  float R0est = 0.27;
+  float pinOn = step(abs(pl.x), 0.012) * step(R0est, pl.y) * step(pl.y, R0est + 0.16);
+  vec2 tagLocal = pl - vec2(0.05, R0est + 0.2);
+  float tagOn = step(abs(tagLocal.x), 0.07) * step(abs(tagLocal.y), 0.045);
+  float tickBin = floor((tagLocal.x + 0.07) / 0.14 * 3.0);
+  float tickOn = tagOn * step(0.5, ttHash21(vec2(tickBin, cc.x + cc.y * 7.0))) * step(abs(tagLocal.y), 0.02);
+  vec3 pinTagCol = mix(RUST * 0.5, vec3(0.16, 0.1, 0.08), tickOn);
+  float pinTagAlpha = clamp(pinOn + tagOn, 0.0, 1.0) * pinGate;
+  col = mix(col, pinTagCol, pinTagAlpha);
+
   // --- machine grid (screen space - does NOT pan/zoom with the world) ---
   vec2 gv = (vUv - 0.5) * uCover;
   vec2 gm1 = gv * 14.0;
@@ -400,6 +485,11 @@ void main() {
 
   float gridIntensity = uGridStrength + uGridSlam;
   float gridMask = clamp(mainLine + fineLine * 0.6, 0.0, 1.0) * gridIntensity;
+  // Print-sweep: the machine printing rows top-to-bottom, brightening on beats.
+  float sweepPos = fract(uTime * 0.4);
+  float sweepD = abs(vUv.y - (1.0 - sweepPos));
+  float sweep = exp(-sweepD * sweepD * 900.0) * uGridStrength * (0.3 + uFlash * 0.7);
+  gridMask = clamp(gridMask + sweep * 0.5, 0.0, 1.0);
   col = mix(col, col * RUST * 0.5, gridMask * 0.7);
   col += RUST * gridMask * 0.15;
   machineCol = mix(machineCol, machineCol * RUST * 0.5, gridMask * 0.7);
@@ -498,6 +588,17 @@ void main() {
     float ring = exp(-pow((rdist - rr) * 70.0, 2.0)) * rp.w * exp(-rp.z * 2.8);
     col += vec3(0.92, 0.97, 1.0) * ring;
   }
+
+  // --- classification wave ring: a traveling rust scan-sheen, shared
+  // centre/radius/strength with the sim's uWave via uWaveVis. Darken +
+  // rust-tint (VALUE contrast, not glow) so it reads on both the bone and
+  // rust-graded ground alike — the pale-ground lesson. ---
+  vec2 wvd = field - uWaveVis.xy;
+  wvd -= floor(wvd + 0.5);
+  float wdist = length(wvd);
+  float wring = exp(-pow((wdist - uWaveVis.z) * 26.0, 2.0)) * uWaveVis.w;
+  col = mix(col, RUST * 0.45, wring * 0.5);
+  col += RUST * wring * 0.12;
 
   // --- motes: sparse drifting specks, the unclassified survivors' echo ---
   vec2 driftGv = gv * 24.0 + vec2(uTime * 1.3, -uTime * 0.7);

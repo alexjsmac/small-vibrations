@@ -363,6 +363,26 @@ something that happens *now*, at a moment, and is gone.
   tiling with a nearest-SDF search over discrete silhouettes — blobs
   drawn whole on visible ground, layering like leaves instead of
   clipping at bisectors.
+- **Exempt envelopes whose MOTION is the content from the act-hold idiom.**
+  The hold fix (below) applied to b2's spatial machine-order made the
+  scatter→drawer assembly TELEPORT in one frame at the drop — Alex never
+  saw it move ("the morphs appear briefly early and then never again").
+  If watching a parameter change IS the payoff, drive it as a continuous
+  song-time envelope (`orderAt(t)`, an arcAt clone with its own keys)
+  ramping across the act, not an act keyframe. Discrete cliffs for
+  arrivals; continuous ramps for processes.
+- **Static = dead, even when every system is technically animated.** A
+  hash-of-position world reads as wallpaper the moment nothing is born or
+  dies. The b2 lifecycle recipe (cheap, deterministic, beat-coupled):
+  CPU-accumulated `uLifeClock` (rate × act param, tripled briefly by a
+  bass-onset beatPulse scalar) → per-specimen `cycle = clock + hash
+  phase`; presence per epoch = `hash(cc, epoch) < uPresence`; the organic
+  anchor RE-ROLLS per epoch so respawns land in new places; crossfade the
+  last 15% of each cycle + pop-in overshoot. Pin one hero cell always-
+  present for openings/loop identity. Also: events that only write an
+  already-saturated sim channel are INVISIBLE — every event needs a
+  display-side representation (b2's wave got a ring sheen + specimen
+  swell only in round 2).
 - **The 6s crossfade LEAKS the next act's maximum into a quiet act.**
   paramsAt's generic pre-boundary lerp is right for gradual arrivals but
   fatally wrong for a restraint-act → drop-act boundary: act 5's

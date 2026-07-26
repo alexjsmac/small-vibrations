@@ -8,7 +8,7 @@ import {
   POKE_SLOTS,
 } from './communityField';
 import { CATALOGUE_VERT, buildCatalogueFragment } from './catalogueShader';
-import { paramsAt, arcAt, ACTS, CUES, type ActParams } from './sections';
+import { paramsAt, arcAt, orderAt, ACTS, CUES, type ActParams } from './sections';
 import { mulberry32 } from '../random';
 
 /** Bass-onset detector (a1/a2/a3/b1 EMA + margin + cooldown recipe): excess over its own slow EMA fires a classification scan + flash. */
@@ -80,10 +80,21 @@ const GRID_SLAM_DECAY = 2.5;
 /** flickerEnv decay rate (1/s) — the final-flicker's own short-lived envelope. */
 const FLICKER_DECAY = 0.6;
 
+/** Beat pulse (uLifeClock's accelerant): a bass onset kicks it, it decays exponentially, and it triples the lifecycle clock's rate while hot — beats visibly speed up specimen filing in/out. */
+const BEAT_PULSE_KICK = 1.0;
+const BEAT_PULSE_CEILING = 1.5;
+const BEAT_PULSE_DECAY = 4;
+/** `?life=fast` debug affordance multiplier on the lifecycle clock's rate. */
+const LIFE_FAST_MUL = 6;
+
 /**
- * Camera choreography. Act 0 (thriving-field) eases in from a tighter
- * SETTLE_ZOOM_START across SETTLE_SECONDS (real seconds, not act-fraction —
- * the act itself runs longer than the settle), a3's seed-act pattern. Act 2
+ * Camera choreography. Act 0 (thriving-field) opens HERO-CLOSE — zoomed in
+ * from OPEN_ZOOM on the one pinned hero specimen (community cc=(0,0),
+ * epoch-0 anchor, the shader's HERO OVERRIDE — see catalogueShader.ts's
+ * specLife) — and eases out across OPEN_SECONDS (real seconds, not
+ * act-fraction — the act itself runs longer than the pull-back) to reveal
+ * the whole living field; the a3 seed-act settle-in pattern, but pulling
+ * back from a specific living thing instead of a bare zoom number. Act 2
  * (accelerating-catalogue) HOLDS its own zoom through the pre-boundary
  * crossfade so the deep zoom onto the last unclassified community starts
  * exactly at the boundary, not early. Act 3 (last-unclassified) runs its own
@@ -96,12 +107,46 @@ const FLICKER_DECAY = 0.6;
  * "fast evolution" rule) keeps even the stillest acts moving, damped hard
  * during the survivor-focus act so the spotlighted holdout reads as calm.
  */
-const SETTLE_SECONDS = 36;
-const SETTLE_ZOOM_START = 1.3;
+const OPEN_ZOOM = 9.5;
+const OPEN_SECONDS = 40;
 const DEEP_ZOOM_SECONDS = 8;
 const SNAP_SECONDS = 0.45;
 const BREATH_AMP = 0.015;
 const BREATH_RATE = 0.22;
+
+/**
+ * Tiny JS mirror of COMM_CELL_GLSL's ttHash22, evaluated ONCE at module
+ * load for a SINGLE constant — the hero specimen's (cc=(0,0), epoch=0)
+ * organic anchor — to seed the opening pan. This is deliberately NOT the
+ * per-fragment CPU/GPU hash mirroring BRIEFING.md warns against ("CPU/GPU
+ * hash divergence is total, not approximate... never gate a hard visual on
+ * one"): that rule targets replicating a shader hash every pixel/frame and
+ * expecting exact agreement. Here the JS and GLSL hashes are evaluated
+ * once each, agree to float32 precision (same formula, same inputs), and
+ * a ~1e-6 divergence only nudges where the opening pan starts — an
+ * already-soft camera ease that fades to zero by kOpen=1, never a hard
+ * visual gate.
+ */
+function heroHash22(x: number, y: number): [number, number] {
+  const px = x * 127.1 + y * 311.7;
+  const py = x * 269.5 + y * 183.3;
+  const sx = Math.sin(px) * 43758.5453;
+  const sy = Math.sin(py) * 43758.5453;
+  return [sx - Math.floor(sx), sy - Math.floor(sy)];
+}
+const [HERO_HASH_X, HERO_HASH_Y] = heroHash22(0, 0);
+/** Hero specimen's epoch-0 organic anchor (community-cell-local, [0.22, 0.78]) — mirrors specAnchor's organic base for cc=(0,0), epoch=0. */
+const HERO_ORGANIC = { x: 0.22 + 0.56 * HERO_HASH_X, y: 0.22 + 0.56 * HERO_HASH_Y };
+/** Community frequency all acts share (sections.ts ActParams.commFreq is 6 everywhere) — used once here to convert the hero anchor into a pan offset. */
+const HERO_COMM_FREQ = 6;
+/**
+ * Pan that centres the hero specimen at act-0's opening zoom. Community
+ * point of cell (0,0)'s anchor is `organic` (cc=0); field-uv of a
+ * community-space point q is `q / uCommFreq + 0.5` (inverse of the display
+ * shader's `p = (field - 0.5) * uCommFreq`); the screen centre lands at
+ * field `0.5 + pan`, so `pan = heroField - 0.5 = organic / uCommFreq`.
+ */
+const HERO_PAN = { x: HERO_ORGANIC.x / HERO_COMM_FREQ, y: HERO_ORGANIC.y / HERO_COMM_FREQ };
 
 /** Drag-release momentum (a1/a2/a3/b1 idiom, verbatim shape). */
 const MOMENTUM_FRICTION = 2.5;
@@ -141,8 +186,9 @@ interface ScanSlot {
  * `?wave=always` forces a mass-classification ring wave every 3s,
  * `?spark=always` forces the high-onset glyph-tick spark events,
  * `?flicker=always` pins the outro's final-flicker envelope on,
- * `?classified=<0..1>` pins the classified ratchet, plus the standard
- * `?t=`, `?q=`, `?debug=1`.
+ * `?classified=<0..1>` pins the classified ratchet, `?life=fast` speeds up
+ * the specimen appear/disappear lifecycle clock, `?order=<0..1>` pins the
+ * scatter->drawer-rows envelope, plus the standard `?t=`, `?q=`, `?debug=1`.
  */
 class TerminalTaxonomy implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -158,7 +204,9 @@ class TerminalTaxonomy implements Viz {
   private forceWaveAlways = false;
   private forceFlickerAlways = false;
   private forceSparkAlways = false;
+  private forceLifeFast = false;
   private pinnedClassified: number | null = null;
+  private pinnedOrder: number | null = null;
 
   private full = true;
   private stampSlotCount = STAMP_SLOTS_FULL;
@@ -166,8 +214,10 @@ class TerminalTaxonomy implements Viz {
 
   /** Cover-fit scale (keeps the community lattice square regardless of viewport aspect). */
   private cover = new THREE.Vector2(1, 1);
-  /** Field-space pan offset — pointer-drag only. */
+  /** Field-space pan offset — pointer-drag only, EXCEPT act 0's hero pull-back, which owns it until the user's first drag. */
   private pan = new THREE.Vector2(0, 0);
+  /** Set true on the user's first drag move — once set, the hero opening pan never touches `pan` again. */
+  private userPanned = false;
 
   private bassE = 0;
   private midE = 0;
@@ -177,6 +227,10 @@ class TerminalTaxonomy implements Viz {
   private onsetCooldown = 0;
   private highOnsetCooldown = 0;
   private flash = 0;
+  /** Beat pulse (bass onsets -> uLifeClock accelerant): kick+decay scalar, tripled weight while hot. */
+  private beatPulse = 0;
+  /** CPU-accumulated specimen lifecycle clock (epochs) — feeds uLifeClock; advances by lifeRate * beat-multiplier each frame. */
+  private lifeClock = 0;
   /** Fast spark channel (high onsets -> glyph ticks): kick+decay scalar + per-event re-roll counter. */
   private spark = 0;
   private sparkSeed = 0;
@@ -238,10 +292,16 @@ class TerminalTaxonomy implements Viz {
     this.forceWaveAlways = params.get('wave') === 'always';
     this.forceFlickerAlways = params.get('flicker') === 'always';
     this.forceSparkAlways = params.get('spark') === 'always';
+    this.forceLifeFast = params.get('life') === 'fast';
     const classifiedParam = params.get('classified');
     if (classifiedParam !== null) {
       const v = parseFloat(classifiedParam);
       if (!Number.isNaN(v)) this.pinnedClassified = Math.min(1, Math.max(0, v));
+    }
+    const orderParam = params.get('order');
+    if (orderParam !== null) {
+      const v = parseFloat(orderParam);
+      if (!Number.isNaN(v)) this.pinnedOrder = Math.min(1, Math.max(0, v));
     }
 
     this.full = quality.level === 'full';
@@ -307,6 +367,11 @@ class TerminalTaxonomy implements Viz {
         uDesat: { value: 0 },
         uSoloMode: { value: soloMode },
         uFlicker: { value: 0 },
+        uLifeClock: { value: 0 },
+        uPresence: { value: 0 },
+        uWriggle: { value: 0 },
+        uDrift: { value: 0 },
+        uWaveVis: { value: this.field.wave },
         uScanA: { value: this.scanA },
         uScanB: { value: this.scanB },
         uRipple: { value: this.rippleValues },
@@ -508,12 +573,12 @@ class TerminalTaxonomy implements Viz {
     }
   }
 
-  /** Runs the staged warmup: clear + analytically seed the field at the classified floor, then replay the real scan-scheduling + aging + step path at fixed WARMUP_TICK_DT so `?t=` deep links land on a formed, mid-catalogue field regardless of frame rate. */
-  private warmup(p: ActParams, steps: number) {
+  /** Runs the staged warmup: clear + analytically seed the field at the classified floor (using the CALLER-computed order envelope — `orderAt`/`?order=` live outside ActParams, see the machine-order wiring in `update()`), then replay the real scan-scheduling + aging + step path at fixed WARMUP_TICK_DT so `?t=` deep links land on a formed, mid-catalogue field regardless of frame rate. */
+  private warmup(p: ActParams, steps: number, order: number) {
     this.field.clearField();
     this.field.setActParams(p);
     const floor = this.pinnedClassified ?? p.classifiedFloor;
-    this.field.seedField(floor, p.commFreq, p.machineOrder);
+    this.field.seedField(floor, p.commFreq, order);
     this.classified = floor;
     for (let i = 0; i < steps; i++) {
       this.scheduleScans(WARMUP_TICK_DT, p.scanRate, p);
@@ -536,15 +601,21 @@ class TerminalTaxonomy implements Viz {
     const p = section.actIndex === 3 || section.actIndex === 4 ? ACTS[section.actIndex] : section.params;
     this.lastDt = dt;
 
+    // Scatter->drawer-rows envelope: continuous (not act-held, its motion IS
+    // the content — see orderAt's doc), computed once here from audio.time
+    // so warmup() (which runs before any other per-frame state matters) and
+    // the display uniform below use the SAME value.
+    const order = this.pinnedOrder ?? orderAt(audio.time).order;
+
     if (this.firstUpdate) {
       this.firstUpdate = false;
-      this.warmup(p, WARMUP_STEPS_INIT);
+      this.warmup(p, WARMUP_STEPS_INIT, order);
     }
 
     // Loop-wrap: song time jumping backward by >10s means the track looped —
     // clear + re-warm so a new play doesn't inherit the previous field.
     if (this.lastSongTime >= 0 && audio.time < this.lastSongTime - 10) {
-      this.warmup(p, WARMUP_STEPS_LOOP);
+      this.warmup(p, WARMUP_STEPS_LOOP, order);
     }
 
     // Scripted discrete hits (edge-triggered; the < 0.5 guard rejects the ?t=
@@ -573,6 +644,7 @@ class TerminalTaxonomy implements Viz {
       if (p.scanRate > 0.5) this.fireScan(p);
       this.kickFlash(FLASH_KICK_ONSET);
       if (section.actIndex === 4 && !this.waveActive) this.startWave();
+      this.beatPulse = Math.min(BEAT_PULSE_CEILING, this.beatPulse + BEAT_PULSE_KICK);
       this.onsetCooldown = ONSET_COOLDOWN;
     }
 
@@ -641,24 +713,35 @@ class TerminalTaxonomy implements Viz {
 
     this.flash *= Math.exp(-FLASH_DECAY * dt);
     this.gridSlam *= Math.exp(-GRID_SLAM_DECAY * dt);
+    this.beatPulse *= Math.exp(-BEAT_PULSE_DECAY * dt);
     if (this.forceFlickerAlways) {
       this.flickerEnv = 1;
     } else {
       this.flickerEnv *= Math.exp(-FLICKER_DECAY * dt);
     }
 
+    // Specimen lifecycle clock: epochs/second baseline from the act, tripled
+    // while a beat pulse is hot, `?life=fast` multiplies further for review.
+    const lifeMul = this.forceLifeFast ? LIFE_FAST_MUL : 1;
+    this.lifeClock += dt * p.lifeRate * lifeMul * (1 + this.beatPulse * 3);
+
     // Audio -> sim.
     this.field.setVitalityMod(1 + this.bassE * 0.5);
     this.field.setActParams(p);
 
-    // Camera choreography (see the SETTLE/DEEP_ZOOM/SNAP/BREATH constants' doc).
+    // Camera choreography (see the OPEN/DEEP_ZOOM/SNAP/BREATH constants' doc).
     let zoom: number;
     if (section.actIndex === 0) {
       const dur0 = CUES[1] - CUES[0];
       const t0 = section.localT * dur0;
-      const kSettle = this.sst(Math.min(1, t0 / SETTLE_SECONDS));
-      const base = SETTLE_ZOOM_START + (ACTS[0].zoom - SETTLE_ZOOM_START) * kSettle;
+      const kOpen = this.sst(Math.min(1, t0 / OPEN_SECONDS));
+      const base = OPEN_ZOOM + (ACTS[0].zoom - OPEN_ZOOM) * kOpen;
       zoom = base + (ACTS[1].zoom - base) * section.blend;
+      // Hero pull-back: eases the pinned hero specimen out of screen centre
+      // as the view widens. Once the user drags, this never touches pan again.
+      if (!this.userPanned) {
+        this.pan.set(HERO_PAN.x * (1 - kOpen), HERO_PAN.y * (1 - kOpen));
+      }
     } else if (section.actIndex === 2) {
       // Hold through the pre-boundary crossfade — the deep zoom must start
       // exactly at the boundary, not leak in early.
@@ -702,7 +785,7 @@ class TerminalTaxonomy implements Viz {
     u.uClassified.value = this.classified;
     u.uDesat.value = Math.min(1, this.classified * 0.6);
     u.uMachineFrac.value = p.machineFrac;
-    u.uMachineOrder.value = p.machineOrder;
+    u.uMachineOrder.value = order;
     u.uGridStrength.value = p.gridStrength;
     u.uGridFine.value = p.gridFine;
     u.uGlyphDensity.value = p.glyphDensity;
@@ -715,6 +798,13 @@ class TerminalTaxonomy implements Viz {
     u.uSurvivorFocus.value = p.survivorFocus;
     u.uGridSlam.value = this.gridSlam;
     u.uFlicker.value = this.flickerEnv;
+    u.uLifeClock.value = this.lifeClock;
+    u.uPresence.value = p.presence;
+    u.uWriggle.value = p.wriggle;
+    u.uDrift.value = p.drift;
+    // uWaveVis is bound by reference to this.field.wave (init()) — no
+    // per-frame assignment needed, it's already mutated in place by
+    // scheduleWaves()/startWave().
 
     // Drag momentum (a1/a2/a3/b1 idiom, verbatim shape). No ambient drift.
     const cover = this.cover;
@@ -771,6 +861,9 @@ class TerminalTaxonomy implements Viz {
 
     if (e.type === 'move') {
       if (!this.held) return;
+      // The user's first drag hands pan control away from the act-0 hero
+      // pull-back permanently — it never touches `pan` again after this.
+      this.userPanned = true;
       this.pan.x += (e.dx * cover.x) / zoom;
       this.pan.y += (e.dy * cover.y) / zoom;
       this.dragDx += e.dx;

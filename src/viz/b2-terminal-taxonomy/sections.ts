@@ -5,8 +5,14 @@
  * and flattened into one uniform rust-toned machine catalogue. By the end,
  * only unclassifiable residue remains. Deliberately NOT a tiling cell
  * lattice (that geometry is a3's): specimens are organic ink-rimmed
- * silhouettes with paper between them, and `machineOrder` drifts the page
- * from natural scatter to aligned museum-drawer rows as the catalogue wins.
+ * silhouettes with paper between them, and `orderAt` drifts the page from
+ * natural scatter to aligned museum-drawer rows as the catalogue wins.
+ * Specimens are alive, not static stamps: on a beat-coupled lifecycle
+ * (`presence`/`lifeRate`) they appear and disappear in new places, their
+ * outlines wriggle (`wriggle`), and their anchors micro-wander (`drift`)
+ * until the drawer files them still. The piece opens hero-close: zoomed on
+ * one wriggling specimen, pulling back across the first ~40s to reveal the
+ * whole living field.
  *
  * The signature element is a pair of GPU layers: the living specimen field
  * (per-community skin + procedural glyph script) and a classification-
@@ -43,7 +49,11 @@
  * crossfaded near each boundary (`paramsAt`, ~6s window, `localT` exposes
  * within-act progress), plus a continuous `energy` life-curve (`arcAt`) with
  * near-vertical steps at the scripted hits so those land as discrete state
- * changes, not crossfades.
+ * changes, not crossfades. A second continuous envelope, `orderAt`, drives
+ * the scatter -> drawer-rows morph independently of the act boundaries: it
+ * stays flat through the opening, wakes across act 3, and — its real job —
+ * assembles visibly across the whole of act 5, so the climax is watchable
+ * as the drawer wins the page in real time, not a per-act snap.
  *
  * Audio map (each band one job, applied in index.ts / the field + reticle
  * shaders):
@@ -63,6 +73,14 @@ export interface ActParams {
   vitalityTarget: number;
   /** Organic pattern-motion amount inside communities (0..1). */
   churn: number;
+  /** 0..1 fraction of specimens present per lifecycle epoch (appear/disappear in new places). */
+  presence: number;
+  /** Lifecycle epochs per second baseline (beat pulses accelerate it; higher = faster filing in/out). */
+  lifeRate: number;
+  /** 0..1 living-outline wriggle amplitude (edges thriving). */
+  wriggle: number;
+  /** 0..1 anchor micro-wander amount (specimens float; filed/ordered specimens stop). */
+  drift: number;
   /** Baseline classification-scan events per minute (bass onsets add more). */
   scanRate: number;
   /** Vitality drain strength inside an active scan stamp (0..1). */
@@ -83,8 +101,6 @@ export interface ActParams {
   chatterRate: number;
   /** 0..1 fraction of script rendered as uniform machine code regardless of local classified state. */
   machineFrac: number;
-  /** 0..1 spatial machine order: specimen anchors drift from organic scatter to aligned museum-drawer rows, rotations align to the page, outlines simplify, scripts straighten. Monotonic across the track. */
-  machineOrder: number;
   /** 0..1 monotonic floor for the classified ratchet (seeds the field on ?t= deep links). */
   classifiedFloor: number;
   /** Voronoi community frequency (cells across field space). */
@@ -117,9 +133,11 @@ export const ACTS: ActParams[] = [
     // apparatus yet. Vitality and churn near their global max, glyph-script
     // coverage dense, palette warm and saturated on the pale bone ground.
     name: 'thriving-field',
-    vitalityTarget: 0.95, churn: 0.9, scanRate: 0, scanDrain: 0, misProb: 0,
+    vitalityTarget: 0.95, churn: 0.9,
+    presence: 0.8, lifeRate: 0.10, wriggle: 1.0, drift: 1.0,
+    scanRate: 0, scanDrain: 0, misProb: 0,
     classifyPressure: 0, waveRate: 0, gridStrength: 0, gridFine: 0,
-    glyphDensity: 0.85, chatterRate: 1.2, machineFrac: 0, machineOrder: 0.0, classifiedFloor: 0,
+    glyphDensity: 0.85, chatterRate: 1.2, machineFrac: 0, classifiedFloor: 0,
     commFreq: 6, zoom: 1.18, survivorFocus: 0,
     hueSat: 1.0, warmth: 0.55, rustMix: 0.05, inkPersist: 0,
     vignette: 0.3, motes: 0.15, groundLight: 0.9,
@@ -128,9 +146,11 @@ export const ACTS: ActParams[] = [
     // land. This is where misclassification is most visible: nearly a third
     // of scans stamp the wrong hue and glitch.
     name: 'first-scans',
-    vitalityTarget: 0.85, churn: 0.8, scanRate: 5, scanDrain: 0.5, misProb: 0.3,
+    vitalityTarget: 0.85, churn: 0.8,
+    presence: 0.85, lifeRate: 0.12, wriggle: 0.8, drift: 0.8,
+    scanRate: 5, scanDrain: 0.5, misProb: 0.3,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.18, gridFine: 0.25,
-    glyphDensity: 0.8, chatterRate: 1.0, machineFrac: 0.08, machineOrder: 0.05, classifiedFloor: 0.06,
+    glyphDensity: 0.8, chatterRate: 1.0, machineFrac: 0.08, classifiedFloor: 0.06,
     commFreq: 6, zoom: 1.05, survivorFocus: 0,
     hueSat: 0.92, warmth: 0.5, rustMix: 0.15, inkPersist: 0.5,
     vignette: 0.32, motes: 0.08, groundLight: 0.9,
@@ -139,9 +159,11 @@ export const ACTS: ActParams[] = [
     // accumulate as visible scar tissue; t=168 lands a mass-scan cascade
     // (bass-onset burst). Grid firms up, archive ink starts to persist.
     name: 'accelerating-catalogue',
-    vitalityTarget: 0.70, churn: 0.75, scanRate: 16, scanDrain: 0.7, misProb: 0.15,
+    vitalityTarget: 0.70, churn: 0.75,
+    presence: 0.8, lifeRate: 0.16, wriggle: 0.7, drift: 0.6,
+    scanRate: 16, scanDrain: 0.7, misProb: 0.15,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.42, gridFine: 0.5,
-    glyphDensity: 0.7, chatterRate: 0.9, machineFrac: 0.3, machineOrder: 0.25, classifiedFloor: 0.28,
+    glyphDensity: 0.7, chatterRate: 0.9, machineFrac: 0.3, classifiedFloor: 0.28,
     commFreq: 6, zoom: 0.98, survivorFocus: 0,
     hueSat: 0.8, warmth: 0.45, rustMix: 0.35, inkPersist: 0.8,
     vignette: 0.35, motes: 0.05, groundLight: 0.9,
@@ -151,9 +173,11 @@ export const ACTS: ActParams[] = [
     // outside it (survivorFocus). Vitality regrows here — the holdout is
     // thriving even as the world flattens around it.
     name: 'last-unclassified',
-    vitalityTarget: 0.90, churn: 0.6, scanRate: 1.5, scanDrain: 0.4, misProb: 0,
+    vitalityTarget: 0.90, churn: 0.6,
+    presence: 0.75, lifeRate: 0.08, wriggle: 1.0, drift: 0.7,
+    scanRate: 1.5, scanDrain: 0.4, misProb: 0,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.10, gridFine: 0.15,
-    glyphDensity: 0.9, chatterRate: 0.7, machineFrac: 0.35, machineOrder: 0.3, classifiedFloor: 0.34,
+    glyphDensity: 0.9, chatterRate: 0.7, machineFrac: 0.35, classifiedFloor: 0.34,
     commFreq: 6, zoom: 2.9, survivorFocus: 1,
     hueSat: 0.85, warmth: 0.5, rustMix: 0.3, inkPersist: 0.5,
     vignette: 0.5, motes: 0.05, groundLight: 0.9,
@@ -163,9 +187,11 @@ export const ACTS: ActParams[] = [
     // ascendant. Album-max density hit exactly once here (gridStrength,
     // scanRate, rustMix all peak, uniquely).
     name: 'total-classification',
-    vitalityTarget: 0.25, churn: 0.5, scanRate: 34, scanDrain: 1.0, misProb: 0,
+    vitalityTarget: 0.25, churn: 0.5,
+    presence: 0.9, lifeRate: 0.30, wriggle: 0.35, drift: 0.25,
+    scanRate: 34, scanDrain: 1.0, misProb: 0,
     classifyPressure: 0.35, waveRate: 10, gridStrength: 1.0, gridFine: 1.0,
-    glyphDensity: 0.55, chatterRate: 1.4, machineFrac: 0.9, machineOrder: 0.85, classifiedFloor: 0.9,
+    glyphDensity: 0.55, chatterRate: 1.4, machineFrac: 0.9, classifiedFloor: 0.9,
     commFreq: 6, zoom: 0.82, survivorFocus: 0,
     hueSat: 0.4, warmth: 0.35, rustMix: 0.62, inkPersist: 1.0,
     vignette: 0.38, motes: 0.02, groundLight: 0.9,
@@ -175,9 +201,11 @@ export const ACTS: ActParams[] = [
     // one last glyph flicker at t=330, then settles near the opening's
     // zoom/vitality — loop closure.
     name: 'residue',
-    vitalityTarget: 0.10, churn: 0.25, scanRate: 0, scanDrain: 0, misProb: 0,
+    vitalityTarget: 0.10, churn: 0.25,
+    presence: 0.22, lifeRate: 0.04, wriggle: 0.15, drift: 0.1,
+    scanRate: 0, scanDrain: 0, misProb: 0,
     classifyPressure: 0, waveRate: 0, gridStrength: 0.06, gridFine: 0,
-    glyphDensity: 0.08, chatterRate: 0.3, machineFrac: 1.0, machineOrder: 1.0, classifiedFloor: 0.93,
+    glyphDensity: 0.08, chatterRate: 0.3, machineFrac: 1.0, classifiedFloor: 0.93,
     commFreq: 6, zoom: 1.15, survivorFocus: 0,
     hueSat: 0.2, warmth: 0.3, rustMix: 0.45, inkPersist: 0.35,
     vignette: 0.45, motes: 0.5, groundLight: 1.0,
@@ -237,6 +265,43 @@ export function arcAt(songTime: number): ArcState {
   const k = Math.min(1, Math.max(0, (t - a[0]) / Math.max(1e-3, b[0] - a[0])));
   _arc.energy = a[1] + (b[1] - a[1]) * k;
   return _arc;
+}
+
+/**
+ * Continuous spatial machine-order envelope: [t, order] keys, linearly
+ * interpolated — specimen anchors drift from organic scatter to aligned
+ * museum-drawer rows. Zero through acts 1-2 (pure living scatter), first
+ * slow alignments across act 3, held gently through the breakdown, then the
+ * LONG VISIBLE ASSEMBLY across act 5 (0.25 -> 0.95 over 68s — the climax is
+ * watching the drawer win), locked from the 316 power-down. Deliberately a
+ * continuous envelope, NOT an act-held param: its motion IS the content
+ * (contrast index.ts's act-hold idiom for discrete boundaries).
+ */
+const ORDER_KEYS: [number, number][] = [
+  [0, 0],
+  [128, 0],
+  [172, 0.22],
+  [232, 0.25],
+  [300, 0.95],
+  [316, 1],
+  [336.998, 1],
+];
+
+export interface OrderState {
+  order: number;
+}
+
+const _order: OrderState = { order: 0 };
+
+/** Piecewise-linear machine-order envelope at song time. Returns a reused object — read, don't hold; spread-copy before comparing across two calls. */
+export function orderAt(songTime: number): OrderState {
+  const t = Math.min(Math.max(songTime, 0), ORDER_KEYS[ORDER_KEYS.length - 1][0]);
+  let i = 0;
+  while (i < ORDER_KEYS.length - 2 && t >= ORDER_KEYS[i + 1][0]) i++;
+  const a = ORDER_KEYS[i], b = ORDER_KEYS[i + 1];
+  const k = Math.min(1, Math.max(0, (t - a[0]) / Math.max(1e-3, b[0] - a[0])));
+  _order.order = a[1] + (b[1] - a[1]) * k;
+  return _order;
 }
 
 /** Seconds before a boundary over which params crossfade into the next act. */

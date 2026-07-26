@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { paramsAt, arcAt, CUES, ACTS, type ActParams } from './sections';
+import { paramsAt, arcAt, orderAt, CUES, ACTS, type ActParams } from './sections';
 
 const NUMERIC_KEYS = Object.keys(ACTS[0]).filter((k) => k !== 'name') as (keyof ActParams)[];
 
@@ -136,14 +136,11 @@ describe('b2-terminal-taxonomy sections', () => {
     }
   });
 
-  it('machineFrac, machineOrder, and classifiedFloor are non-decreasing across ACTS in order (the machine never retreats)', () => {
+  it('machineFrac and classifiedFloor are non-decreasing across ACTS in order (the machine never retreats)', () => {
     for (let i = 1; i < ACTS.length; i++) {
       expect(ACTS[i].machineFrac).toBeGreaterThanOrEqual(ACTS[i - 1].machineFrac);
-      expect(ACTS[i].machineOrder).toBeGreaterThanOrEqual(ACTS[i - 1].machineOrder);
       expect(ACTS[i].classifiedFloor).toBeGreaterThanOrEqual(ACTS[i - 1].classifiedFloor);
     }
-    // The residue act ends fully ordered: the drawer wins the page.
-    expect(ACTS[ACTS.length - 1].machineOrder).toBe(1);
   });
 
   it('thriving-field (act 0) is machine-free, and holds the maximum hueSat', () => {
@@ -152,7 +149,6 @@ describe('b2-terminal-taxonomy sections', () => {
     expect(first.scanRate).toBe(0);
     expect(first.gridStrength).toBe(0);
     expect(first.machineFrac).toBe(0);
-    expect(first.machineOrder).toBe(0);
     expect(first.classifiedFloor).toBe(0);
     expect(first.misProb).toBe(0);
     for (const act of ACTS) {
@@ -175,6 +171,26 @@ describe('b2-terminal-taxonomy sections', () => {
     expect(ACTS[5].motes).toBe(maxMotes);
     expect(ACTS[5].scanRate).toBe(0);
     expect(ACTS[5].groundLight).toBe(1);
+  });
+
+  it('total-classification (index 4) strictly owns the maximum lifeRate: filing accelerates hardest at the drop', () => {
+    const climax = ACTS[4];
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].lifeRate).toBeLessThan(climax.lifeRate);
+    }
+  });
+
+  it('restraint before the peak: last-unclassified (3) lifeRate is held below accelerating-catalogue (2)', () => {
+    expect(ACTS[3].lifeRate).toBeLessThan(ACTS[2].lifeRate);
+  });
+
+  it('residue (index 5) strictly owns the minimum presence: the sparsest the field ever gets', () => {
+    const sparsest = ACTS[5];
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 5) continue;
+      expect(ACTS[i].presence).toBeGreaterThan(sparsest.presence);
+    }
   });
 });
 
@@ -222,5 +238,45 @@ describe('b2-terminal-taxonomy arcAt', () => {
 
   it('has a settle dip just after the opening (t=36 < t=30)', () => {
     expect(arcAt(36).energy).toBeLessThan(arcAt(30).energy);
+  });
+});
+
+describe('b2-terminal-taxonomy orderAt', () => {
+  it('is well-shaped (order in [0,1]) across a full sweep, without throwing', () => {
+    for (let t = -10; t <= 350; t += 2.3) {
+      const o = orderAt(t);
+      expect(o.order).toBeGreaterThanOrEqual(0);
+      expect(o.order).toBeLessThanOrEqual(1);
+      expect(Number.isFinite(o.order)).toBe(true);
+    }
+  });
+
+  it('is zero through the opening: t=0 and t=128 (pure living scatter, acts 1-2)', () => {
+    expect(orderAt(0).order).toBe(0);
+    expect(orderAt(128).order).toBe(0);
+  });
+
+  it('is at the act-5 starting point (0.25) at t=232, THE drop', () => {
+    expect(orderAt(232).order).toBeCloseTo(0.25, 2);
+  });
+
+  it('rises strictly inside act 5, the long visible assembly', () => {
+    expect(orderAt(280).order).toBeGreaterThan(orderAt(240).order);
+  });
+
+  it('is fully ordered (1) at t=316 (power-down) and stays locked through the end at t=336.998', () => {
+    expect(orderAt(316).order).toBe(1);
+    expect(orderAt(336.998).order).toBe(1);
+  });
+
+  it('is non-decreasing across a 0.5s sweep of the whole track (the drawer never un-assembles)', () => {
+    // orderAt returns a reused/mutated singleton (see its own doc comment) —
+    // spread-copy immediately or comparisons silently alias later calls.
+    let prev = { ...orderAt(0) };
+    for (let t = 0.5; t <= 336.998; t += 0.5) {
+      const cur = { ...orderAt(t) };
+      expect(cur.order).toBeGreaterThanOrEqual(prev.order);
+      prev = cur;
+    }
   });
 });
