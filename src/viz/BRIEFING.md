@@ -347,6 +347,45 @@ something that happens *now*, at a moment, and is gone.
   (fresh per-play seed means each load is a different specimen — a
   feature, not a bug).
 
+## Lessons from b2 "Terminal Taxonomy" (the catalogue — ratchet, July 2026)
+
+- **The 6s crossfade LEAKS the next act's maximum into a quiet act.**
+  paramsAt's generic pre-boundary lerp is right for gradual arrivals but
+  fatally wrong for a restraint-act → drop-act boundary: act 5's
+  grid/rust/drain crept into the withheld act 4 and the scripted drop
+  arrived pre-spent (ARC failure mode 7, caught on screen at t≈231.7).
+  Fix idiom: while inside a held act, use the PURE `ACTS[i]` object
+  instead of `section.params` (b2 index.ts holds indices 3 and 4) — the
+  boundary becomes a true cliff, amplified by the edge-triggered hit.
+  Generalize a3's zoom-hold to ALL params whenever a discrete boundary
+  matters.
+- **The embedded Browser pane's fps HUD is NOT a benchmark.** The pane's
+  rAF pauses when occluded and runs UNCAPPED (300-1300fps) during
+  screenshot-forced composites, so the HUD's EMA mixes paused/uncapped/
+  vsynced windows and reads anywhere from 17 to 344 for the same shader.
+  A whole false "6x regression" was chased before spotting it. Protocol:
+  monkey-patch `render()` from the console to record
+  `performance.now()` per frame, force composites with 2-3 screenshots,
+  and take the MEDIAN inter-frame delta inside bursts (<100ms) — b2 Lite
+  measured 8.0ms median (≥120Hz vsync-met) while the HUD said 45. The
+  fallback song clock also FREEZES while the pane is occluded — nudge
+  `__sv.host.fallbackClock` from the console to cross scripted
+  boundaries instead of waiting.
+- **Additive light dies on a pale ground.** The album's first light-ground
+  track inverted several habits: accents that read as glow on dark
+  grounds (additive rings, rust-on-rust code) vanish on bone — draw
+  marks as INK (mix-darken toward a vivid or dark color) and keep VALUE
+  contrast, not just hue contrast, in every overlay (dark-stamp machine
+  code pulsing bright; the outro flicker drawn as ink).
+- **Per-community procedural glyph "languages" are cheap and legible as
+  writing**: a 3x3-endpoint stroke lattice per glyph cell, language =
+  4 hash bits (stroke-angle family, curvature, column count, baseline
+  rotation), chatter = per-cell hash-staggered re-rolls
+  (`floor(uTime*rate + hash(gid))`) so script writes without strobing.
+  2 strokes on Lite still reads as script. A second fixed grammar
+  (axis-aligned ticks/dots, raster row pulse) reads unmistakably as
+  machine code against it.
+
 ## Workflow: from master WAV to shipped visuals
 
 1. Profile the track's master (2s RMS + low/high bands) → section table.
@@ -420,8 +459,17 @@ Starting sketches only — concept per track is decided with the user:
   fruiting bodies, spore bursts; tap drops a nutrient. Alex's premise:
   "full life... many components and forms coming together, with all the
   ugliness... a full biosphere."
-- **b2 Terminal Taxonomy** — cataloguing the dying: specimens isolated,
-  pinned, labeled; order imposed as life drains; rust ascendant.
+- **b2 Terminal Taxonomy** ✅ — misclassification as devastation (Alex's
+  premise: AI systems evolving past small forgotten languages, erasing the
+  distinction between micro-communities). A Voronoi patchwork of living
+  communities — each with its own hue, Turing-blotch skin, and unreadable
+  procedural glyph script — scanned, labeled, and flattened into one rust
+  machine catalogue on pale bone paper (the album's one light ground).
+  Signature: classification reticles + per-community glyph languages
+  (hash-bit grammars: stroke-angle family, curvature, columns, rotation)
+  collapsing to one fixed machine code. Poke = resistance (un-classifies).
+  The long-orphaned `skinPattern` idea landed here as the stateless
+  per-community fbm banding.
 - **b3 Sterile Breath** — the emptied world: barely anything left; the a1
   void revisited, but hollow instead of expectant. Almost no events.
 
@@ -430,9 +478,8 @@ Starting sketches only — concept per track is decided with the user:
 - **Bloom**: not yet added. Use the battle-tested WebGL `UnrealBloomPass`
   (EffectComposer) via the optional `Viz.render()` hook, Full quality only.
   Do NOT re-attempt the TSL bloom path.
-- `skinPattern` act param exists but is unused since the WebGL rebuild —
-  a surface-pattern idea (Turing spots via fragment noise) waiting for a
-  home on b1/b2 forms.
+- ~~`skinPattern` act param~~ — the Turing-spots-via-fragment-noise idea
+  found its home as b2's per-community interior banding.
 - `audio.frequency` (64 bins) untouched — spectrum-driven geometry is an
   open register for a2+.
 - Phone verification of the full experience is still pending as of the a1

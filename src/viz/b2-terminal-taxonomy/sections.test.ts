@@ -1,0 +1,222 @@
+import { describe, it, expect } from 'vitest';
+import { paramsAt, arcAt, CUES, ACTS, type ActParams } from './sections';
+
+const NUMERIC_KEYS = Object.keys(ACTS[0]).filter((k) => k !== 'name') as (keyof ActParams)[];
+
+describe('b2-terminal-taxonomy sections', () => {
+  it('has 7 cues for 6 acts', () => {
+    expect(CUES.length).toBe(7);
+    expect(ACTS.length).toBe(6);
+    expect(CUES[CUES.length - 1]).toBeCloseTo(336.998, 3);
+  });
+
+  it('starts at act 0 (thriving-field) with localT 0 and blend 0', () => {
+    const s = paramsAt(0);
+    expect(s.actIndex).toBe(0);
+    expect(s.params.name).toBe('thriving-field');
+    expect(s.localT).toBe(0);
+    expect(s.blend).toBe(0);
+  });
+
+  it('is mid-crossfade a few seconds before the 232s (total-classification) boundary', () => {
+    const boundary = CUES[4]; // 232
+    const s = paramsAt(boundary - 3);
+    expect(s.blend).toBeGreaterThan(0);
+    expect(s.blend).toBeLessThan(1);
+  });
+
+  it('keeps localT within [0, 1] and actIndex in range across a full sweep', () => {
+    for (let t = 0; t <= 340; t += 0.5) {
+      const s = paramsAt(t);
+      expect(s.localT).toBeGreaterThanOrEqual(0);
+      expect(s.localT).toBeLessThanOrEqual(1);
+      expect(s.actIndex).toBeGreaterThanOrEqual(0);
+      expect(s.actIndex).toBeLessThan(ACTS.length);
+    }
+  });
+
+  it('does not throw for t beyond the last cue, and clamps to the final act', () => {
+    expect(() => paramsAt(1000)).not.toThrow();
+    const s = paramsAt(1000);
+    expect(s.actIndex).toBe(ACTS.length - 1);
+    expect(s.params.name).toBe('residue');
+    expect(s.blend).toBe(0);
+  });
+
+  it('does not throw for negative t, and clamps to the first act', () => {
+    expect(() => paramsAt(-5)).not.toThrow();
+    const s = paramsAt(-5);
+    expect(s.actIndex).toBe(0);
+    expect(s.localT).toBe(0);
+    expect(s.blend).toBe(0);
+  });
+
+  it('every numeric ActParams field is finite and non-negative (catches typo-scale mistakes)', () => {
+    for (const act of ACTS) {
+      for (const key of NUMERIC_KEYS) {
+        const v = act[key] as number;
+        expect(Number.isFinite(v)).toBe(true);
+        expect(v).toBeGreaterThanOrEqual(0);
+        // Most knobs are 0..1.5, but scanRate/waveRate (events per minute),
+        // chatterRate (a multiplier that can run hot), commFreq (cells
+        // across the field), and zoom (>1 closer, up to the act-4 deep
+        // zoom) live in larger units — excluded from the upper bound.
+        if (
+          key !== 'scanRate' &&
+          key !== 'waveRate' &&
+          key !== 'chatterRate' &&
+          key !== 'commFreq' &&
+          key !== 'zoom'
+        ) {
+          expect(v).toBeLessThanOrEqual(1.5);
+        }
+      }
+    }
+  });
+
+  it('total-classification (index 4) strictly owns the maximum gridStrength, scanRate, and rustMix', () => {
+    const climax = ACTS[4];
+    expect(climax.name).toBe('total-classification');
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].gridStrength).toBeLessThan(climax.gridStrength);
+      expect(ACTS[i].scanRate).toBeLessThan(climax.scanRate);
+      expect(ACTS[i].rustMix).toBeLessThan(climax.rustMix);
+    }
+  });
+
+  it('classifyPressure and waveRate are nonzero ONLY in total-classification (index 4)', () => {
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) {
+        expect(ACTS[i].classifyPressure).toBeGreaterThan(0);
+        expect(ACTS[i].waveRate).toBeGreaterThan(0);
+      } else {
+        expect(ACTS[i].classifyPressure).toBe(0);
+        expect(ACTS[i].waveRate).toBe(0);
+      }
+    }
+  });
+
+  it('total-classification (index 4) is the sole pull-back: the strict minimum zoom of all acts', () => {
+    // The narrative "only zoom < 1" doesn't hold literally — accelerating-
+    // catalogue (index 2) also dips to 0.98 as scanning intensifies. What's
+    // actually unique to total-classification is that it pulls back FURTHER
+    // than every other act (the strict minimum), which is the real signature
+    // of "the back half reveals the whole catalogue".
+    const climax = ACTS[4];
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].zoom).toBeGreaterThan(climax.zoom);
+    }
+  });
+
+  it('restraint before peak: last-unclassified (3) is held below accelerating-catalogue (2), which is held below total-classification (4)', () => {
+    const restrained = ACTS[3]; // last-unclassified
+    const build = ACTS[2]; // accelerating-catalogue
+    const climax = ACTS[4]; // total-classification
+    expect(restrained.name).toBe('last-unclassified');
+    expect(build.name).toBe('accelerating-catalogue');
+    expect(climax.name).toBe('total-classification');
+
+    expect(restrained.gridStrength).toBeLessThan(build.gridStrength);
+    expect(restrained.scanRate).toBeLessThan(build.scanRate);
+    expect(build.gridStrength).toBeLessThan(climax.gridStrength);
+    expect(build.scanRate).toBeLessThan(climax.scanRate);
+  });
+
+  it('last-unclassified (index 3) is the only deep zoom (>2) and the only survivor spotlight (survivorFocus > 0)', () => {
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 3) {
+        expect(ACTS[i].zoom).toBeGreaterThan(2);
+        expect(ACTS[i].survivorFocus).toBeGreaterThan(0);
+      } else {
+        expect(ACTS[i].zoom).toBeLessThanOrEqual(2);
+        expect(ACTS[i].survivorFocus).toBe(0);
+      }
+    }
+  });
+
+  it('machineFrac and classifiedFloor are non-decreasing across ACTS in order (the classified ratchet never un-labels)', () => {
+    for (let i = 1; i < ACTS.length; i++) {
+      expect(ACTS[i].machineFrac).toBeGreaterThanOrEqual(ACTS[i - 1].machineFrac);
+      expect(ACTS[i].classifiedFloor).toBeGreaterThanOrEqual(ACTS[i - 1].classifiedFloor);
+    }
+  });
+
+  it('thriving-field (act 0) is machine-free, and holds the maximum hueSat', () => {
+    const first = ACTS[0];
+    expect(first.name).toBe('thriving-field');
+    expect(first.scanRate).toBe(0);
+    expect(first.gridStrength).toBe(0);
+    expect(first.machineFrac).toBe(0);
+    expect(first.classifiedFloor).toBe(0);
+    expect(first.misProb).toBe(0);
+    for (const act of ACTS) {
+      expect(act.hueSat).toBeLessThanOrEqual(first.hueSat);
+    }
+  });
+
+  it('misProb peaks in first-scans (index 1) and is exactly 0 in acts 0, 3, 4, 5', () => {
+    const maxMisProb = Math.max(...ACTS.map((a) => a.misProb));
+    expect(ACTS[1].misProb).toBe(maxMisProb);
+    expect(ACTS[1].name).toBe('first-scans');
+    for (const i of [0, 3, 4, 5]) {
+      expect(ACTS[i].misProb).toBe(0);
+    }
+  });
+
+  it('residue (act 5) resolves toward thriving-field (act 0) in zoom, but holds the max motes — loop closure', () => {
+    expect(Math.abs(ACTS[5].zoom - ACTS[0].zoom)).toBeLessThan(0.2);
+    const maxMotes = Math.max(...ACTS.map((a) => a.motes));
+    expect(ACTS[5].motes).toBe(maxMotes);
+    expect(ACTS[5].scanRate).toBe(0);
+    expect(ACTS[5].groundLight).toBe(1);
+  });
+});
+
+describe('b2-terminal-taxonomy arcAt', () => {
+  it('is well-shaped (energy in [0,1]) across a full sweep, without throwing', () => {
+    for (let t = -10; t <= 350; t += 2.3) {
+      const a = arcAt(t);
+      expect(a.energy).toBeGreaterThanOrEqual(0);
+      expect(a.energy).toBeLessThanOrEqual(1);
+      expect(Number.isFinite(a.energy)).toBe(true);
+    }
+  });
+
+  it('starts near the opening level and ends low', () => {
+    expect(arcAt(0).energy).toBeCloseTo(0.22, 5);
+    expect(arcAt(336.998).energy).toBeLessThan(0.15);
+  });
+
+  it('reaches its single maximum (1.0) once, inside the total-classification act window', () => {
+    // arcAt returns a reused/mutated singleton (see its own doc comment) —
+    // spread-copy immediately or comparisons silently alias later calls.
+    const peak = { ...arcAt(246) };
+    expect(peak.energy).toBeCloseTo(1.0, 5);
+    expect(arcAt(200).energy).toBeLessThan(peak.energy);
+    expect(arcAt(300).energy).toBeLessThan(peak.energy);
+  });
+
+  it('has a discrete jump at the 168s mass-scan cascade', () => {
+    const before = { ...arcAt(167.8) };
+    const after = { ...arcAt(168.3) };
+    expect(after.energy - before.energy).toBeGreaterThan(0.05);
+  });
+
+  it('has a discrete UPWARD jump (not a crossfade) at the 232s THE drop', () => {
+    const before = { ...arcAt(231.7) };
+    const after = { ...arcAt(232.2) };
+    expect(after.energy - before.energy).toBeGreaterThan(0.3);
+  });
+
+  it('has a discrete DOWNWARD jump (not a crossfade) at the 316s power-down', () => {
+    const before = { ...arcAt(315.6) };
+    const after = { ...arcAt(316.4) };
+    expect(before.energy - after.energy).toBeGreaterThan(0.4);
+  });
+
+  it('has a settle dip just after the opening (t=36 < t=30)', () => {
+    expect(arcAt(36).energy).toBeLessThan(arcAt(30).energy);
+  });
+});
