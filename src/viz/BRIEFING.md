@@ -363,6 +363,25 @@ something that happens *now*, at a moment, and is gone.
   tiling with a nearest-SDF search over discrete silhouettes — blobs
   drawn whole on visible ground, layering like leaves instead of
   clipping at bisectors.
+- **A textual GLSL audit is not a compile.** Round 5 shipped `float
+  active = ...` — `active` is a GLSL ES reserved word — through an
+  agent's brace-balance/backtick audit, tsc, eslint, vitest, AND
+  `npm run build` (the shader is just a string to all of them); only the
+  browser's shader compile caught it (black stage, console error). The
+  Playwright smoke test IS the automated gate that would catch this —
+  never skip it before claiming a shader change works, and screenshot
+  the live scene after every shader-touching task. Avoid GLSL reserved
+  words in generated code: active, input, output, filter, superp, etc.
+- **Single-pass "post" effects for an SDF world** (no framebuffers, no
+  post pipeline, measured at zero frame-cost when idle): BLUR = multiply
+  every fwidth-derived AA width by one shared factor (+ drop pattern
+  contrast, lift exposure) — a genuine soft-focus; FEEDBACK/echo = 1-2
+  extra winner-only silhouette taps at lagged offsets drawn translucent
+  (+ an offset second grid sample); LENS RIPPLE = radial domain warp of
+  community space before the search so the whole world bends coherently.
+  Schedule as occasional enveloped interludes (Poisson ~30s, 4-7s,
+  smooth in/out) — periodic global effects hold interest through
+  static-camera stretches without a persistent look change.
 - **Winner-only detail is how a nearest-SDF search affords rich per-item
   art.** b2's species body plans (beetle legs/antennae, leaf veins, diatom
   spokes, bacterium flagella) would have blown the budget inside the

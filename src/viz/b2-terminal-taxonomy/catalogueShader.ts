@@ -126,6 +126,11 @@ uniform vec4 uRunner[4]; // x axis (0 horizontal / 1 vertical), y line coordinat
 uniform vec4 uKill[4]; // xy field-uv centre (the STRUCK specimen's own anchor position), z age (s), w strength (0 = inactive) — instant-kill zones fired by link strikes
 uniform float uBeatCount; // running beat counter (bass onsets + ambient scans) — drives the living grid background's per-cell re-roll phase
 uniform float uGridLife; // 0..1 ambient grid-background animation amount (beat-synced cell fills + edge traces)
+uniform int uGridMode; // 0 scatter / 1 row cascade / 2 ring pulse / 3 checker — which cells the living grid background fills; rotates on a beat-gated timer in index.ts so the background's behavior visibly changes over the track
+uniform float uAura; // 0..1 act-4 ambient aura-ring strength (the quiet-zoom spotlight's breathing reaction)
+uniform float uAuraPulse; // 0..1 bass-energy modulation of the aura's breathing amplitude
+uniform int uFxMode; // 0 soft-focus blur / 1 echo trails / 2 pulse-warp — which scheduled global-effect interlude is (potentially) running, see index.ts's fx scheduler doc
+uniform float uFxAmt; // 0..1 current envelope-scaled interlude strength (0 whenever no episode is active, or in the branches for the two modes not currently selected)
 
 const vec3 RUST = vec3(0.769, 0.302, 0.227);
 const vec3 MACHINE_TONE = vec3(0.62, 0.50, 0.44);
@@ -369,6 +374,18 @@ void main() {
   // VIEW CENTRE when uCommFreq or uZoom animate.
   vec2 p = (field - 0.5) * uCommFreq;
 
+  // --- scheduled global-effect interlude (index.ts's fx scheduler): mode 0
+  // widens every fwidth-derived AA window for a soft-focus blur (aaMul,
+  // used at every AA site below); mode 2 bends the whole page with a slow
+  // radial ripple BEFORE the specimen search, so it feeds everything
+  // downstream (search, glyphs, species detail) — this is deliberate.
+  float aaMul = 1.0 + ((uFxMode == 0) ? uFxAmt * 3.5 : 0.0);
+  float fx2 = (uFxMode == 2) ? uFxAmt : 0.0;
+  vec2 worg = vec2(sin(uTime * 0.07), cos(uTime * 0.061)) * 1.5;
+  vec2 wd = p - worg;
+  float wr = length(wd);
+  p += (wd / max(wr, 0.3)) * 0.05 * fx2 * sin(wr * 3.0 - uTime * 2.2);
+
   vec2 cc, cellPoint;
   float sd;
   specimenSearch(p, uMachineOrder, cc, cellPoint, sd);
@@ -457,11 +474,12 @@ void main() {
   vec2 advect = vec2(cos(patH1 * 6.2831853), sin(patH1 * 6.2831853)) * uTime * 0.03 * uChurn;
   float nI = ttFbm3(rl + advect);
   float band = smoothstep(0.46, 0.54, nI);
-  float patternContrast = band * cellVitality * (1.0 - classFlat);
+  float fx0 = (uFxMode == 0) ? uFxAmt : 0.0;
+  float patternContrast = band * cellVitality * (1.0 - classFlat) * (1.0 - fx0 * 0.5);
 
   // --- specimen-on-paper compositing: organic ink-rimmed silhouette with
   // a soft cast shadow, bone paper everywhere between specimens ---
-  float saa = fwidth(sd) * 1.2 + 0.001;
+  float saa = fwidth(sd) * 1.2 * aaMul + 0.001;
   float specimenMask = smoothstep(saa, -saa, sd);
   float rim = 1.0 - smoothstep(0.0, saa * 3.0, abs(sd));
   // Shadow: the winner's own silhouette shifted down-right, drawn only on
@@ -574,7 +592,7 @@ void main() {
     }
     // fam 4 (lichen): no engraved detail — skin + glyph script only, as before.
 
-    float inkAA = fwidth(rr) * 1.6 + 0.002;
+    float inkAA = fwidth(rr) * 1.6 * aaMul + 0.002;
     float detailGate = winScale * (1.0 - ordAmt * 0.5) * mix(1.0, 0.7, classFlat);
     float detailAlpha = smoothstep(inkAA, inkAA * 0.4, dInk) * detailGate;
     patchworkCol = mix(patchworkCol, inkLine, detailAlpha);
@@ -584,6 +602,49 @@ void main() {
 
   vec3 col = patchworkCol;
   vec3 machineCol = GROUND;
+
+  // --- fx mode 1 (echo trails): two ghost taps lagging behind the winner
+  // specimen along a fixed offset direction, drawn as translucent
+  // afterimages — a fixed lag direction reads as motion smear (community
+  // units; see index.ts's fx scheduler doc). Declared here (winner-only,
+  // right after the specimen composite) so it stays in scope for the grid
+  // block's double-exposure sample below.
+  float fx1 = (uFxMode == 1) ? uFxAmt : 0.0;
+  vec2 echoOff = vec2(0.16, 0.07) * fx1;
+  float g1 = specimenSd(p - echoOff, cc, uMachineOrder);
+  float g2 = specimenSd(p - echoOff * 2.0, cc, uMachineOrder);
+  float ghostMask1 = smoothstep(saa * 3.0, -saa * 3.0, g1);
+  float ghostMask2 = smoothstep(saa * 3.0, -saa * 3.0, g2);
+  col = mix(col, commCol, ghostMask1 * fx1 * 0.28);
+  col = mix(col, commCol, ghostMask2 * fx1 * 0.16);
+
+  // --- act-4 ambient auras: soft concentric rings breathing outward from
+  // the winner specimen (uSurvivorFocus's quiet-zoom spotlight reaction).
+  // Winner-only, masked implicitly to this specimen's territory by aq/
+  // auraFall — NOT gated by classFlat (drained survivors still radiate;
+  // in act 4 they're the unclassified holdout anyway). R0 is recomputed
+  // via specParams (the single source of truth for family/radius) since
+  // the species-detail block's own R0 above is scoped to its own block;
+  // survM is a local copy of the grade section's spotlight term (a pure
+  // function of vUv/uCover, no winner dependency) so the aura can read it
+  // before the grade does. eventGlow (declared above, in the event-color-
+  // restore section) picks up this aura's contribution so the grade
+  // locally backs off and the vivid color drawn here survives it. ---
+  if (sd > 0.0) {
+    float afam, aang, aelong, aR0base;
+    specParams(cc, ordAmt, afam, aang, aelong, aR0base);
+    float R0 = aR0base * winScale;
+    float aq = sd / max(R0, 0.05);
+    float rings = 0.5 + 0.5 * sin((aq - uTime * 0.35) * 7.0);
+    rings = pow(rings, 3.0);                       // thin soft bands
+    float auraFall = 1.0 - smoothstep(0.0, 2.2, aq); // fade by ~2.2 R0 out
+    float survM = smoothstep(0.18, 0.55, length((vUv - 0.5) * uCover));
+    float auraAmp = uAura * (0.55 + 0.45 * uAuraPulse) * mix(1.0, 1.0 - survM * 0.85, uSurvivorFocus);
+    float auraA = rings * auraFall * auraAmp * winScale;
+    col = mix(col, vividCol, auraA * 0.5);
+    col += vividCol * auraA * 0.12;
+    eventGlow = clamp(eventGlow + auraA * 0.6, 0.0, 1.0);
+  }
 
   // Archive ink: faint rust label-rows on the PAPER where scans have
   // happened (persistent, independent of current vitality).
@@ -610,7 +671,7 @@ void main() {
   vec2 gid = floor(gg);
   vec2 q = fract(gg);
   vec2 fwg = fwidth(gg);
-  float w = max(fwg.x, fwg.y) * 1.4 + 0.001;
+  float w = max(fwg.x, fwg.y) * 1.4 * aaMul + 0.001;
 
   // Column gating: glyph cells outside the community's 2-3 writing columns
   // stay empty, so the script reads as columns of writing.
@@ -676,7 +737,7 @@ void main() {
   float dDot = length(gmq - vec2(0.5)) - 0.12;
   float dMach = mix(dTick, dDot, isDot);
   vec2 fwm = fwidth(gm);
-  float wMach = max(fwm.x, fwm.y) * 1.4 + 0.001;
+  float wMach = max(fwm.x, fwm.y) * 1.4 * aaMul + 0.001;
   float machAlpha = smoothstep(wMach, wMach * 0.5, dMach) * inCol * machCov * marginMask * (0.4 + 0.6 * pulse);
   // Dark stamped print, pulsing toward bright rust on the raster sweep —
   // rust-on-rust vanished under the act-5 grade; the catalogue's code must
@@ -714,18 +775,32 @@ void main() {
   vec2 gv = (vUv - 0.5) * uCover;
   vec2 gm1 = gv * 14.0;
   vec2 dist1 = min(fract(gm1), 1.0 - fract(gm1));
-  vec2 aa1 = fwidth(gm1) * 1.5 + 0.0005;
+  vec2 aa1 = fwidth(gm1) * 1.5 * aaMul + 0.0005;
   vec2 lineMask1 = 1.0 - smoothstep(vec2(0.0), aa1, dist1);
   float mainLine = max(lineMask1.x, lineMask1.y);
 
   vec2 gm2 = gv * 14.0 * 4.0;
   vec2 dist2 = min(fract(gm2), 1.0 - fract(gm2));
-  vec2 aa2 = fwidth(gm2) * 1.5 + 0.0005;
+  vec2 aa2 = fwidth(gm2) * 1.5 * aaMul + 0.0005;
   vec2 lineMask2 = 1.0 - smoothstep(vec2(0.0), aa2, dist2);
   float fineLine = max(lineMask2.x, lineMask2.y) * uGridFine;
 
+  // fx mode 1 (echo trails) grid double-exposure: a second line-mask sample
+  // offset by the same echo direction as the specimen ghost taps, folded in
+  // at reduced weight below.
+  vec2 gvEcho = gv + vec2(0.012, 0.006) * fx1;
+  vec2 gm1Echo = gvEcho * 14.0;
+  vec2 dist1Echo = min(fract(gm1Echo), 1.0 - fract(gm1Echo));
+  vec2 lineMask1Echo = 1.0 - smoothstep(vec2(0.0), aa1, dist1Echo);
+  float mainLineEcho = max(lineMask1Echo.x, lineMask1Echo.y);
+
   float gridIntensity = uGridStrength + uGridSlam;
-  float gridMask = clamp(mainLine + fineLine * 0.6, 0.0, 1.0) * gridIntensity;
+  // fx mode 2 (pulse-warp): the grid brightens slightly with the wavefront.
+  float gridMask = clamp(
+    mainLine + fineLine * 0.6 + mainLineEcho * 0.4
+      + fx2 * 0.15 * (0.5 + 0.5 * sin(length(gv) * 4.0 - uTime * 2.2)),
+    0.0, 1.0
+  ) * gridIntensity;
   // Print-sweep: the machine printing rows top-to-bottom, brightening on beats.
   float sweepPos = fract(uTime * 0.4);
   float sweepD = abs(vUv.y - (1.0 - sweepPos));
@@ -744,13 +819,36 @@ void main() {
   float gphase = uTime * 0.35 + uBeatCount * 0.61;
   float pagerMask = 1.0 - specimenMask * 0.8;
 
-  // Cell fills: hashed per-cell membership, staggered sin envelope so
-  // re-rolls never land on every cell at once, mostly a paper-tone tint —
-  // a rare vivid cos-palette hue is carried past the grade instead (see
-  // vividFill/vividFillCol above), scaled there by uEventVivid.
-  float fillOn = step(ttHash21(gcid + floor(gphase) * 7.3), 0.10 + 0.2 * uGridLife);
+  // Cell fills: the SELECTION of which cells fill is mode-dependent
+  // (uGridMode, rotated on a beat-gated timer by index.ts so the
+  // background's behavior visibly changes over the track) — the envelope/
+  // tint/vivid pipeline below is shared and untouched by the mode.
+  //   0 scatter: hashed per-cell membership, staggered re-roll (original).
+  //   1 row cascade: the active row sweeps downward with the beat phase.
+  //   2 ring pulse: an expanding beat-driven band from a slow-drifting origin.
+  //   3 checker: parity alternates each beat.
+  float fillOn;
+  if (uGridMode == 1) {
+    float nRows = 14.0;
+    float activeRow = floor(mod(gphase * 2.0, nRows));
+    fillOn = step(abs(mod(gcid.y - activeRow, nRows)), 1.5)
+           * step(ttHash21(gcid + floor(gphase) * 3.7), 0.55);
+  } else if (uGridMode == 2) {
+    vec2 org = vec2(sin(uTime * 0.05), cos(uTime * 0.043)) * 3.0;
+    float ringDist = abs(length(gcid + 0.5 - org) - mod(gphase * 3.0, 16.0));
+    fillOn = step(ringDist, 1.6) * step(ttHash21(gcid + floor(gphase) * 7.3), 0.7);
+  } else if (uGridMode == 3) {
+    fillOn = step(mod(gcid.x + gcid.y + floor(gphase), 2.0), 0.5)
+           * step(ttHash21(gcid + floor(gphase) * 7.3), 0.6);
+  } else {
+    fillOn = step(ttHash21(gcid + floor(gphase) * 7.3), 0.10 + 0.2 * uGridLife);
+  }
+  // Staggered sin envelope so re-rolls never land on every cell at once,
+  // mostly a paper-tone tint — a rare vivid cos-palette hue is carried past
+  // the grade instead (see vividFill/vividFillCol above), scaled there by
+  // uEventVivid.
   float fillEnv = sin(3.14159 * fract(gphase + ttHash21(gcid + 4.4)));
-  float fillAlpha = fillOn * max(fillEnv, 0.0) * uGridLife * pagerMask * 0.22;
+  float fillAlpha = fillOn * max(fillEnv, 0.0) * uGridLife * pagerMask * 0.42;
   float vividH = ttHash21(gcid + 8.8);
   if (vividH > 0.88) {
     vividFillCol = 0.55 + 0.38 * cos(6.2831853 * (ttHash21(gcid + 12.1) + vec3(0.0, 0.33, 0.67)));
@@ -1010,8 +1108,11 @@ void main() {
 
   // --- finishers ---
   col *= 1.0 + uEnergy * 0.25 + uFlash * (0.35 + 0.35 * uEventVivid);
+  // fx mode 0 (soft-focus): a slight exposure lift + a softened vignette —
+  // the blur reads as a gentle overexposed drift, not just wider AA.
+  col *= 1.0 + fx0 * 0.12;
   float vig = smoothstep(0.35, 1.05, length(vUv - 0.5));
-  col = mix(col, GROUND * 0.55, vig * uVignette);
+  col = mix(col, GROUND * 0.55, vig * uVignette * (1.0 - fx0 * 0.5));
   col = vec3(1.0) - exp(-col * 1.15);
 
   if (uSoloMode == 1) {

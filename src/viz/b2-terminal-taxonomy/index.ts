@@ -120,6 +120,36 @@ const BEAT_PULSE_DECAY = 4;
 const LIFE_FAST_MUL = 6;
 
 /**
+ * Living-grid background reactivity modes (uGridMode): 0 scatter (original
+ * hashed per-cell membership), 1 row cascade, 2 ring pulse, 3 checker — see
+ * catalogueShader.ts's fill-selection block. Rotates on a beat-gated timer
+ * so the background's behavior visibly changes over the track, instead of
+ * scattering the same way for 5.5 minutes.
+ */
+const GRID_MODE_COUNT = 4;
+/** gridModeTimer reset range (seconds): counts down, then a switch goes PENDING and waits for the next bass onset (rule changes land on beats, at phrase-length intervals). */
+const GRID_MODE_TIMER_MIN = 16;
+const GRID_MODE_TIMER_JITTER = 8;
+/** If no bass onset arrives this long after a switch goes pending, switch anyway (no-mic playback fallback). */
+const GRID_MODE_PENDING_FALLBACK = 6;
+
+/**
+ * Scheduled global-effect interludes (uFxMode/uFxAmt, catalogueShader.ts):
+ * every ~30s an episode runs for a few seconds, picking one of three
+ * single-pass effects — soft-focus blur (0), echo trails (1), or pulse-warp
+ * (2). The world is pure SDF, so each is cheap: blur widens the
+ * fwidth-derived AA windows, echo adds a couple of extra silhouette taps
+ * with a fixed lag offset, and warp bends the whole page's domain before
+ * the specimen search. No new framebuffers. `?fx=<0-2>` pins a fixed mode
+ * at full (un-enveloped) strength for review.
+ */
+const FX_GAP_MEAN = 28;
+const FX_GAP_MIN = 15;
+const FX_DURATION_MIN = 4;
+const FX_DURATION_JITTER = 3;
+const FX_MODES = 3;
+
+/**
  * Camera choreography. Act 0 (thriving-field) opens HERO-CLOSE — zoomed in
  * from OPEN_ZOOM on the one pinned hero specimen (community cc=(0,0),
  * epoch-0 anchor, the shader's HERO OVERRIDE — see catalogueShader.ts's
@@ -230,7 +260,13 @@ interface LinkSlot {
  * `?classified=<0..1>` pins the classified ratchet, `?life=fast` speeds up
  * the specimen appear/disappear lifecycle clock, `?order=<0..1>` pins the
  * scatter->drawer-rows envelope, `?kill=always` forces a steady kill-zone
- * stream at random visible points, plus the standard `?t=`, `?q=`, `?debug=1`.
+ * stream at random visible points, `?gridmode=<0-3>` pins the living-grid
+ * background's fill-selection mode (0 scatter / 1 row cascade / 2 ring
+ * pulse / 3 checker) and disables its beat-gated rotation, `?aura=always`
+ * pins the act-4 ambient aura rings on, `?fx=<0-2>` pins the scheduled
+ * global-effect interlude (0 soft-focus blur / 1 echo trails / 2 pulse-warp)
+ * to a fixed mode at full un-enveloped strength and disables its own timer,
+ * plus the standard `?t=`, `?q=`, `?debug=1`.
  */
 class TerminalTaxonomy implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -250,8 +286,34 @@ class TerminalTaxonomy implements Viz {
   private forceRunAlways = false;
   private forceLifeFast = false;
   private forceKillAlways = false;
+  private forceAuraAlways = false;
   private pinnedClassified: number | null = null;
   private pinnedOrder: number | null = null;
+  private pinnedGridMode: number | null = null;
+
+  /** Living-grid background reactivity mode (0-3, see GRID_MODE_COUNT's doc) — starts at scatter (0). */
+  private gridMode = 0;
+  /** Countdown to the next mode-switch going pending; reset to GRID_MODE_TIMER_MIN + rand*GRID_MODE_TIMER_JITTER on init and after every switch. */
+  private gridModeTimer = 0;
+  /** True once the timer has expired — waiting for the next bass onset (or the no-mic fallback) to actually flip the mode. */
+  private gridModePending = false;
+  /** Seconds elapsed since gridModePending went true — drives the no-mic fallback switch. */
+  private gridModePendingElapsed = 0;
+
+  /**
+   * Scheduled global-effect interlude (soft-focus blur / echo trails /
+   * pulse-warp, see the FX_ constants' doc) — fxMode picks which of the 3
+   * effects the current/next episode uses; fxTimeToNext is randomized
+   * properly in init() (this.rand isn't seeded until then — mirrors
+   * gridModeTimer's own pattern).
+   */
+  private fxMode = 0;
+  private fxActive = false;
+  private fxAge = 0;
+  private fxDuration = 0;
+  private fxTimeToNext = 0;
+  /** `?fx=<0|1|2>` pins a fixed mode at full (un-enveloped) strength and disables the episode scheduler entirely. */
+  private pinnedFx: number | null = null;
 
   private full = true;
   private stampSlotCount = STAMP_SLOTS_FULL;
@@ -373,6 +435,17 @@ class TerminalTaxonomy implements Viz {
       const v = parseFloat(orderParam);
       if (!Number.isNaN(v)) this.pinnedOrder = Math.min(1, Math.max(0, v));
     }
+    const gridModeParam = params.get('gridmode');
+    if (gridModeParam !== null) {
+      const v = parseInt(gridModeParam, 10);
+      if (!Number.isNaN(v) && v >= 0 && v < GRID_MODE_COUNT) this.pinnedGridMode = v;
+    }
+    this.forceAuraAlways = params.get('aura') === 'always';
+    const fxParam = params.get('fx');
+    if (fxParam !== null) {
+      const v = parseInt(fxParam, 10);
+      if (!Number.isNaN(v) && v >= 0 && v < FX_MODES) this.pinnedFx = v;
+    }
 
     this.full = quality.level === 'full';
     this.stampSlotCount = this.full ? STAMP_SLOTS_FULL : STAMP_SLOTS_LITE;
@@ -407,6 +480,13 @@ class TerminalTaxonomy implements Viz {
     }
 
     this.breathPhase = this.rand() * Math.PI * 2;
+
+    // Grid-mode rotation: starts at scatter (0, the field default) unless
+    // pinned via ?gridmode=; the timer is randomized regardless (harmless
+    // when pinned — the pinned branch in update() never reads it).
+    if (this.pinnedGridMode !== null) this.gridMode = this.pinnedGridMode;
+    this.gridModeTimer = GRID_MODE_TIMER_MIN + this.rand() * GRID_MODE_TIMER_JITTER;
+    this.fxTimeToNext = FX_GAP_MIN + this.rand() * FX_GAP_MEAN;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -465,6 +545,11 @@ class TerminalTaxonomy implements Viz {
         uKill: { value: this.killValues },
         uBeatCount: { value: 0 },
         uGridLife: { value: 0 },
+        uGridMode: { value: 0 },
+        uAura: { value: 0 },
+        uAuraPulse: { value: 0 },
+        uFxMode: { value: 0 },
+        uFxAmt: { value: 0 },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -486,6 +571,66 @@ class TerminalTaxonomy implements Viz {
   private kickSpark() {
     this.spark = Math.min(SPARK_CEILING, this.spark + SPARK_KICK);
     this.sparkSeed++;
+  }
+
+  /**
+   * Advances the living-grid background to a random DIFFERENT reactivity
+   * mode and resets the rotation timer. Called either from a bass onset
+   * while a switch is pending (rule changes land on beats, at phrase-length
+   * intervals) or as the no-mic fallback once gridModePending has been true
+   * for GRID_MODE_PENDING_FALLBACK seconds. No-op when `?gridmode=` pins a
+   * fixed mode (update() also guards the timer countdown in that case, so
+   * this is a belt-and-suspenders check).
+   */
+  private advanceGridMode() {
+    if (this.pinnedGridMode !== null) return;
+    let next = this.gridMode;
+    while (next === this.gridMode) next = Math.floor(this.rand() * GRID_MODE_COUNT);
+    this.gridMode = next;
+    this.gridModeTimer = GRID_MODE_TIMER_MIN + this.rand() * GRID_MODE_TIMER_JITTER;
+    this.gridModePending = false;
+    this.gridModePendingElapsed = 0;
+  }
+
+  /**
+   * Scheduled global-effect interlude scheduler (soft-focus blur / echo
+   * trails / pulse-warp — see the FX_ constants' doc): while inactive,
+   * counts down to the next episode; once one starts, ages it through a
+   * 0.9s ease-in / 1.2s ease-out envelope (reusing the class's own `sst`)
+   * and writes uFxMode/uFxAmt. `?fx=` pins a fixed mode at full strength
+   * and bypasses the scheduler entirely.
+   */
+  private updateFx(dt: number, p: ActParams) {
+    const u = this.material.uniforms;
+    if (this.pinnedFx !== null) {
+      u.uFxMode.value = this.pinnedFx;
+      u.uFxAmt.value = p.fxAmount;
+      return;
+    }
+    if (!this.fxActive) {
+      this.fxTimeToNext -= dt;
+      if (this.fxTimeToNext <= 0) {
+        this.fxActive = true;
+        this.fxAge = 0;
+        this.fxDuration = FX_DURATION_MIN + this.rand() * FX_DURATION_JITTER;
+        let next = this.fxMode;
+        while (next === this.fxMode) next = Math.floor(this.rand() * FX_MODES);
+        this.fxMode = next;
+      }
+    }
+    if (this.fxActive) {
+      this.fxAge += dt;
+      const envIn = this.sst(Math.min(1, this.fxAge / 0.9));
+      const envOut = 1 - this.sst(Math.max(0, (this.fxAge - (this.fxDuration - 1.2)) / 1.2));
+      u.uFxAmt.value = envIn * envOut * p.fxAmount;
+      if (this.fxAge >= this.fxDuration) {
+        this.fxActive = false;
+        this.fxTimeToNext = FX_GAP_MIN + this.rand() * FX_GAP_MEAN;
+      }
+    } else {
+      u.uFxAmt.value = 0;
+    }
+    u.uFxMode.value = this.fxMode;
   }
 
   /** Activates one classification-scan slot at field-uv (x,y) (already wrapped), picking a free slot or else the oldest. */
@@ -916,6 +1061,10 @@ class TerminalTaxonomy implements Viz {
         this.fireLink(p);
       }
       this.beatPulse = Math.min(BEAT_PULSE_CEILING, this.beatPulse + BEAT_PULSE_KICK);
+      // A pending grid-mode switch lands on this beat (rule changes land at
+      // phrase boundaries, not mid-phrase) — see GRID_MODE_PENDING_FALLBACK's
+      // doc for the no-mic fallback that covers the case no onset arrives.
+      if (this.gridModePending) this.advanceGridMode();
       this.onsetCooldown = ONSET_COOLDOWN;
     }
 
@@ -1025,6 +1174,25 @@ class TerminalTaxonomy implements Viz {
     this.flash *= Math.exp(-FLASH_DECAY * dt);
     this.gridSlam *= Math.exp(-GRID_SLAM_DECAY * dt);
     this.beatPulse *= Math.exp(-BEAT_PULSE_DECAY * dt);
+    this.updateFx(dt, p);
+
+    // Grid-mode rotation timer: counts down to a pending switch (actually
+    // flipped on the next bass onset above, or by the no-mic fallback here
+    // if none arrives in time). Disabled entirely when ?gridmode= pins a
+    // fixed mode.
+    if (this.pinnedGridMode === null) {
+      this.gridModeTimer -= dt;
+      if (this.gridModeTimer <= 0 && !this.gridModePending) {
+        this.gridModePending = true;
+        this.gridModePendingElapsed = 0;
+      }
+      if (this.gridModePending) {
+        this.gridModePendingElapsed += dt;
+        if (this.gridModePendingElapsed >= GRID_MODE_PENDING_FALLBACK) {
+          this.advanceGridMode();
+        }
+      }
+    }
     if (this.forceFlickerAlways) {
       this.flickerEnv = 1;
     } else {
@@ -1116,6 +1284,9 @@ class TerminalTaxonomy implements Viz {
     u.uEventVivid.value = p.eventVivid;
     u.uBeatCount.value = this.beatCount;
     u.uGridLife.value = p.gridLife;
+    u.uGridMode.value = this.pinnedGridMode ?? this.gridMode;
+    u.uAura.value = this.forceAuraAlways ? 1 : p.aura;
+    u.uAuraPulse.value = this.bassE;
     // uWaveVis is bound by reference to this.field.wave (init()) — no
     // per-frame assignment needed, it's already mutated in place by
     // scheduleWaves()/startWave(). uLinkA/uLinkB/uRunner/uKill are likewise

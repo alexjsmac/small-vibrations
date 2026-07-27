@@ -238,6 +238,29 @@ describe('b2-terminal-taxonomy sections', () => {
   it('restraint: last-unclassified (3) gridLife is held below accelerating-catalogue (2)', () => {
     expect(ACTS[3].gridLife).toBeLessThan(ACTS[2].gridLife);
   });
+
+  it('fxAmount is nonzero in every act, with a strict maximum in first-scans (index 1) — the stillest camera stretch', () => {
+    const stillest = ACTS[1];
+    expect(stillest.name).toBe('first-scans');
+    for (const act of ACTS) {
+      expect(act.fxAmount).toBeGreaterThan(0);
+    }
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 1) continue;
+      expect(ACTS[i].fxAmount).toBeLessThan(stillest.fxAmount);
+    }
+  });
+
+  it('aura is nonzero ONLY in last-unclassified (index 3), at exactly 1.0 — the act-4 quiet-zoom reaction', () => {
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 3) {
+        expect(ACTS[i].name).toBe('last-unclassified');
+        expect(ACTS[i].aura).toBe(1.0);
+      } else {
+        expect(ACTS[i].aura).toBe(0);
+      }
+    }
+  });
 });
 
 describe('b2-terminal-taxonomy arcAt', () => {
