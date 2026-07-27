@@ -97,6 +97,8 @@ export interface ActParams {
   linkRate: number;
   /** Grid line-runner pulses per minute (bright heads racing along grid lines; high onsets add more). */
   runnerRate: number;
+  /** 0..1 amount of ambient grid-background animation (beat-synced cell fills + edge traces; paper-tone in act 1, machine-tinted once the grid exists). */
+  gridLife: number;
   /** 0..1 how strongly events (waves, links, flashes) restore specimens' vivid pre-flattening color. */
   eventVivid: number;
   /** Machine grid overlay intensity (0..1). */
@@ -144,7 +146,7 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.95, churn: 0.9,
     presence: 0.8, lifeRate: 0.10, wriggle: 1.0, drift: 1.0,
     scanRate: 0, scanDrain: 0, misProb: 0,
-    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, gridLife: 0.12, eventVivid: 0,
     gridStrength: 0, gridFine: 0,
     glyphDensity: 0.85, chatterRate: 1.2, machineFrac: 0, classifiedFloor: 0,
     commFreq: 6, zoom: 1.18, survivorFocus: 0,
@@ -158,7 +160,7 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.85, churn: 0.8,
     presence: 0.85, lifeRate: 0.12, wriggle: 0.8, drift: 0.8,
     scanRate: 5, scanDrain: 0.5, misProb: 0.3,
-    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0.3,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, gridLife: 0.3, eventVivid: 0.3,
     gridStrength: 0.18, gridFine: 0.25,
     glyphDensity: 0.8, chatterRate: 1.0, machineFrac: 0.08, classifiedFloor: 0.06,
     commFreq: 6, zoom: 1.05, survivorFocus: 0,
@@ -172,7 +174,7 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.70, churn: 0.75,
     presence: 0.8, lifeRate: 0.16, wriggle: 0.7, drift: 0.6,
     scanRate: 16, scanDrain: 0.7, misProb: 0.15,
-    classifyPressure: 0, waveRate: 0, linkRate: 2, runnerRate: 4, eventVivid: 0.5,
+    classifyPressure: 0, waveRate: 0, linkRate: 2, runnerRate: 4, gridLife: 0.45, eventVivid: 0.5,
     gridStrength: 0.42, gridFine: 0.5,
     glyphDensity: 0.7, chatterRate: 0.9, machineFrac: 0.3, classifiedFloor: 0.28,
     commFreq: 6, zoom: 0.98, survivorFocus: 0,
@@ -187,7 +189,7 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.90, churn: 0.6,
     presence: 0.75, lifeRate: 0.08, wriggle: 1.0, drift: 0.7,
     scanRate: 1.5, scanDrain: 0.4, misProb: 0,
-    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0.4,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, gridLife: 0.2, eventVivid: 0.4,
     gridStrength: 0.10, gridFine: 0.15,
     glyphDensity: 0.9, chatterRate: 0.7, machineFrac: 0.35, classifiedFloor: 0.34,
     commFreq: 6, zoom: 2.9, survivorFocus: 1,
@@ -202,7 +204,7 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.25, churn: 0.5,
     presence: 0.9, lifeRate: 0.30, wriggle: 0.35, drift: 0.25,
     scanRate: 34, scanDrain: 1.0, misProb: 0,
-    classifyPressure: 0.35, waveRate: 10, linkRate: 14, runnerRate: 22, eventVivid: 1.0,
+    classifyPressure: 0.35, waveRate: 10, linkRate: 14, runnerRate: 22, gridLife: 1.0, eventVivid: 1.0,
     gridStrength: 1.0, gridFine: 1.0,
     glyphDensity: 0.55, chatterRate: 1.4, machineFrac: 0.9, classifiedFloor: 0.9,
     commFreq: 6, zoom: 0.82, survivorFocus: 0,
@@ -217,7 +219,7 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.10, churn: 0.25,
     presence: 0.22, lifeRate: 0.04, wriggle: 0.15, drift: 0.1,
     scanRate: 0, scanDrain: 0, misProb: 0,
-    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0.2,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, gridLife: 0.15, eventVivid: 0.2,
     gridStrength: 0.06, gridFine: 0,
     glyphDensity: 0.08, chatterRate: 0.3, machineFrac: 1.0, classifiedFloor: 0.93,
     commFreq: 6, zoom: 1.15, survivorFocus: 0,

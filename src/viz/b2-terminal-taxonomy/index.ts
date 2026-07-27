@@ -76,9 +76,22 @@ const WAVE_STRENGTH = 1.0;
  */
 const LINK_SLOTS = 3;
 const LINK_LINE_END = 0.35;
-const LINK_LIFETIME = 1.4;
+const LINK_LIFETIME = 1.6;
 /** `?link=always` debug affordance interval (seconds). */
 const DEBUG_LINK_INTERVAL = 1.6;
+
+/**
+ * Kill zones (round-4 "strikes KILL instantly" note): a link strike doesn't
+ * just visually X-out its target, it annihilates the specimen — the kill
+ * zone pins that field-uv point dead for KILL_HOLD seconds (long enough the
+ * lifecycle epoch has usually moved on, so the specimen "returns" elsewhere
+ * if at all; see catalogueShader.ts's killEnv/specimenSd). Fired from
+ * ageLinks at the same moment the strike scan fires.
+ */
+const KILL_SLOTS = 4;
+const KILL_HOLD = 8.0;
+/** `?kill=always` debug affordance interval (seconds). */
+const DEBUG_KILL_INTERVAL = 2.0;
 
 /** Grid line-runner pulses (act 5): a bright head races the full length of one grid line. */
 const RUNNER_SLOTS = 4;
@@ -216,7 +229,8 @@ interface LinkSlot {
  * `?flicker=always` pins the outro's final-flicker envelope on,
  * `?classified=<0..1>` pins the classified ratchet, `?life=fast` speeds up
  * the specimen appear/disappear lifecycle clock, `?order=<0..1>` pins the
- * scatter->drawer-rows envelope, plus the standard `?t=`, `?q=`, `?debug=1`.
+ * scatter->drawer-rows envelope, `?kill=always` forces a steady kill-zone
+ * stream at random visible points, plus the standard `?t=`, `?q=`, `?debug=1`.
  */
 class TerminalTaxonomy implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -235,6 +249,7 @@ class TerminalTaxonomy implements Viz {
   private forceLinkAlways = false;
   private forceRunAlways = false;
   private forceLifeFast = false;
+  private forceKillAlways = false;
   private pinnedClassified: number | null = null;
   private pinnedOrder: number | null = null;
 
@@ -261,6 +276,8 @@ class TerminalTaxonomy implements Viz {
   private beatPulse = 0;
   /** CPU-accumulated specimen lifecycle clock (epochs) — feeds uLifeClock; advances by lifeRate * beat-multiplier each frame. */
   private lifeClock = 0;
+  /** Running beat counter (bass onsets + ambient Poisson scans, so no-mic playback still ticks) — feeds uBeatCount, the living grid background's re-roll phase. */
+  private beatCount = 0;
   /** Fast spark channel (high onsets -> glyph ticks): kick+decay scalar + per-event re-roll counter. */
   private spark = 0;
   private sparkSeed = 0;
@@ -305,6 +322,11 @@ class TerminalTaxonomy implements Viz {
   private runnerTimeToNext = 0;
   private runDebugTimer = 0;
 
+  /** Kill-zone pool: parallel CPU age/state + preallocated display Vector4s (bound as uKill) — an instant-death strike location, fired from ageLinks. */
+  private killSlots: AgeSlot[] = [];
+  private killValues: THREE.Vector4[] = [];
+  private killDebugTimer = 0;
+
   /** CPU classified-ratchet scalar (mirrors the sim's own .g channel at a coarse, whole-scene grain for uClassified/uDesat). Monotonic except when pinned. */
   private classified = 0;
   private gridSlam = 0;
@@ -340,6 +362,7 @@ class TerminalTaxonomy implements Viz {
     this.forceLinkAlways = params.get('link') === 'always';
     this.forceRunAlways = params.get('run') === 'always';
     this.forceLifeFast = params.get('life') === 'fast';
+    this.forceKillAlways = params.get('kill') === 'always';
     const classifiedParam = params.get('classified');
     if (classifiedParam !== null) {
       const v = parseFloat(classifiedParam);
@@ -377,6 +400,10 @@ class TerminalTaxonomy implements Viz {
     for (let i = 0; i < RUNNER_SLOTS; i++) {
       this.runnerSlots.push({ age: 0, active: false });
       this.runnerValues.push(new THREE.Vector4(0, 0, 0, 0));
+    }
+    for (let i = 0; i < KILL_SLOTS; i++) {
+      this.killSlots.push({ age: 0, active: false });
+      this.killValues.push(new THREE.Vector4(0, 0, 0, 0));
     }
 
     this.breathPhase = this.rand() * Math.PI * 2;
@@ -435,6 +462,9 @@ class TerminalTaxonomy implements Viz {
         uLinkA: { value: this.linkA },
         uLinkB: { value: this.linkB },
         uRunner: { value: this.runnerValues },
+        uKill: { value: this.killValues },
+        uBeatCount: { value: 0 },
+        uGridLife: { value: 0 },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -512,7 +542,7 @@ class TerminalTaxonomy implements Viz {
     this.startScan(x - Math.floor(x), y - Math.floor(y), p);
   }
 
-  /** Poisson ambient scans (a3's scheduleIgnitions shape): each one also nudges the ambient flash channel — a scene that's quietly cataloguing itself even between onsets. */
+  /** Poisson ambient scans (a3's scheduleIgnitions shape): each one also nudges the ambient flash channel — a scene that's quietly cataloguing itself even between onsets — and ticks beatCount (the living grid background's clock), so no-mic playback still moves. */
   private scheduleScans(dt: number, ratePerMinute: number, p: ActParams) {
     const rate = Math.max(0, ratePerMinute) / 60;
     if (rate <= 0) return;
@@ -520,6 +550,7 @@ class TerminalTaxonomy implements Viz {
     while (this.scanTimeToNext <= 0) {
       this.fireScan(p);
       this.kickFlash(FLASH_KICK_AMBIENT);
+      this.beatCount++;
       const u = Math.max(1e-6, this.rand());
       this.scanTimeToNext += -Math.log(u) / rate;
     }
@@ -604,7 +635,7 @@ class TerminalTaxonomy implements Viz {
     }
   }
 
-  /** Ages every active link slot: writes the shared display age; once age crosses LINK_LINE_END (the racing head reaching B) fires the strike scan at B (wrapped) + a flash, exactly once per link; deactivates at LINK_LIFETIME. */
+  /** Ages every active link slot: writes the shared display age; once age crosses LINK_LINE_END (the racing head reaching B) fires the strike scan at B (wrapped) + a kill zone at that same point + a flash, exactly once per link; deactivates at LINK_LIFETIME. */
   private ageLinks(dt: number, p: ActParams) {
     for (let i = 0; i < this.linkSlots.length; i++) {
       const slot = this.linkSlots[i];
@@ -617,7 +648,10 @@ class TerminalTaxonomy implements Viz {
         slot.struck = true;
         const bx = this.linkB[i].x;
         const by = this.linkB[i].y;
-        this.startScan(bx - Math.floor(bx), by - Math.floor(by), p);
+        const wx = bx - Math.floor(bx);
+        const wy = by - Math.floor(by);
+        this.startScan(wx, wy, p);
+        this.fireKill(wx, wy);
         this.kickFlash(FLASH_KICK_ONSET);
       }
       if (age >= LINK_LIFETIME) {
@@ -718,6 +752,40 @@ class TerminalTaxonomy implements Viz {
       this.fireRunner();
       const u = Math.max(1e-6, this.rand());
       this.runnerTimeToNext += -Math.log(u) / rate;
+    }
+  }
+
+  /** Activates one kill-zone slot at field-uv (x,y) (already wrapped [0,1)) — an instant-death strike location; picks a free slot or else the oldest. */
+  private fireKill(x: number, y: number) {
+    let idx = this.killSlots.findIndex((s) => !s.active);
+    if (idx < 0) {
+      idx = 0;
+      let maxAge = this.killSlots[0].age;
+      for (let i = 1; i < this.killSlots.length; i++) {
+        if (this.killSlots[i].age > maxAge) {
+          maxAge = this.killSlots[i].age;
+          idx = i;
+        }
+      }
+    }
+    const slot = this.killSlots[idx];
+    slot.active = true;
+    slot.age = 0;
+    this.killValues[idx].set(x, y, 0, 1);
+  }
+
+  /** Ages every active kill slot: writes the shared display age, deactivating at KILL_HOLD (long enough the lifecycle epoch has usually moved on, so a struck specimen "returns" elsewhere if at all — see catalogueShader.ts's killEnv). */
+  private ageKills(dt: number) {
+    for (let i = 0; i < this.killSlots.length; i++) {
+      const slot = this.killSlots[i];
+      if (!slot.active) continue;
+      slot.age += dt;
+      if (slot.age >= KILL_HOLD) {
+        slot.active = false;
+        this.killValues[i].w = 0;
+      } else {
+        this.killValues[i].z = slot.age;
+      }
     }
   }
 
@@ -840,6 +908,7 @@ class TerminalTaxonomy implements Viz {
     if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
       if (p.scanRate > 0.5) this.fireScan(p);
       this.kickFlash(FLASH_KICK_ONSET);
+      this.beatCount++;
       this.onsetCount++;
       if (this.onsetCount % 2 === 0) {
         if (section.actIndex === 4 && !this.waveActive) this.startWave();
@@ -911,6 +980,20 @@ class TerminalTaxonomy implements Viz {
       if (this.runDebugTimer <= 0) {
         this.fireRunner();
         this.runDebugTimer = DEBUG_RUN_INTERVAL;
+      }
+    }
+
+    // Kill zones: aged here (normally fired from ageLinks, at the same
+    // moment the strike scan fires), plus the ?kill=always affordance —
+    // fires at random visible points via pickVisiblePoint, same idiom as
+    // the other debug streams.
+    this.ageKills(dt);
+    if (this.forceKillAlways) {
+      this.killDebugTimer -= dt;
+      if (this.killDebugTimer <= 0) {
+        const { x, y } = this.pickVisiblePoint(p);
+        this.fireKill(x - Math.floor(x), y - Math.floor(y));
+        this.killDebugTimer = DEBUG_KILL_INTERVAL;
       }
     }
 
@@ -1031,11 +1114,14 @@ class TerminalTaxonomy implements Viz {
     u.uWriggle.value = p.wriggle;
     u.uDrift.value = p.drift;
     u.uEventVivid.value = p.eventVivid;
+    u.uBeatCount.value = this.beatCount;
+    u.uGridLife.value = p.gridLife;
     // uWaveVis is bound by reference to this.field.wave (init()) — no
     // per-frame assignment needed, it's already mutated in place by
-    // scheduleWaves()/startWave(). uLinkA/uLinkB/uRunner are likewise bound
-    // by reference to this.linkA/this.linkB/this.runnerValues (init()) —
-    // fireLink/ageLinks/fireRunner/ageRunners mutate them in place.
+    // scheduleWaves()/startWave(). uLinkA/uLinkB/uRunner/uKill are likewise
+    // bound by reference to this.linkA/this.linkB/this.runnerValues/
+    // this.killValues (init()) — fireLink/ageLinks/fireRunner/ageRunners/
+    // fireKill/ageKills mutate them in place.
 
     // Drag momentum (a1/a2/a3/b1 idiom, verbatim shape). No ambient drift.
     const cover = this.cover;

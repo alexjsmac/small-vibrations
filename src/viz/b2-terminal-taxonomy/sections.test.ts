@@ -219,6 +219,25 @@ describe('b2-terminal-taxonomy sections', () => {
       expect(ACTS[i].presence).toBeGreaterThan(sparsest.presence);
     }
   });
+
+  it('total-classification (index 4) strictly owns the maximum gridLife, at exactly 1.0', () => {
+    const climax = ACTS[4];
+    expect(climax.gridLife).toBe(1.0);
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].gridLife).toBeLessThan(climax.gridLife);
+    }
+  });
+
+  it('gridLife is nonzero in every act: the ambient grid background breathes throughout', () => {
+    for (const act of ACTS) {
+      expect(act.gridLife).toBeGreaterThan(0);
+    }
+  });
+
+  it('restraint: last-unclassified (3) gridLife is held below accelerating-catalogue (2)', () => {
+    expect(ACTS[3].gridLife).toBeLessThan(ACTS[2].gridLife);
+  });
 });
 
 describe('b2-terminal-taxonomy arcAt', () => {

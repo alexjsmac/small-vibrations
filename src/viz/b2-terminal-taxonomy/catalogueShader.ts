@@ -123,6 +123,9 @@ uniform float uEventVivid; // 0..1 how strongly events (link strikes, waves) res
 uniform vec4 uLinkA[3]; // xy field-uv A (source), z age (s), w strength (0 = inactive)
 uniform vec4 uLinkB[3]; // xy field-uv B (target/struck), z label seed, w unused
 uniform vec4 uRunner[4]; // x axis (0 horizontal / 1 vertical), y line coordinate (screen-space grid gv), z age (s), w strength (0 = inactive)
+uniform vec4 uKill[4]; // xy field-uv centre (the STRUCK specimen's own anchor position), z age (s), w strength (0 = inactive) — instant-kill zones fired by link strikes
+uniform float uBeatCount; // running beat counter (bass onsets + ambient scans) — drives the living grid background's per-cell re-roll phase
+uniform float uGridLife; // 0..1 ambient grid-background animation amount (beat-synced cell fills + edge traces)
 
 const vec3 RUST = vec3(0.769, 0.302, 0.227);
 const vec3 MACHINE_TONE = vec3(0.62, 0.50, 0.44);
@@ -230,6 +233,31 @@ void specParams(vec2 cc, float o, out float fam, out float ang, out float elong,
   R0base = (0.21 + 0.13 * h1) * mix(1.0, 0.9, o);
 }
 
+// Kill-zone envelope: a struck specimen is annihilated instantly at its OWN
+// anchor position (not wherever the strike itself fired) — multiple
+// overlapping kill slots take the MINIMUM (deepest) envelope. Shared between
+// specimenSd (every search candidate, so a killed specimen also loses search
+// ownership as its silhouette shrinks) and main()'s separate winScale
+// recompute (specLife alone doesn't know the anchor, so that call can't
+// apply this itself).
+float killEnv(vec2 anchorFieldUv) {
+  float env = 1.0;
+  for (int i = 0; i < 4; i++) {
+    vec4 kz = uKill[i];
+    if (kz.w <= 0.0) continue;
+    vec2 d = anchorFieldUv - kz.xy;
+    d -= floor(d + 0.5);
+    // Half a community cell (commFreq 6 -> cell = 0.167 field-uv): the kill
+    // point is the strike's random visible target, not the specimen's exact
+    // anchor, which can sit up to ~0.08 away — a tighter radius let struck
+    // specimens survive their own X.
+    if (length(d) < 0.085) {
+      env = min(env, 1.0 - smoothstep(0.0, 0.22, kz.z));
+    }
+  }
+  return env;
+}
+
 // Signed distance to community cc's SPECIMEN silhouette at community-space
 // point p: an organic, elongated, wobble-outlined blob around the cell's
 // anchor. This deliberately replaces any Voronoi-cell rendering — b2's
@@ -247,6 +275,13 @@ float specimenSd(vec2 p, vec2 cc, float order) {
   float scaleEnv = specLife(cc, epoch);
   if (scaleEnv < 0.01) return 9.0;
   vec2 anchor = specAnchor(cc, epoch);
+  // Kill-zone: a struck specimen shrinks to nothing over 0.22s (then stays
+  // gone for the rest of the kill slot's hold) — the hero (cc==(0,0)) is
+  // IMMUNE, same as its lifecycle pin above.
+  if (cc != vec2(0.0)) {
+    vec2 anchorFieldUv = (cc + anchor) / uCommFreq + 0.5;
+    scaleEnv *= killEnv(anchorFieldUv);
+  }
   vec2 local = p - (cc + anchor);
   float o = commOrderAmt(cc, order);
   float fam, ang, elong, R0base;
@@ -339,9 +374,15 @@ void main() {
   specimenSearch(p, uMachineOrder, cc, cellPoint, sd);
   float ordAmt = commOrderAmt(cc, uMachineOrder);
   // Winner's own lifecycle scale — gates the pin+tag ink below (an absent
-  // specimen mid-cycle must not carry a label).
+  // specimen mid-cycle must not carry a label). Mirrors specimenSd's
+  // kill-zone envelope: this is a SEPARATE specLife call (not specimenSd),
+  // so the kill check must be re-applied here too, at cellPoint's field-uv
+  // (== the winning anchor's field-uv) — hero stays immune.
   float winEpoch;
   float winScale = specLife(cc, winEpoch);
+  if (cc != vec2(0.0)) {
+    winScale *= killEnv(cellPoint / uCommFreq + 0.5);
+  }
 
   // Whole-patch read (anchor's field-uv - the "flattening" read, every
   // fragment in a community shares one vitality/classified value) and the
@@ -663,6 +704,12 @@ void main() {
   float pinTagAlpha = clamp(pinOn + tagOn, 0.0, 1.0) * pinGate;
   col = mix(col, pinTagCol, pinTagAlpha);
 
+  // Carried past the grade to AFTER the "--- grade ---" section (see the
+  // living grid background below, and its draw beside the runner block) —
+  // the vivid cos-palette cell fill must not be crushed to monochrome.
+  float vividFill = 0.0;
+  vec3 vividFillCol = vec3(0.0);
+
   // --- machine grid (screen space - does NOT pan/zoom with the world) ---
   vec2 gv = (vUv - 0.5) * uCover;
   vec2 gm1 = gv * 14.0;
@@ -688,6 +735,40 @@ void main() {
   col += RUST * gridMask * 0.15;
   machineCol = mix(machineCol, machineCol * RUST * 0.5, gridMask * 0.7);
   machineCol += RUST * gridMask * 0.15;
+
+  // --- living grid background: beat-synced cell fills + edge traces, both
+  // scaled by uGridLife and masked to paper (specimens carry their own ink
+  // instead) — additional movement, not wallpaper takeover (alpha budget
+  // capped well below the machine-grid lines themselves). ---
+  vec2 gcid = floor(gm1);
+  float gphase = uTime * 0.35 + uBeatCount * 0.61;
+  float pagerMask = 1.0 - specimenMask * 0.8;
+
+  // Cell fills: hashed per-cell membership, staggered sin envelope so
+  // re-rolls never land on every cell at once, mostly a paper-tone tint —
+  // a rare vivid cos-palette hue is carried past the grade instead (see
+  // vividFill/vividFillCol above), scaled there by uEventVivid.
+  float fillOn = step(ttHash21(gcid + floor(gphase) * 7.3), 0.10 + 0.2 * uGridLife);
+  float fillEnv = sin(3.14159 * fract(gphase + ttHash21(gcid + 4.4)));
+  float fillAlpha = fillOn * max(fillEnv, 0.0) * uGridLife * pagerMask * 0.22;
+  float vividH = ttHash21(gcid + 8.8);
+  if (vividH > 0.88) {
+    vividFillCol = 0.55 + 0.38 * cos(6.2831853 * (ttHash21(gcid + 12.1) + vec3(0.0, 0.33, 0.67)));
+    vividFill = fillAlpha * uEventVivid;
+  } else {
+    float tintH = ttHash21(gcid + 6.6);
+    vec3 fillTint = tintH > 0.3 ? GROUND * 0.86 : mix(col, RUST, 0.22);
+    col = mix(col, fillTint, fillAlpha);
+  }
+
+  // Edge traces: two hashes (one per axis), re-rolling twice as fast as the
+  // fill phase, brighten this cell's own grid-line segments — dashes
+  // tracing along the grid.
+  float traceRoll = floor(gphase * 2.0);
+  float traceGateX = step(0.72, ttHash21(gcid + vec2(traceRoll * 3.1, 11.0)));
+  float traceGateY = step(0.72, ttHash21(gcid + vec2(traceRoll * 3.1, 17.0)));
+  float traceAlpha = (lineMask1.x * traceGateX + lineMask1.y * traceGateY) * uGridLife * pagerMask;
+  col = mix(col, RUST * 0.4, clamp(traceAlpha, 0.0, 1.0) * 0.5);
 
   // --- classification reticles ---
   for (int i = 0; i < ${reticleSlots}; i++) {
@@ -803,6 +884,10 @@ void main() {
     col += RUST * runGlow * 0.3;
   }
 
+  // --- living grid background's vivid cell fill (accumulated pre-grade
+  // above, drawn here post-grade so the beat-synced squares that "change
+  // colour" don't get crushed to monochrome two blocks earlier). ---
+  col = mix(col, vividFillCol, clamp(vividFill, 0.0, 1.0));
 
   // --- link-strike events: the machine connects two specimens with a
   // racing line, then strikes the far one out with a scale-pop X — the
@@ -817,7 +902,7 @@ void main() {
     vec2 B = lb.xy;
     float age = la.z;
 
-    float fade = 1.0 - smoothstep(1.0, 1.4, age);
+    float fade = 1.0 - smoothstep(1.25, 1.55, age);
     if (fade <= 0.0) continue;
 
     // Cell hues at A and B, same cos-palette formula as commCol — the
@@ -846,17 +931,35 @@ void main() {
     col += lcol * headGlow * fade * 0.5;
 
     // X strike over B (X phase 0.35-1.1s): dark ink, mix-darken, a quick
-    // scale-pop from 1.4x down to 1.0x over the phase's first 0.12s.
+    // scale-pop from 1.4x down to 1.0x over the phase's first 0.12s. The X
+    // must be UNMISSABLE: a pale halo goes down first so the near-black
+    // strokes carry on any background, then (first 0.15s of the phase only)
+    // a bright white impact burst, then the X ink itself.
     float xAge = max(age - 0.35, 0.0);
     float xGate = step(0.35, age);
+    float distB = length(field - B);
+
+    // Pale halo under the X.
+    float haloAlpha = (1.0 - smoothstep(0.0, 0.085, distB)) * xGate * strength * fade;
+    col = mix(col, vec3(0.93, 0.9, 0.85), haloAlpha * 0.55);
+
+    // Impact shock: a bright white burst in the X phase's first 0.15s only —
+    // a small disc plus one expanding thin ring (the tap-ripple idiom).
+    float shockGate = xGate * (1.0 - step(0.15, xAge)) * strength * fade;
+    float shockK = clamp(xAge / 0.15, 0.0, 1.0);
+    float shockDisc = (1.0 - smoothstep(0.0, 0.02, distB)) * 0.9 * shockGate;
+    float shockRingR = mix(0.02, 0.09, shockK);
+    float shockRing = exp(-pow((distB - shockRingR) * 70.0, 2.0)) * shockGate;
+    col += vec3(1.0, 0.98, 0.95) * (shockDisc + shockRing);
+
     float xs = mix(1.4, 1.0, smoothstep(0.0, 0.12, xAge));
     vec2 xl = ttRot(-0.7853982) * ((field - B) / xs);
-    float xHalf = 0.035;
+    float xHalf = 0.06;
     float dX = min(ttSegDist(xl, vec2(-xHalf, 0.0), vec2(xHalf, 0.0), 0.0),
                    ttSegDist(xl, vec2(0.0, -xHalf), vec2(0.0, xHalf), 0.0));
     float xAA = fwidth(dX) * 1.5 + 0.001;
-    float xAlpha = (1.0 - smoothstep(0.005, 0.005 + xAA, dX)) * xGate * strength * fade;
-    col = mix(col, vec3(0.13, 0.07, 0.05), xAlpha);
+    float xAlpha = (1.0 - smoothstep(0.009, 0.009 + xAA, dX)) * xGate * strength * fade;
+    col = mix(col, vec3(0.05, 0.03, 0.02), xAlpha);
   }
 
 
