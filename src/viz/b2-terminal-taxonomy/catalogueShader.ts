@@ -119,6 +119,10 @@ uniform vec4 uWaveVis; // xy field-uv centre, z ring radius, w strength (0 = ina
 uniform vec4 uScanA[${reticleSlots}]; // xy field-uv centre, z age (s), w strength (0 = inactive)
 uniform vec4 uScanB[${reticleSlots}]; // x radius, y mislabel flag, z label seed, w unused
 uniform vec4 uRipple[${rippleSlots}]; // xy field-uv, z age (s), w strength (0 = inactive)
+uniform float uEventVivid; // 0..1 how strongly events (link strikes, waves) restore specimens' vivid pre-flattening color
+uniform vec4 uLinkA[3]; // xy field-uv A (source), z age (s), w strength (0 = inactive)
+uniform vec4 uLinkB[3]; // xy field-uv B (target/struck), z label seed, w unused
+uniform vec4 uRunner[4]; // x axis (0 horizontal / 1 vertical), y line coordinate (screen-space grid gv), z age (s), w strength (0 = inactive)
 
 const vec3 RUST = vec3(0.769, 0.302, 0.227);
 const vec3 MACHINE_TONE = vec3(0.62, 0.50, 0.44);
@@ -197,6 +201,35 @@ vec2 specAnchor(vec2 cc, float epoch) {
   return mix(organic, vec2(0.5), o);
 }
 
+// Shared species-plan params: the SINGLE source of truth for family, base
+// angle, elongation and base radius, so the cheap 9-cell search (via
+// specimenSd's silhouette bias) and the winner-only detail ink drawn once
+// in main() can never disagree. fam: 0 beetle, 1 leaf, 2 diatom,
+// 3 bacterium, 4 lichen. R0base excludes the lifecycle scaleEnv factor —
+// callers multiply that in themselves (specimenSd already has scaleEnv on
+// hand; the detail block reads winScale).
+void specParams(vec2 cc, float o, out float fam, out float ang, out float elong, out float R0base) {
+  fam = floor(ttHash21(cc + vec2(6.2, 14.8)) * 5.0);
+  fam = clamp(fam, 0.0, 4.0);
+  float h1 = ttHash21(cc + vec2(21.0, 8.8));
+  float h2 = ttHash21(cc + vec2(33.0, 1.2));
+  float h3 = ttHash21(cc + vec2(41.0, 6.6));
+  ang = mix(h3 * 6.2831853, 0.0, o);
+  if (fam < 0.5) {
+    elong = mix(1.15, 1.4, h2); // beetle: compact oval
+  } else if (fam < 1.5) {
+    elong = mix(1.8, 2.4, h2); // leaf: long blade
+  } else if (fam < 2.5) {
+    elong = mix(0.95, 1.05, h2); // diatom: near-circular frustule
+  } else if (fam < 3.5) {
+    elong = mix(1.6, 2.0, h2); // bacterium: rod/capsule
+  } else {
+    elong = mix(0.62, 1.55, h2); // lichen: irregular crust (unchanged)
+  }
+  elong = mix(elong, clamp(elong, 0.85, 1.2), o);
+  R0base = (0.21 + 0.13 * h1) * mix(1.0, 0.9, o);
+}
+
 // Signed distance to community cc's SPECIMEN silhouette at community-space
 // point p: an organic, elongated, wobble-outlined blob around the cell's
 // anchor. This deliberately replaces any Voronoi-cell rendering — b2's
@@ -205,7 +238,10 @@ vec2 specAnchor(vec2 cc, float epoch) {
 // blob's rotation aligns to the page axes, its proportions normalize, and
 // its outline simplifies — a living form becoming a filed entry. Absent
 // specimens (mid-cycle, not this epoch's roll) return a large constant so
-// they drop out of the nearest-specimen search entirely.
+// they drop out of the nearest-specimen search entirely. The outline wobble
+// is now FAMILY-SPECIFIC (specParams picks fam) so the silhouette alone
+// hints at the body plan cheaply; the recognizable ink detail is drawn once
+// for the winner only, in main().
 float specimenSd(vec2 p, vec2 cc, float order) {
   float epoch;
   float scaleEnv = specLife(cc, epoch);
@@ -213,22 +249,46 @@ float specimenSd(vec2 p, vec2 cc, float order) {
   vec2 anchor = specAnchor(cc, epoch);
   vec2 local = p - (cc + anchor);
   float o = commOrderAmt(cc, order);
+  float fam, ang, elong, R0base;
+  specParams(cc, o, fam, ang, elong, R0base);
   float h1 = ttHash21(cc + vec2(21.0, 8.8));
   float h2 = ttHash21(cc + vec2(33.0, 1.2));
   float h3 = ttHash21(cc + vec2(41.0, 6.6));
-  float ang = mix(h3 * 6.2831853, 0.0, o);
-  float elong = mix(0.62, 1.55, h2);
-  elong = mix(elong, clamp(elong, 0.85, 1.2), o);
   vec2 sl = ttRot(-ang) * local;
   sl.x /= elong;
   float th = atan(sl.y, sl.x);
   // Time-animated wriggle: phase motion per wobble harmonic, amplitude
   // scaled by the act's wriggle knob (ordered specimens still calm).
   float wobAmp = mix(1.0, 0.3, o) * mix(0.35, 1.0, uWriggle);
-  float wob = (0.07 * sin(3.0 * th + h1 * 6.2831853 + uTime * 1.3)
-             + 0.045 * sin(5.0 * th + h2 * 6.2831853 - uTime * 1.7)
-             + 0.028 * sin(7.0 * th + h3 * 6.2831853 + uTime * 2.3)) * wobAmp;
-  float R0 = (0.21 + 0.13 * h1) * mix(1.0, 0.9, o) * scaleEnv;
+  float wob;
+  if (fam < 0.5) {
+    // beetle: bilateral symmetry - even harmonics only (cos(k*th) with th
+    // measured from the body axis gives left/right mirror symmetry).
+    float t1 = h1 * 6.2831853 + uTime * 1.3;
+    float t2 = h2 * 6.2831853 - uTime * 1.7;
+    wob = (0.05 * cos(2.0 * th + t1) + 0.03 * cos(4.0 * th + t2)) * wobAmp;
+  } else if (fam < 1.5) {
+    // leaf: teardrop taper (one pole broader) + fine serration + one low harmonic.
+    wob = (0.16 * cos(th)
+         + 0.025 * sin(13.0 * th + uTime * 1.1)
+         + 0.07 * sin(3.0 * th + h1 * 6.2831853 + uTime * 1.3)) * wobAmp;
+  } else if (fam < 2.5) {
+    // diatom: n-fold radial scallop only (frustule symmetry); n must match
+    // the spoke count drawn in the winner-only detail block.
+    float n = 5.0 + floor(ttHash21(cc + vec2(9.7, 3.4)) * 4.0);
+    wob = 0.05 * cos(n * th + uTime * 0.6) * wobAmp;
+  } else if (fam < 3.5) {
+    // bacterium: near-smooth capsule - current harmonics heavily damped.
+    wob = (0.07 * sin(3.0 * th + h1 * 6.2831853 + uTime * 1.3)
+         + 0.045 * sin(5.0 * th + h2 * 6.2831853 - uTime * 1.7)
+         + 0.028 * sin(7.0 * th + h3 * 6.2831853 + uTime * 2.3)) * 0.15 * wobAmp;
+  } else {
+    // lichen: current wobble unchanged.
+    wob = (0.07 * sin(3.0 * th + h1 * 6.2831853 + uTime * 1.3)
+         + 0.045 * sin(5.0 * th + h2 * 6.2831853 - uTime * 1.7)
+         + 0.028 * sin(7.0 * th + h3 * 6.2831853 + uTime * 2.3)) * wobAmp;
+  }
+  float R0 = R0base * scaleEnv;
   float sd = length(sl) - R0 * (1.0 + wob);
 
   // Wave pulse: specimens swell as the classification wave ring crosses
@@ -314,6 +374,35 @@ void main() {
   float classFlat = max(cellClassified, uClassified * 0.7);
   commCol = mix(commCol, MACHINE_TONE, classFlat * 0.85);
 
+  // --- event color restore: link-strike endpoints and the classification
+  // wave ring pull this winner specimen's hue back toward its living
+  // pre-flattening color — the climax's connections and waves visibly
+  // un-flatten what the machine just drained. anchorFieldUv is cellUv
+  // (already computed above: the winner's own field-uv anchor). ---
+  float linkGlow = 0.0;
+  for (int i = 0; i < 3; i++) {
+    vec4 la = uLinkA[i];
+    float strength = la.w;
+    if (strength <= 0.0) continue;
+    vec4 lb = uLinkB[i];
+    float age = la.z;
+    float envelope = 1.0 - smoothstep(0.0, 1.0, age); // rises instantly, decays by 1.0s
+    float dA2 = dot(cellUv - la.xy, cellUv - la.xy);
+    float dB2 = dot(cellUv - lb.xy, cellUv - lb.xy);
+    linkGlow += (exp(-dA2 / 0.0035) + exp(-dB2 / 0.0035)) * strength * envelope;
+  }
+  commCol = mix(commCol, vividCol * 1.2, clamp(linkGlow, 0.0, 1.0) * uEventVivid);
+
+  vec2 wpDelta = cellUv - uWaveVis.xy;
+  wpDelta -= floor(wpDelta + 0.5);
+  float wpCol = exp(-pow((length(wpDelta) - uWaveVis.z) * 18.0, 2.0)) * uWaveVis.w;
+  commCol = mix(commCol, vividCol * 1.15, wpCol * uEventVivid);
+  // Where events are glowing, the restored color must SURVIVE the grade —
+  // the grade section reads this and locally backs off desat/rust, so the
+  // vivid flashes punch through the drained climax instead of being
+  // re-crushed to monochrome two blocks later.
+  float eventGlow = clamp(linkGlow + wpCol, 0.0, 1.0) * uEventVivid;
+
   // --- interior pattern (Turing-ish, stateless) ---
   float patH1 = ttHash21(cc + 11.3);
   float patH2 = ttHash21(cc + 27.9);
@@ -345,6 +434,111 @@ void main() {
   vec3 inkLine = mix(vec3(0.16, 0.1, 0.08), commCol * 0.35, 0.4);
   vec3 patchworkCol = mix(paper, skinCol, specimenMask);
   patchworkCol = mix(patchworkCol, inkLine, rim * mix(0.85, 0.55, classFlat));
+
+  // --- winner-only species detail: engraved field-guide ink (legs, veins,
+  // spokes, flagella) drawn ONCE for the winning specimen only — the cheap
+  // 9-cell search above only ever biases the silhouette; this is where the
+  // budget goes on the recognizable per-family strokes. specParams is
+  // recomputed here (not stored from the search) so it can never drift
+  // from the silhouette that produced this fragment's sd/cellPoint. ---
+  {
+    float dfam, dang, delong, dR0;
+    specParams(cc, ordAmt, dfam, dang, delong, dR0);
+    vec2 sl = ttRot(-dang) * (p - cellPoint);
+    sl.x /= delong;
+    float rr = length(sl);
+    float th = atan(sl.y, sl.x);
+    float R0 = dR0 * winScale;
+
+    // Interior strokes (seams, veins, spokes, granules) show only inside
+    // the silhouette; appendages (legs, antennae, flagella, stem) show only
+    // in a thin just-outside band, so they read as limbs on paper without
+    // leaking into neighbouring specimens or the open ground.
+    float insideMask = specimenMask;
+    float outsideBand = smoothstep(-saa * 1.5, saa * 1.5, sd)
+                       * (1.0 - smoothstep(R0 * 0.4, R0 * 0.55, sd));
+
+    float dInk = 999.0;
+
+    if (dfam < 0.5) {
+      // --- beetle: centre seam, two SHORT wing-case division ticks, 3
+      // legs/side, antennae. The ticks deliberately stop well short of the
+      // silhouette edge: full-width crossing arcs made every beetle read as
+      // an already-struck-out X, colliding with the link-strike grammar. ---
+      float dSeam = ttSegDist(sl, vec2(-0.75, 0.0) * R0, vec2(0.8, 0.0) * R0, 0.0);
+      dInk = min(dInk, mix(999.0, dSeam, insideMask));
+      for (int k = 0; k < 2; k++) {
+        float dx = k == 0 ? 0.15 : 0.45;
+        float dArc = ttSegDist(sl, vec2(dx, -0.42) * R0, vec2(dx, 0.42) * R0, 0.0);
+        dInk = min(dInk, mix(999.0, dArc, insideMask));
+      }
+      for (int i = 0; i < 3; i++) {
+        float xi = mix(-0.45, 0.5, float(i) / 2.0) * R0;
+        vec2 aP = vec2(xi, 0.6 * R0);
+        vec2 bP = vec2(xi - 0.35 * R0, 1.25 * R0);
+        float dLegP = ttSegDist(sl, aP, bP, 0.0);
+        float dLegM = ttSegDist(sl, vec2(aP.x, -aP.y), vec2(bP.x, -bP.y), 0.0);
+        dInk = min(dInk, mix(999.0, min(dLegP, dLegM), outsideBand));
+      }
+      vec2 antA = vec2(0.8, 0.12) * R0;
+      vec2 antB = vec2(1.35, 0.5) * R0;
+      float dAntP = ttSegDist(sl, antA, antB, 0.06);
+      float dAntM = ttSegDist(sl, vec2(antA.x, -antA.y), vec2(antB.x, -antB.y), 0.06);
+      dInk = min(dInk, mix(999.0, min(dAntP, dAntM), outsideBand));
+    } else if (dfam < 1.5) {
+      // --- leaf: midrib, 5 vein pairs, stem ---
+      float dMid = ttSegDist(sl, vec2(-0.85, 0.0) * R0, vec2(0.9, 0.0) * R0, 0.0);
+      dInk = min(dInk, mix(999.0, dMid, insideMask));
+      for (int i = 0; i < 5; i++) {
+        float xi = mix(-0.6, 0.6, float(i) / 4.0) * R0;
+        vec2 vA = vec2(xi, 0.0);
+        vec2 vB = vec2(xi + 0.35 * R0, 0.55 * R0);
+        vec2 vBm = vec2(xi + 0.35 * R0, -0.55 * R0);
+        float dVeinP = ttSegDist(sl, vA, vB, 0.0);
+        float dVeinM = ttSegDist(sl, vA, vBm, 0.0);
+        dInk = min(dInk, mix(999.0, min(dVeinP, dVeinM), insideMask));
+      }
+      float dStem = ttSegDist(sl, vec2(-1.3, 0.0) * R0, vec2(-0.88, 0.0) * R0, 0.0);
+      dInk = min(dInk, mix(999.0, dStem, outsideBand));
+    } else if (dfam < 2.5) {
+      // --- diatom: two ring contours + n-fold radial spoke comb ---
+      float dRing = min(abs(rr - 0.5 * R0), abs(rr - 0.78 * R0));
+      dInk = min(dInk, mix(999.0, dRing, insideMask));
+      float n = 5.0 + floor(ttHash21(cc + vec2(9.7, 3.4)) * 4.0);
+      float sect = abs(fract(th * n / 6.2831853 + 0.5) - 0.5) * 6.2831853 / n * rr;
+      float rgAA = fwidth(rr) + 0.001;
+      float radialGate = smoothstep(0.25 * R0 - rgAA, 0.25 * R0 + rgAA, rr)
+                        * (1.0 - smoothstep(0.85 * R0 - rgAA, 0.85 * R0 + rgAA, rr));
+      dInk = min(dInk, mix(999.0, sect, insideMask * radialGate));
+    } else if (dfam < 3.5) {
+      // --- bacterium: 2 flagella (3 chained segments each) + 5 interior granules ---
+      for (int k = 0; k < 2; k++) {
+        vec2 dir = k == 0 ? vec2(1.0, 0.0) : vec2(-1.0, 0.0);
+        vec2 perp = vec2(-dir.y, dir.x);
+        vec2 pole = dir * R0;
+        vec2 fp0 = pole + perp * (0.1 * R0 * sin(0.0 * 7.0 + uTime * 2.0));
+        vec2 fp1 = pole + dir * (0.33 * 0.55 * R0) + perp * (0.1 * R0 * sin(0.33 * 7.0 + uTime * 2.0));
+        vec2 fp2 = pole + dir * (0.66 * 0.55 * R0) + perp * (0.1 * R0 * sin(0.66 * 7.0 + uTime * 2.0));
+        vec2 fp3 = pole + dir * (1.0 * 0.55 * R0) + perp * (0.1 * R0 * sin(1.0 * 7.0 + uTime * 2.0));
+        float dFlag = ttSegDist(sl, fp0, fp1, 0.0);
+        dFlag = min(dFlag, ttSegDist(sl, fp1, fp2, 0.0));
+        dFlag = min(dFlag, ttSegDist(sl, fp2, fp3, 0.0));
+        dInk = min(dInk, mix(999.0, dFlag, outsideBand));
+      }
+      for (int i = 0; i < 5; i++) {
+        vec2 gp = (ttHash22(cc + vec2(float(i) * 5.3 + 1.0, 4.4)) - 0.5) * 2.0 * 0.6 * R0;
+        float dGran = length(sl - gp) - 0.055 * R0;
+        dInk = min(dInk, mix(999.0, dGran, insideMask));
+      }
+    }
+    // fam 4 (lichen): no engraved detail — skin + glyph script only, as before.
+
+    float inkAA = fwidth(rr) * 1.6 + 0.002;
+    float detailGate = winScale * (1.0 - ordAmt * 0.5) * mix(1.0, 0.7, classFlat);
+    float detailAlpha = smoothstep(inkAA, inkAA * 0.4, dInk) * detailGate;
+    patchworkCol = mix(patchworkCol, inkLine, detailAlpha);
+  }
+
   patchworkCol += commCol * fragState.b * 0.6; // local poke re-ignition glow
 
   vec3 col = patchworkCol;
@@ -570,12 +764,101 @@ void main() {
     machineCol += labelColor * labelFinal * 0.3;
   }
 
-  // --- grade ---
+  // --- grade (locally suppressed where events glow — see eventGlow) ---
+  float gradeK = 1.0 - eventGlow;
   float luma = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(col, vec3(luma), uDesat);
-  col = mix(col, RUST * (0.35 + 0.65 * luma), uRustMix * (0.4 + 0.6 * uClassified));
+  col = mix(col, vec3(luma), uDesat * gradeK);
+  col = mix(col, RUST * (0.35 + 0.65 * luma), uRustMix * (0.4 + 0.6 * uClassified) * gradeK);
   float survM = smoothstep(0.18, 0.55, length((vUv - 0.5) * uCover));
   col = mix(col, mix(col, vec3(luma) * 0.92, 0.85), survM * uSurvivorFocus);
+
+  // --- events draw AFTER the grade: they are the machine's live overlay
+  // and the track's color anomalies — drawn pre-grade they were crushed to
+  // the same dusty monochrome as everything else (the same reason poke
+  // ripples always drew post-grade). ---
+  // --- grid line runners: bright heads racing the FULL grid lines, the
+  // "lines running through the field" high-onset hit — hot against
+  // everything. ---
+  for (int i = 0; i < 4; i++) {
+    vec4 rn = uRunner[i];
+    float rStrength = rn.w;
+    if (rStrength <= 0.0) continue;
+    float axis = rn.x;
+    float rCoord = rn.y;
+    float rAge = rn.z;
+    float pr = clamp(rAge / 0.5, 0.0, 1.0);
+    float runGlow;
+    if (axis < 0.5) {
+      float lineProx = exp(-pow(abs(gv.y - rCoord) * 60.0, 2.0));
+      float hx = mix(-uCover.x * 0.55, uCover.x * 0.55, pr);
+      float headWindow = exp(-pow((gv.x - hx) * 9.0, 2.0));
+      runGlow = lineProx * headWindow * rStrength;
+    } else {
+      float lineProx = exp(-pow(abs(gv.x - rCoord) * 60.0, 2.0));
+      float hy = mix(-uCover.y * 0.55, uCover.y * 0.55, pr);
+      float headWindow = exp(-pow((gv.y - hy) * 9.0, 2.0));
+      runGlow = lineProx * headWindow * rStrength;
+    }
+    col = mix(col, vec3(1.0, 0.93, 0.88), runGlow * 0.65);
+    col += RUST * runGlow * 0.3;
+  }
+
+
+  // --- link-strike events: the machine connects two specimens with a
+  // racing line, then strikes the far one out with a scale-pop X — the
+  // climax's "connects and collides" hit. A/B are field-uv, CPU-guaranteed
+  // non-wrapping (this pair's line math never torus-wraps). ---
+  for (int i = 0; i < 3; i++) {
+    vec4 la = uLinkA[i];
+    float strength = la.w;
+    if (strength <= 0.0) continue;
+    vec4 lb = uLinkB[i];
+    vec2 A = la.xy;
+    vec2 B = lb.xy;
+    float age = la.z;
+
+    float fade = 1.0 - smoothstep(1.0, 1.4, age);
+    if (fade <= 0.0) continue;
+
+    // Cell hues at A and B, same cos-palette formula as commCol — the
+    // racing line's color travels from the source specimen's hue to the
+    // target's.
+    vec2 ccA = commCell((A - 0.5) * uCommFreq, uMachineOrder);
+    vec2 ccB = commCell((B - 0.5) * uCommFreq, uMachineOrder);
+    float hA = ttHash21(ccA + vec2(3.7, 1.3));
+    float hB = ttHash21(ccB + vec2(3.7, 1.3));
+    vec3 hueA = 0.55 + 0.38 * cos(6.2831853 * (hA + vec3(0.0, 0.33, 0.67)));
+    vec3 hueB = 0.55 + 0.38 * cos(6.2831853 * (hB + vec3(0.0, 0.33, 0.67)));
+
+    float pr = clamp(age / 0.35, 0.0, 1.0);
+    vec2 head = mix(A, B, pr);
+    float dLine = ttSegDist(field, A, head, 0.0);
+    float lineAA = fwidth(dLine) * 1.5 + 0.0008;
+    float lineAlpha = (1.0 - smoothstep(0.004, 0.004 + lineAA, dLine)) * strength;
+    float headDist = length(field - head);
+    float headGlow = smoothstep(0.012, 0.0, headDist) * strength;
+
+    vec2 abVec = B - A;
+    float lt = clamp(dot(field - A, abVec) / max(1e-5, dot(abVec, abVec)), 0.0, 1.0);
+    vec3 lcol = mix(hueA, hueB, lt);
+
+    col = mix(col, lcol * 1.25, lineAlpha * fade);
+    col += lcol * headGlow * fade * 0.5;
+
+    // X strike over B (X phase 0.35-1.1s): dark ink, mix-darken, a quick
+    // scale-pop from 1.4x down to 1.0x over the phase's first 0.12s.
+    float xAge = max(age - 0.35, 0.0);
+    float xGate = step(0.35, age);
+    float xs = mix(1.4, 1.0, smoothstep(0.0, 0.12, xAge));
+    vec2 xl = ttRot(-0.7853982) * ((field - B) / xs);
+    float xHalf = 0.035;
+    float dX = min(ttSegDist(xl, vec2(-xHalf, 0.0), vec2(xHalf, 0.0), 0.0),
+                   ttSegDist(xl, vec2(0.0, -xHalf), vec2(0.0, xHalf), 0.0));
+    float xAA = fwidth(dX) * 1.5 + 0.001;
+    float xAlpha = (1.0 - smoothstep(0.005, 0.005 + xAA, dX)) * xGate * strength * fade;
+    col = mix(col, vec3(0.13, 0.07, 0.05), xAlpha);
+  }
+
 
   // --- tap ripples: near-white expanding rings, torus-wrapped (a3's idiom) ---
   for (int i = 0; i < ${rippleSlots}; i++) {
@@ -623,7 +906,7 @@ void main() {
   col = mix(col, vividCol, min(1.0, flickInk * 1.6));
 
   // --- finishers ---
-  col *= 1.0 + uEnergy * 0.25 + uFlash * 0.35;
+  col *= 1.0 + uEnergy * 0.25 + uFlash * (0.35 + 0.35 * uEventVivid);
   float vig = smoothstep(0.35, 1.05, length(vUv - 0.5));
   col = mix(col, GROUND * 0.55, vig * uVignette);
   col = vec3(1.0) - exp(-col * 1.15);

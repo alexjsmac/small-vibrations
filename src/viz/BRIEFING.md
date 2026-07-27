@@ -363,6 +363,23 @@ something that happens *now*, at a moment, and is gone.
   tiling with a nearest-SDF search over discrete silhouettes — blobs
   drawn whole on visible ground, layering like leaves instead of
   clipping at bisectors.
+- **Winner-only detail is how a nearest-SDF search affords rich per-item
+  art.** b2's species body plans (beetle legs/antennae, leaf veins, diatom
+  spokes, bacterium flagella) would have blown the budget inside the
+  9-cell search; instead the search silhouette only gets cheap per-family
+  BIAS (elongation + wobble character from a shared `specParams` helper —
+  one source of truth so search and detail never disagree), and the
+  recognizable ink detail draws once per fragment for the winner. Median
+  frame cost was unchanged. Also: keep event grammars visually disjoint —
+  the beetle's first full-width crossing marks read as pre-applied
+  strike-out X's; interior marks must stop short of the silhouette edge.
+- **Overlays that must POP draw AFTER the grade.** b2's link lines,
+  strike X's, and grid runners drew before the desat/rust grade and came
+  out the same dusty monochrome as the field — the same reason poke
+  ripples always drew post-grade. Events are the machine's live overlay:
+  draw them after grading, and where events restore color to specimens
+  (which ARE graded), carry an `eventGlow` scalar into the grade and
+  locally suppress desat/rust so the restored color survives.
 - **Exempt envelopes whose MOTION is the content from the act-hold idiom.**
   The hold fix (below) applied to b2's spatial machine-order made the
   scatter→drawer assembly TELEPORT in one frame at the drop — Alex never

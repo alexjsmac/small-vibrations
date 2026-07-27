@@ -57,13 +57,16 @@ describe('b2-terminal-taxonomy sections', () => {
         const v = act[key] as number;
         expect(Number.isFinite(v)).toBe(true);
         expect(v).toBeGreaterThanOrEqual(0);
-        // Most knobs are 0..1.5, but scanRate/waveRate (events per minute),
-        // chatterRate (a multiplier that can run hot), commFreq (cells
-        // across the field), and zoom (>1 closer, up to the act-4 deep
-        // zoom) live in larger units — excluded from the upper bound.
+        // Most knobs are 0..1.5, but scanRate/waveRate/linkRate/runnerRate
+        // (events per minute), chatterRate (a multiplier that can run hot),
+        // commFreq (cells across the field), and zoom (>1 closer, up to the
+        // act-4 deep zoom) live in larger units — excluded from the upper
+        // bound.
         if (
           key !== 'scanRate' &&
           key !== 'waveRate' &&
+          key !== 'linkRate' &&
+          key !== 'runnerRate' &&
           key !== 'chatterRate' &&
           key !== 'commFreq' &&
           key !== 'zoom'
@@ -95,6 +98,30 @@ describe('b2-terminal-taxonomy sections', () => {
         expect(ACTS[i].waveRate).toBe(0);
       }
     }
+  });
+
+  it('linkRate and runnerRate strictly peak in total-classification (index 4) and are silent in acts 0, 1, 3, 5', () => {
+    const climax = ACTS[4];
+    expect(climax.name).toBe('total-classification');
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].linkRate).toBeLessThan(climax.linkRate);
+      expect(ACTS[i].runnerRate).toBeLessThan(climax.runnerRate);
+    }
+    for (const i of [0, 1, 3, 5]) {
+      expect(ACTS[i].linkRate).toBe(0);
+      expect(ACTS[i].runnerRate).toBe(0);
+    }
+  });
+
+  it('eventVivid strictly peaks (=== 1.0) in total-classification (index 4) and is 0 in thriving-field (index 0)', () => {
+    const climax = ACTS[4];
+    expect(climax.eventVivid).toBe(1.0);
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].eventVivid).toBeLessThan(climax.eventVivid);
+    }
+    expect(ACTS[0].eventVivid).toBe(0);
   });
 
   it('total-classification (index 4) is the sole pull-back: the strict minimum zoom of all acts', () => {

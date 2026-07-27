@@ -67,6 +67,25 @@ const WAVE_GROW_SECONDS = 1.6;
 const WAVE_MAX_RADIUS = 0.8;
 const WAVE_STRENGTH = 1.0;
 
+/**
+ * Link-strike events (act 5's "connects and collides" hit): the machine
+ * races a line from a source specimen A to a target B, then strikes B out
+ * with an X. LINK_LINE_END is when the racing head reaches B (and the scan
+ * stamp/flash fire); LINK_LIFETIME is full fade-out (matches the shader's
+ * fade window, see catalogueShader.ts's link-strike block).
+ */
+const LINK_SLOTS = 3;
+const LINK_LINE_END = 0.35;
+const LINK_LIFETIME = 1.4;
+/** `?link=always` debug affordance interval (seconds). */
+const DEBUG_LINK_INTERVAL = 1.6;
+
+/** Grid line-runner pulses (act 5): a bright head races the full length of one grid line. */
+const RUNNER_SLOTS = 4;
+const RUNNER_LIFETIME = 0.5;
+/** `?run=always` debug affordance interval (seconds). */
+const DEBUG_RUN_INTERVAL = 0.7;
+
 /** Scripted discrete hits (edge-triggered on the boundary crossing, a3/b1 idiom). */
 const MASS_SCAN_TIME = 168;   // act-3 cascade: a burst of scans + a wave + a boundary flash.
 const DROP_TIME = 232;        // THE drop: grid slam, zoom snap, a wave, a boundary flash.
@@ -172,6 +191,13 @@ interface ScanSlot {
   mislabel: boolean;
 }
 
+interface LinkSlot {
+  age: number;
+  active: boolean;
+  /** Set once the racing head has reached B and the strike scan/flash have fired (edge-triggered, so it only fires once per link). */
+  struck: boolean;
+}
+
 /**
  * "Terminal Taxonomy" — the living-community catalogue field. Composes
  * CommunityField (communityField.ts, the GPU classification-ratchet sim) +
@@ -185,6 +211,8 @@ interface ScanSlot {
  * stream, `?mis=always` forces every scan to visibly misclassify,
  * `?wave=always` forces a mass-classification ring wave every 3s,
  * `?spark=always` forces the high-onset glyph-tick spark events,
+ * `?link=always` forces a steady link-strike stream (source -> target racing
+ * line + X strike), `?run=always` forces a steady grid line-runner stream,
  * `?flicker=always` pins the outro's final-flicker envelope on,
  * `?classified=<0..1>` pins the classified ratchet, `?life=fast` speeds up
  * the specimen appear/disappear lifecycle clock, `?order=<0..1>` pins the
@@ -204,6 +232,8 @@ class TerminalTaxonomy implements Viz {
   private forceWaveAlways = false;
   private forceFlickerAlways = false;
   private forceSparkAlways = false;
+  private forceLinkAlways = false;
+  private forceRunAlways = false;
   private forceLifeFast = false;
   private pinnedClassified: number | null = null;
   private pinnedOrder: number | null = null;
@@ -260,6 +290,21 @@ class TerminalTaxonomy implements Viz {
 
   private pokeSlots: AgeSlot[] = [];
 
+  /** Link-strike pool: parallel CPU age/state + preallocated display Vector4s (bound as uLinkA/uLinkB). */
+  private linkSlots: LinkSlot[] = [];
+  private linkA: THREE.Vector4[] = [];
+  private linkB: THREE.Vector4[] = [];
+  private linkTimeToNext = 0;
+  private linkDebugTimer = 0;
+  /** Alternates the bass-onset branch between the wave start and a link fire (even -> wave, odd -> link). */
+  private onsetCount = 0;
+
+  /** Grid line-runner pool: parallel CPU age/state + preallocated display Vector4s (bound as uRunner). */
+  private runnerSlots: AgeSlot[] = [];
+  private runnerValues: THREE.Vector4[] = [];
+  private runnerTimeToNext = 0;
+  private runDebugTimer = 0;
+
   /** CPU classified-ratchet scalar (mirrors the sim's own .g channel at a coarse, whole-scene grain for uClassified/uDesat). Monotonic except when pinned. */
   private classified = 0;
   private gridSlam = 0;
@@ -292,6 +337,8 @@ class TerminalTaxonomy implements Viz {
     this.forceWaveAlways = params.get('wave') === 'always';
     this.forceFlickerAlways = params.get('flicker') === 'always';
     this.forceSparkAlways = params.get('spark') === 'always';
+    this.forceLinkAlways = params.get('link') === 'always';
+    this.forceRunAlways = params.get('run') === 'always';
     this.forceLifeFast = params.get('life') === 'fast';
     const classifiedParam = params.get('classified');
     if (classifiedParam !== null) {
@@ -321,6 +368,15 @@ class TerminalTaxonomy implements Viz {
     }
     for (let i = 0; i < POKE_SLOTS; i++) {
       this.pokeSlots.push({ age: 0, active: false });
+    }
+    for (let i = 0; i < LINK_SLOTS; i++) {
+      this.linkSlots.push({ age: 0, active: false, struck: false });
+      this.linkA.push(new THREE.Vector4(0, 0, 0, 0));
+      this.linkB.push(new THREE.Vector4(0, 0, 0, 0));
+    }
+    for (let i = 0; i < RUNNER_SLOTS; i++) {
+      this.runnerSlots.push({ age: 0, active: false });
+      this.runnerValues.push(new THREE.Vector4(0, 0, 0, 0));
     }
 
     this.breathPhase = this.rand() * Math.PI * 2;
@@ -375,6 +431,10 @@ class TerminalTaxonomy implements Viz {
         uScanA: { value: this.scanA },
         uScanB: { value: this.scanB },
         uRipple: { value: this.rippleValues },
+        uEventVivid: { value: 0 },
+        uLinkA: { value: this.linkA },
+        uLinkB: { value: this.linkB },
+        uRunner: { value: this.runnerValues },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -421,13 +481,16 @@ class TerminalTaxonomy implements Viz {
   }
 
   /**
-   * Picks a screen-visible scan target and fires it. Scans must be SEEN: the
-   * offset is generated in pre-pan/zoom screen space and only then mapped
-   * into field-uv via the house screen->field formula. In the survivor-focus
-   * act, resample (up to 4 tries) until the raw offset clears the spotlight
-   * radius so scans never land inside it.
+   * Picks a screen-visible raw (UN-wrapped) field-uv point: the offset is
+   * generated in pre-pan/zoom screen space and only then mapped into
+   * field-uv via the house screen->field formula. In the survivor-focus act,
+   * resample (up to 4 tries) until the raw offset clears the spotlight
+   * radius so nothing lands inside it. Shared by fireScan (which wraps the
+   * result into [0,1)) and fireLink (which keeps both endpoints unwrapped so
+   * the shader's link-line math, deliberately non-torus, never crosses the
+   * seam between them).
    */
-  private fireScan(p: ActParams) {
+  private pickVisiblePoint(p: ActParams): { x: number; y: number } {
     const cover = this.cover;
     const zoom = this.material.uniforms.uZoom.value as number;
     let ox = 0;
@@ -438,11 +501,15 @@ class TerminalTaxonomy implements Viz {
       oy = (this.rand() - 0.5) * 0.85;
       if (!resample || Math.hypot(ox, oy) > 0.3) break;
     }
-    let x = 0.5 + this.pan.x + (ox * cover.x) / zoom;
-    let y = 0.5 + this.pan.y + (oy * cover.y) / zoom;
-    x -= Math.floor(x);
-    y -= Math.floor(y);
-    this.startScan(x, y, p);
+    const x = 0.5 + this.pan.x + (ox * cover.x) / zoom;
+    const y = 0.5 + this.pan.y + (oy * cover.y) / zoom;
+    return { x, y };
+  }
+
+  /** Picks a screen-visible scan target and fires it (wraps into [0,1) — scans DO torus-wrap). */
+  private fireScan(p: ActParams) {
+    const { x, y } = this.pickVisiblePoint(p);
+    this.startScan(x - Math.floor(x), y - Math.floor(y), p);
   }
 
   /** Poisson ambient scans (a3's scheduleIgnitions shape): each one also nudges the ambient flash channel — a scene that's quietly cataloguing itself even between onsets. */
@@ -478,6 +545,84 @@ class TerminalTaxonomy implements Viz {
         const radiusComm = this.scanB[i].x;
         const drainActive = age >= SCAN_ACQUIRE && age < SCAN_LOCK_END;
         this.field.stamps[i].set(this.scanA[i].x, this.scanA[i].y, radiusComm / p.commFreq, drainActive ? p.scanDrain : 0);
+      }
+    }
+  }
+
+  /**
+   * Fires one link-strike: A is a screen-visible point (fireScan's own
+   * target-picking), B is a second independent visible point, retried once
+   * if the pair lands further than 0.35 apart in field-uv (else clamped
+   * toward A at 0.35) so the racing line never has to cross the whole
+   * screen. Both stay UN-wrapped (the shader's link-line math is
+   * deliberately non-torus) — only the eventual strike scan (in ageLinks,
+   * once the head reaches B) gets wrapped into [0,1).
+   */
+  private fireLink(p: ActParams) {
+    let idx = this.linkSlots.findIndex((s) => !s.active);
+    if (idx < 0) {
+      idx = 0;
+      let maxAge = this.linkSlots[0].age;
+      for (let i = 1; i < this.linkSlots.length; i++) {
+        if (this.linkSlots[i].age > maxAge) {
+          maxAge = this.linkSlots[i].age;
+          idx = i;
+        }
+      }
+    }
+    const a = this.pickVisiblePoint(p);
+    let b = this.pickVisiblePoint(p);
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    if (Math.hypot(dx, dy) > 0.35) {
+      b = this.pickVisiblePoint(p);
+      dx = b.x - a.x;
+      dy = b.y - a.y;
+    }
+    const dist = Math.hypot(dx, dy);
+    if (dist > 0.35) {
+      const k = 0.35 / dist;
+      b = { x: a.x + dx * k, y: a.y + dy * k };
+    }
+    const slot = this.linkSlots[idx];
+    slot.active = true;
+    slot.struck = false;
+    slot.age = 0;
+    this.linkA[idx].set(a.x, a.y, 0, 1);
+    this.linkB[idx].set(b.x, b.y, this.rand(), 0);
+  }
+
+  /** Poisson-scheduled link-strike events (act 5 mainly — other acts pass 0). */
+  private scheduleLinks(dt: number, ratePerMinute: number, p: ActParams) {
+    const rate = Math.max(0, ratePerMinute) / 60;
+    if (rate <= 0) return;
+    this.linkTimeToNext -= dt;
+    while (this.linkTimeToNext <= 0) {
+      this.fireLink(p);
+      const u = Math.max(1e-6, this.rand());
+      this.linkTimeToNext += -Math.log(u) / rate;
+    }
+  }
+
+  /** Ages every active link slot: writes the shared display age; once age crosses LINK_LINE_END (the racing head reaching B) fires the strike scan at B (wrapped) + a flash, exactly once per link; deactivates at LINK_LIFETIME. */
+  private ageLinks(dt: number, p: ActParams) {
+    for (let i = 0; i < this.linkSlots.length; i++) {
+      const slot = this.linkSlots[i];
+      if (!slot.active) continue;
+      const prevAge = slot.age;
+      slot.age += dt;
+      const age = slot.age;
+      this.linkA[i].z = age;
+      if (!slot.struck && prevAge < LINK_LINE_END && age >= LINK_LINE_END) {
+        slot.struck = true;
+        const bx = this.linkB[i].x;
+        const by = this.linkB[i].y;
+        this.startScan(bx - Math.floor(bx), by - Math.floor(by), p);
+        this.kickFlash(FLASH_KICK_ONSET);
+      }
+      if (age >= LINK_LIFETIME) {
+        slot.active = false;
+        this.linkA[i].w = 0;
       }
     }
   }
@@ -524,6 +669,55 @@ class TerminalTaxonomy implements Viz {
       this.startWave();
       const u = Math.max(1e-6, this.rand());
       this.waveTimeToNext += -Math.log(u) / rate;
+    }
+  }
+
+  /** Fires one grid line-runner: a random axis (0 horizontal / 1 vertical) and a coordinate uniform across the visible grid span in that axis's cross-direction (screen-space `gv`, matching the shader's uCover-scaled grid). */
+  private fireRunner() {
+    let idx = this.runnerSlots.findIndex((s) => !s.active);
+    if (idx < 0) {
+      idx = 0;
+      let maxAge = this.runnerSlots[0].age;
+      for (let i = 1; i < this.runnerSlots.length; i++) {
+        if (this.runnerSlots[i].age > maxAge) {
+          maxAge = this.runnerSlots[i].age;
+          idx = i;
+        }
+      }
+    }
+    const cover = this.cover;
+    const axis = this.rand() < 0.5 ? 0 : 1;
+    const c = axis === 0 ? (this.rand() - 0.5) * cover.y : (this.rand() - 0.5) * cover.x;
+    const slot = this.runnerSlots[idx];
+    slot.active = true;
+    slot.age = 0;
+    this.runnerValues[idx].set(axis, c, 0, 1);
+  }
+
+  /** Ages every active runner slot, deactivating at RUNNER_LIFETIME. */
+  private ageRunners(dt: number) {
+    for (let i = 0; i < this.runnerSlots.length; i++) {
+      const slot = this.runnerSlots[i];
+      if (!slot.active) continue;
+      slot.age += dt;
+      if (slot.age >= RUNNER_LIFETIME) {
+        slot.active = false;
+        this.runnerValues[i].w = 0;
+      } else {
+        this.runnerValues[i].z = slot.age;
+      }
+    }
+  }
+
+  /** Poisson-scheduled grid line-runners (act 5 mainly — other acts pass 0). */
+  private scheduleRunners(dt: number, ratePerMinute: number) {
+    const rate = Math.max(0, ratePerMinute) / 60;
+    if (rate <= 0) return;
+    this.runnerTimeToNext -= dt;
+    while (this.runnerTimeToNext <= 0) {
+      this.fireRunner();
+      const u = Math.max(1e-6, this.rand());
+      this.runnerTimeToNext += -Math.log(u) / rate;
     }
   }
 
@@ -638,20 +832,30 @@ class TerminalTaxonomy implements Viz {
     this.highSlowE += (audio.high - this.highSlowE) * kSlow;
 
     // Bass-onset detector: excess over its own slow EMA fires a scan + flash;
-    // in act 4 (total-classification) it also starts a wave if none is running.
+    // in act 4 (total-classification) it alternates between starting a wave
+    // and firing a link-strike (onsetCount even -> wave, odd -> link) so the
+    // climax's two big event systems trade off instead of doubling up on the
+    // same beat.
     this.onsetCooldown -= dt;
     if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
       if (p.scanRate > 0.5) this.fireScan(p);
       this.kickFlash(FLASH_KICK_ONSET);
-      if (section.actIndex === 4 && !this.waveActive) this.startWave();
+      this.onsetCount++;
+      if (this.onsetCount % 2 === 0) {
+        if (section.actIndex === 4 && !this.waveActive) this.startWave();
+      } else if (p.linkRate > 0.5) {
+        this.fireLink(p);
+      }
       this.beatPulse = Math.min(BEAT_PULSE_CEILING, this.beatPulse + BEAT_PULSE_KICK);
       this.onsetCooldown = ONSET_COOLDOWN;
     }
 
-    // High-onset detector — the fast spark channel (glyph ticks).
+    // High-onset detector — the fast spark channel (glyph ticks) + one grid
+    // line-runner when the act calls for them (high's fast job).
     this.highOnsetCooldown -= dt;
     if (this.highOnsetCooldown <= 0 && this.highE - this.highSlowE > HIGH_ONSET_THRESHOLD) {
       this.kickSpark();
+      if (p.runnerRate > 0.5) this.fireRunner();
       this.highOnsetCooldown = HIGH_ONSET_COOLDOWN;
     }
     if (this.forceSparkAlways) {
@@ -683,6 +887,30 @@ class TerminalTaxonomy implements Viz {
       if (this.waveDebugTimer <= 0) {
         this.startWave();
         this.waveDebugTimer = 3;
+      }
+    }
+
+    // Link-strike events: Poisson-schedule at p.linkRate/min, age the active
+    // pool, plus the ?link=always affordance.
+    this.scheduleLinks(dt, p.linkRate, p);
+    this.ageLinks(dt, p);
+    if (this.forceLinkAlways) {
+      this.linkDebugTimer -= dt;
+      if (this.linkDebugTimer <= 0) {
+        this.fireLink(p);
+        this.linkDebugTimer = DEBUG_LINK_INTERVAL;
+      }
+    }
+
+    // Grid line-runners: Poisson-schedule at p.runnerRate/min, age the
+    // active pool, plus the ?run=always affordance.
+    this.scheduleRunners(dt, p.runnerRate);
+    this.ageRunners(dt);
+    if (this.forceRunAlways) {
+      this.runDebugTimer -= dt;
+      if (this.runDebugTimer <= 0) {
+        this.fireRunner();
+        this.runDebugTimer = DEBUG_RUN_INTERVAL;
       }
     }
 
@@ -802,9 +1030,12 @@ class TerminalTaxonomy implements Viz {
     u.uPresence.value = p.presence;
     u.uWriggle.value = p.wriggle;
     u.uDrift.value = p.drift;
+    u.uEventVivid.value = p.eventVivid;
     // uWaveVis is bound by reference to this.field.wave (init()) — no
     // per-frame assignment needed, it's already mutated in place by
-    // scheduleWaves()/startWave().
+    // scheduleWaves()/startWave(). uLinkA/uLinkB/uRunner are likewise bound
+    // by reference to this.linkA/this.linkB/this.runnerValues (init()) —
+    // fireLink/ageLinks/fireRunner/ageRunners mutate them in place.
 
     // Drag momentum (a1/a2/a3/b1 idiom, verbatim shape). No ambient drift.
     const cover = this.cover;

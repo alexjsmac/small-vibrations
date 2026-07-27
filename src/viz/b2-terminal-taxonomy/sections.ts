@@ -58,11 +58,13 @@
  * Audio map (each band one job, applied in index.ts / the field + reticle
  * shaders):
  *  - audio.time          -> act staging (the whole arc)
- *  - bass onsets         -> scan events; in act 5, mass-classification waves
+ *  - bass onsets         -> scan events; in act 5, alternating between
+ *    mass-classification waves and link-strike events (specimen-to-specimen
+ *    racing lines)
  *  - smoothed bass       -> living-field vitality / interior churn
  *  - smoothed mid        -> glyph chatter (re-roll rate) + palette warmth
  *  - smoothed high       -> scan-line sparkle
- *  - high onsets         -> glyph ticks
+ *  - high onsets         -> glyph ticks + grid line-runner pulses
  *  - scripted hits        -> t=168 mass-scan cascade; t=232 THE drop (zoom
  *    snap + grid slam); t=316 power-down; t=330 final glyph flicker
  */
@@ -91,6 +93,12 @@ export interface ActParams {
   classifyPressure: number;
   /** Mass-classification ring waves per minute, act 5 only. */
   waveRate: number;
+  /** Link-strike events per minute (the machine connects two specimens with a racing line, then strikes one out; bass onsets add more). */
+  linkRate: number;
+  /** Grid line-runner pulses per minute (bright heads racing along grid lines; high onsets add more). */
+  runnerRate: number;
+  /** 0..1 how strongly events (waves, links, flashes) restore specimens' vivid pre-flattening color. */
+  eventVivid: number;
   /** Machine grid overlay intensity (0..1). */
   gridStrength: number;
   /** Fine tick subdivision of the grid (0..1). */
@@ -136,7 +144,8 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.95, churn: 0.9,
     presence: 0.8, lifeRate: 0.10, wriggle: 1.0, drift: 1.0,
     scanRate: 0, scanDrain: 0, misProb: 0,
-    classifyPressure: 0, waveRate: 0, gridStrength: 0, gridFine: 0,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0,
+    gridStrength: 0, gridFine: 0,
     glyphDensity: 0.85, chatterRate: 1.2, machineFrac: 0, classifiedFloor: 0,
     commFreq: 6, zoom: 1.18, survivorFocus: 0,
     hueSat: 1.0, warmth: 0.55, rustMix: 0.05, inkPersist: 0,
@@ -149,7 +158,8 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.85, churn: 0.8,
     presence: 0.85, lifeRate: 0.12, wriggle: 0.8, drift: 0.8,
     scanRate: 5, scanDrain: 0.5, misProb: 0.3,
-    classifyPressure: 0, waveRate: 0, gridStrength: 0.18, gridFine: 0.25,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0.3,
+    gridStrength: 0.18, gridFine: 0.25,
     glyphDensity: 0.8, chatterRate: 1.0, machineFrac: 0.08, classifiedFloor: 0.06,
     commFreq: 6, zoom: 1.05, survivorFocus: 0,
     hueSat: 0.92, warmth: 0.5, rustMix: 0.15, inkPersist: 0.5,
@@ -162,7 +172,8 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.70, churn: 0.75,
     presence: 0.8, lifeRate: 0.16, wriggle: 0.7, drift: 0.6,
     scanRate: 16, scanDrain: 0.7, misProb: 0.15,
-    classifyPressure: 0, waveRate: 0, gridStrength: 0.42, gridFine: 0.5,
+    classifyPressure: 0, waveRate: 0, linkRate: 2, runnerRate: 4, eventVivid: 0.5,
+    gridStrength: 0.42, gridFine: 0.5,
     glyphDensity: 0.7, chatterRate: 0.9, machineFrac: 0.3, classifiedFloor: 0.28,
     commFreq: 6, zoom: 0.98, survivorFocus: 0,
     hueSat: 0.8, warmth: 0.45, rustMix: 0.35, inkPersist: 0.8,
@@ -176,7 +187,8 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.90, churn: 0.6,
     presence: 0.75, lifeRate: 0.08, wriggle: 1.0, drift: 0.7,
     scanRate: 1.5, scanDrain: 0.4, misProb: 0,
-    classifyPressure: 0, waveRate: 0, gridStrength: 0.10, gridFine: 0.15,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0.4,
+    gridStrength: 0.10, gridFine: 0.15,
     glyphDensity: 0.9, chatterRate: 0.7, machineFrac: 0.35, classifiedFloor: 0.34,
     commFreq: 6, zoom: 2.9, survivorFocus: 1,
     hueSat: 0.85, warmth: 0.5, rustMix: 0.3, inkPersist: 0.5,
@@ -190,11 +202,12 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.25, churn: 0.5,
     presence: 0.9, lifeRate: 0.30, wriggle: 0.35, drift: 0.25,
     scanRate: 34, scanDrain: 1.0, misProb: 0,
-    classifyPressure: 0.35, waveRate: 10, gridStrength: 1.0, gridFine: 1.0,
+    classifyPressure: 0.35, waveRate: 10, linkRate: 14, runnerRate: 22, eventVivid: 1.0,
+    gridStrength: 1.0, gridFine: 1.0,
     glyphDensity: 0.55, chatterRate: 1.4, machineFrac: 0.9, classifiedFloor: 0.9,
     commFreq: 6, zoom: 0.82, survivorFocus: 0,
-    hueSat: 0.4, warmth: 0.35, rustMix: 0.62, inkPersist: 1.0,
-    vignette: 0.38, motes: 0.02, groundLight: 0.9,
+    hueSat: 0.4, warmth: 0.35, rustMix: 0.55, inkPersist: 1.0,
+    vignette: 0.42, motes: 0.02, groundLight: 0.9,
   },
   { // 6. Residue — power-down at t=316; the field bleaches toward pale bone
     // catalogue paper, only sparse unclassified motes drift (album-max),
@@ -204,7 +217,8 @@ export const ACTS: ActParams[] = [
     vitalityTarget: 0.10, churn: 0.25,
     presence: 0.22, lifeRate: 0.04, wriggle: 0.15, drift: 0.1,
     scanRate: 0, scanDrain: 0, misProb: 0,
-    classifyPressure: 0, waveRate: 0, gridStrength: 0.06, gridFine: 0,
+    classifyPressure: 0, waveRate: 0, linkRate: 0, runnerRate: 0, eventVivid: 0.2,
+    gridStrength: 0.06, gridFine: 0,
     glyphDensity: 0.08, chatterRate: 0.3, machineFrac: 1.0, classifiedFloor: 0.93,
     commFreq: 6, zoom: 1.15, survivorFocus: 0,
     hueSat: 0.2, warmth: 0.3, rustMix: 0.45, inkPersist: 0.35,
