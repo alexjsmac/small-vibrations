@@ -125,6 +125,8 @@ uniform vec4 uLinkB[3]; // xy field-uv B (target/struck), z label seed, w unused
 uniform vec4 uRunner[4]; // x axis (0 horizontal / 1 vertical), y line coordinate (screen-space grid gv), z age (s), w strength (0 = inactive)
 uniform vec4 uKill[4]; // xy field-uv centre (the STRUCK specimen's own anchor position), z age (s), w strength (0 = inactive) — instant-kill zones fired by link strikes
 uniform float uBeatCount; // running beat counter (bass onsets + ambient scans) — drives the living grid background's per-cell re-roll phase
+uniform float uBeatFlash; // 0..1 per-beat decay envelope (kicked to 1 on every beatCount increment, index.ts decays it ~2.8/s) — the beat-pop color-restore trigger
+uniform float uBeatPop; // 0..1 act-level strength of the beat-pop color-restore effect (ActParams.beatPop)
 uniform float uGridLife; // 0..1 ambient grid-background animation amount (beat-synced cell fills + edge traces)
 uniform int uGridMode; // 0 scatter / 1 row cascade / 2 ring pulse / 3 checker — which cells the living grid background fills; rotates on a beat-gated timer in index.ts so the background's behavior visibly changes over the track
 uniform float uAura; // 0..1 act-4 ambient aura-ring strength (the quiet-zoom spotlight's breathing reaction)
@@ -417,6 +419,13 @@ void main() {
   vec3 commCol = 0.55 + 0.38 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67)));
   commCol = mix(commCol, commCol * vec3(1.05, 0.92, 0.78), uWarmth);
   float lumaC = dot(commCol, vec3(0.299, 0.587, 0.114));
+  // vividCol is the community's TRUE living colour, captured BEFORE the
+  // vitality satPull and the machine flattening — every event that
+  // "restores colour" (beat pops, link flashes, wave washes, auras, the
+  // outro flicker) restores THIS. Capturing it after satPull made every
+  // climax flash pale gray: at act-5 vitality the hue was already washed
+  // out before any event could bring it back.
+  vec3 vividCol = commCol;
   // Gentle floor on the vitality term: living-but-not-maximal communities
   // (mid acts) keep most of their hue, so the mid-track doesn't read as
   // already dying — the real desaturation is the classified/grade path.
@@ -425,10 +434,6 @@ void main() {
 
   // Machine flattening: the per-cell classified ratchet OR the global
   // classification pressure pulls every community toward the drained tone.
-  // vividCol keeps the pre-flattening hue alive for the outro's final
-  // flicker — the loop-closure motif must speak in a LIVING community
-  // color even after the whole field has been drained.
-  vec3 vividCol = commCol;
   float classFlat = max(cellClassified, uClassified * 0.7);
   commCol = mix(commCol, MACHINE_TONE, classFlat * 0.85);
 
@@ -460,6 +465,15 @@ void main() {
   // vivid flashes punch through the drained climax instead of being
   // re-crushed to monochrome two blocks later.
   float eventGlow = clamp(linkGlow + wpCol, 0.0, 1.0) * uEventVivid;
+
+  // Beat-pop: a different hash-picked ~28% of specimens flashes back to
+  // full living colour on every beat (uBeatCount rotates the subset,
+  // uBeatFlash is the per-beat decay envelope) — the monochrome breaks
+  // rhythmically instead of sitting unbroken over the whole climax.
+  float popSel = step(0.72, ttHash21(cc + vec2(floor(uBeatCount) * 5.3, 9.9)));
+  float pop = popSel * uBeatFlash * uBeatPop;
+  commCol = mix(commCol, vividCol * 1.2, min(1.0, pop));
+  eventGlow = clamp(eventGlow + pop * 0.8, 0.0, 1.0);
 
   // --- interior pattern (Turing-ish, stateless) ---
   float patH1 = ttHash21(cc + 11.3);
@@ -816,7 +830,7 @@ void main() {
   // instead) — additional movement, not wallpaper takeover (alpha budget
   // capped well below the machine-grid lines themselves). ---
   vec2 gcid = floor(gm1);
-  float gphase = uTime * 0.35 + uBeatCount * 0.61;
+  float gphase = uTime * 0.5 + uBeatCount * 0.8;
   float pagerMask = 1.0 - specimenMask * 0.8;
 
   // Cell fills: the SELECTION of which cells fill is mode-dependent
@@ -841,14 +855,14 @@ void main() {
     fillOn = step(mod(gcid.x + gcid.y + floor(gphase), 2.0), 0.5)
            * step(ttHash21(gcid + floor(gphase) * 7.3), 0.6);
   } else {
-    fillOn = step(ttHash21(gcid + floor(gphase) * 7.3), 0.10 + 0.2 * uGridLife);
+    fillOn = step(ttHash21(gcid + floor(gphase) * 7.3), 0.14 + 0.25 * uGridLife);
   }
   // Staggered sin envelope so re-rolls never land on every cell at once,
   // mostly a paper-tone tint — a rare vivid cos-palette hue is carried past
   // the grade instead (see vividFill/vividFillCol above), scaled there by
   // uEventVivid.
   float fillEnv = sin(3.14159 * fract(gphase + ttHash21(gcid + 4.4)));
-  float fillAlpha = fillOn * max(fillEnv, 0.0) * uGridLife * pagerMask * 0.42;
+  float fillAlpha = fillOn * max(fillEnv, 0.0) * uGridLife * pagerMask * 0.55;
   float vividH = ttHash21(gcid + 8.8);
   if (vividH > 0.88) {
     vividFillCol = 0.55 + 0.38 * cos(6.2831853 * (ttHash21(gcid + 12.1) + vec3(0.0, 0.33, 0.67)));
@@ -863,10 +877,10 @@ void main() {
   // fill phase, brighten this cell's own grid-line segments — dashes
   // tracing along the grid.
   float traceRoll = floor(gphase * 2.0);
-  float traceGateX = step(0.72, ttHash21(gcid + vec2(traceRoll * 3.1, 11.0)));
-  float traceGateY = step(0.72, ttHash21(gcid + vec2(traceRoll * 3.1, 17.0)));
+  float traceGateX = step(0.6, ttHash21(gcid + vec2(traceRoll * 3.1, 11.0)));
+  float traceGateY = step(0.6, ttHash21(gcid + vec2(traceRoll * 3.1, 17.0)));
   float traceAlpha = (lineMask1.x * traceGateX + lineMask1.y * traceGateY) * uGridLife * pagerMask;
-  col = mix(col, RUST * 0.4, clamp(traceAlpha, 0.0, 1.0) * 0.5);
+  col = mix(col, RUST * 0.4, clamp(traceAlpha, 0.0, 1.0) * 0.7);
 
   // --- classification reticles ---
   for (int i = 0; i < ${reticleSlots}; i++) {
@@ -986,6 +1000,10 @@ void main() {
   // above, drawn here post-grade so the beat-synced squares that "change
   // colour" don't get crushed to monochrome two blocks earlier). ---
   col = mix(col, vividFillCol, clamp(vividFill, 0.0, 1.0));
+
+  // Beat-pop sparkle: a tiny additive kick echoing the popped specimens'
+  // restored colour, drawn post-grade so it isn't crushed back to monochrome.
+  col += vividCol * pop * 0.08;
 
   // --- link-strike events: the machine connects two specimens with a
   // racing line, then strikes the far one out with a scale-pop X — the

@@ -261,6 +261,17 @@ describe('b2-terminal-taxonomy sections', () => {
       }
     }
   });
+
+  it('beatPop strictly peaks (=== 1.0) in total-classification (index 4) and is 0 in thriving-field (index 0)', () => {
+    const climax = ACTS[4];
+    expect(climax.name).toBe('total-classification');
+    expect(climax.beatPop).toBe(1.0);
+    for (let i = 0; i < ACTS.length; i++) {
+      if (i === 4) continue;
+      expect(ACTS[i].beatPop).toBeLessThan(climax.beatPop);
+    }
+    expect(ACTS[0].beatPop).toBe(0);
+  });
 });
 
 describe('b2-terminal-taxonomy arcAt', () => {

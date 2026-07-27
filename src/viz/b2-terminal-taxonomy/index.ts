@@ -120,6 +120,19 @@ const BEAT_PULSE_DECAY = 4;
 const LIFE_FAST_MUL = 6;
 
 /**
+ * Beat-pop colour-restore envelope (uBeatFlash): kicked straight to 1 at
+ * every site that increments `beatCount` (the bass-onset detector fire and
+ * the ambient Poisson scan in scheduleScans), then decays exponentially —
+ * feeds the shader's hash-picked ~28% subset of specimens that flashes back
+ * to full vivid colour on each beat, so the climax's monochrome breaks
+ * rhythmically instead of sitting unbroken. uBeatCount rotating on the same
+ * beats is what rotates the selected subset.
+ */
+const BEAT_FLASH_DECAY = 2.8;
+/** `?pop=always` debug affordance interval (seconds) — also rotates uBeatCount so the flashed subset keeps changing. */
+const DEBUG_POP_INTERVAL = 0.5;
+
+/**
  * Living-grid background reactivity modes (uGridMode): 0 scatter (original
  * hashed per-cell membership), 1 row cascade, 2 ring pulse, 3 checker — see
  * catalogueShader.ts's fill-selection block. Rotates on a beat-gated timer
@@ -143,9 +156,9 @@ const GRID_MODE_PENDING_FALLBACK = 6;
  * the specimen search. No new framebuffers. `?fx=<0-2>` pins a fixed mode
  * at full (un-enveloped) strength for review.
  */
-const FX_GAP_MEAN = 28;
-const FX_GAP_MIN = 15;
-const FX_DURATION_MIN = 4;
+const FX_GAP_MEAN = 14;
+const FX_GAP_MIN = 8;
+const FX_DURATION_MIN = 5;
 const FX_DURATION_JITTER = 3;
 const FX_MODES = 3;
 
@@ -266,7 +279,9 @@ interface LinkSlot {
  * pins the act-4 ambient aura rings on, `?fx=<0-2>` pins the scheduled
  * global-effect interlude (0 soft-focus blur / 1 echo trails / 2 pulse-warp)
  * to a fixed mode at full un-enveloped strength and disables its own timer,
- * plus the standard `?t=`, `?q=`, `?debug=1`.
+ * `?pop=always` forces a steady beat-pop colour-restore stream (kicks
+ * uBeatFlash to 1 and rotates the flashed subset every 0.5s regardless of
+ * audio), plus the standard `?t=`, `?q=`, `?debug=1`.
  */
 class TerminalTaxonomy implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -287,6 +302,7 @@ class TerminalTaxonomy implements Viz {
   private forceLifeFast = false;
   private forceKillAlways = false;
   private forceAuraAlways = false;
+  private forcePopAlways = false;
   private pinnedClassified: number | null = null;
   private pinnedOrder: number | null = null;
   private pinnedGridMode: number | null = null;
@@ -340,6 +356,8 @@ class TerminalTaxonomy implements Viz {
   private lifeClock = 0;
   /** Running beat counter (bass onsets + ambient Poisson scans, so no-mic playback still ticks) — feeds uBeatCount, the living grid background's re-roll phase. */
   private beatCount = 0;
+  /** Beat-pop colour-restore envelope (bass onsets + ambient scans): kicked to 1 on every beatCount increment, decays exponentially — feeds uBeatFlash. */
+  private beatFlash = 0;
   /** Fast spark channel (high onsets -> glyph ticks): kick+decay scalar + per-event re-roll counter. */
   private spark = 0;
   private sparkSeed = 0;
@@ -388,6 +406,8 @@ class TerminalTaxonomy implements Viz {
   private killSlots: AgeSlot[] = [];
   private killValues: THREE.Vector4[] = [];
   private killDebugTimer = 0;
+  /** `?pop=always` debug affordance timer (seconds to next forced beat-pop). */
+  private popDebugTimer = 0;
 
   /** CPU classified-ratchet scalar (mirrors the sim's own .g channel at a coarse, whole-scene grain for uClassified/uDesat). Monotonic except when pinned. */
   private classified = 0;
@@ -425,6 +445,7 @@ class TerminalTaxonomy implements Viz {
     this.forceRunAlways = params.get('run') === 'always';
     this.forceLifeFast = params.get('life') === 'fast';
     this.forceKillAlways = params.get('kill') === 'always';
+    this.forcePopAlways = params.get('pop') === 'always';
     const classifiedParam = params.get('classified');
     if (classifiedParam !== null) {
       const v = parseFloat(classifiedParam);
@@ -544,6 +565,8 @@ class TerminalTaxonomy implements Viz {
         uRunner: { value: this.runnerValues },
         uKill: { value: this.killValues },
         uBeatCount: { value: 0 },
+        uBeatFlash: { value: 0 },
+        uBeatPop: { value: 0 },
         uGridLife: { value: 0 },
         uGridMode: { value: 0 },
         uAura: { value: 0 },
@@ -696,6 +719,7 @@ class TerminalTaxonomy implements Viz {
       this.fireScan(p);
       this.kickFlash(FLASH_KICK_AMBIENT);
       this.beatCount++;
+      this.beatFlash = 1;
       const u = Math.max(1e-6, this.rand());
       this.scanTimeToNext += -Math.log(u) / rate;
     }
@@ -1054,6 +1078,7 @@ class TerminalTaxonomy implements Viz {
       if (p.scanRate > 0.5) this.fireScan(p);
       this.kickFlash(FLASH_KICK_ONSET);
       this.beatCount++;
+      this.beatFlash = 1;
       this.onsetCount++;
       if (this.onsetCount % 2 === 0) {
         if (section.actIndex === 4 && !this.waveActive) this.startWave();
@@ -1146,6 +1171,18 @@ class TerminalTaxonomy implements Viz {
       }
     }
 
+    // `?pop=always` debug affordance: force a steady beat-pop colour-restore
+    // stream regardless of audio — also increments beatCount so the
+    // hash-picked subset keeps rotating, not just flashing the same one.
+    if (this.forcePopAlways) {
+      this.popDebugTimer -= dt;
+      if (this.popDebugTimer <= 0) {
+        this.beatFlash = 1;
+        this.beatCount++;
+        this.popDebugTimer = DEBUG_POP_INTERVAL;
+      }
+    }
+
     // Release the scripted mass-scan burst, one scan per 0.18s.
     if (this.pendingBurst > 0) {
       this.burstTimer -= dt;
@@ -1174,6 +1211,7 @@ class TerminalTaxonomy implements Viz {
     this.flash *= Math.exp(-FLASH_DECAY * dt);
     this.gridSlam *= Math.exp(-GRID_SLAM_DECAY * dt);
     this.beatPulse *= Math.exp(-BEAT_PULSE_DECAY * dt);
+    this.beatFlash *= Math.exp(-BEAT_FLASH_DECAY * dt);
     this.updateFx(dt, p);
 
     // Grid-mode rotation timer: counts down to a pending switch (actually
@@ -1283,6 +1321,8 @@ class TerminalTaxonomy implements Viz {
     u.uDrift.value = p.drift;
     u.uEventVivid.value = p.eventVivid;
     u.uBeatCount.value = this.beatCount;
+    u.uBeatFlash.value = this.beatFlash;
+    u.uBeatPop.value = p.beatPop;
     u.uGridLife.value = p.gridLife;
     u.uGridMode.value = this.pinnedGridMode ?? this.gridMode;
     u.uAura.value = this.forceAuraAlways ? 1 : p.aura;
