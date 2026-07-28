@@ -21,7 +21,7 @@ export const TRACKS: Track[] = [
   { id: 'a3', side: 'A', n: 3, title: 'Biome Dominoes',            viz: 'a3-biome-dominoes',      duration: 259.835 },
   { id: 'b1', side: 'B', n: 1, title: 'Icky, Sticky, & Thriving',  viz: 'b1-biosphere',           duration: 251.238 },
   { id: 'b2', side: 'B', n: 2, title: 'Terminal Taxonomy',         viz: 'b2-terminal-taxonomy',   duration: 336.998 },
-  { id: 'b3', side: 'B', n: 3, title: 'Sterile Breath',            viz: 'placeholder',            duration: 200.042 },
+  { id: 'b3', side: 'B', n: 3, title: 'Sterile Breath',            viz: 'b3-sterile-breath',      duration: 200.042 },
 ];
 
 /**
