@@ -347,6 +347,115 @@ something that happens *now*, at a moment, and is gone.
   (fresh per-play seed means each load is a different specimen — a
   feature, not a bug).
 
+## Lessons from b2 "Terminal Taxonomy" (the catalogue — ratchet, July 2026)
+
+- **Audit new tracks against SHIPPED tracks, not just against ARC.md.**
+  b2's first build rendered communities as a wall-to-wall Voronoi
+  tessellation — technically distinct from a3 in every system, yet Alex
+  immediately read it as "the Biome Dominoes lattice," because the
+  underlying GEOMETRY LANGUAGE (tiling polygon cells + bright walls) was
+  the same. The per-track failure-mode review can't catch this; add a
+  cross-track check to every contact sheet: put the new act stills next
+  to each shipped track's and ask what geometry family each reads as
+  (a1 fluid fields, a2 dual lattice, a3 Voronoi cell tissue, b1 vein
+  networks, b2 discrete silhouettes on ground). Each track must own its
+  geometry, not just its palette. The fix that worked: replace territory
+  tiling with a nearest-SDF search over discrete silhouettes — blobs
+  drawn whole on visible ground, layering like leaves instead of
+  clipping at bisectors.
+- **A textual GLSL audit is not a compile.** Round 5 shipped `float
+  active = ...` — `active` is a GLSL ES reserved word — through an
+  agent's brace-balance/backtick audit, tsc, eslint, vitest, AND
+  `npm run build` (the shader is just a string to all of them); only the
+  browser's shader compile caught it (black stage, console error). The
+  Playwright smoke test IS the automated gate that would catch this —
+  never skip it before claiming a shader change works, and screenshot
+  the live scene after every shader-touching task. Avoid GLSL reserved
+  words in generated code: active, input, output, filter, superp, etc.
+- **Single-pass "post" effects for an SDF world** (no framebuffers, no
+  post pipeline, measured at zero frame-cost when idle): BLUR = multiply
+  every fwidth-derived AA width by one shared factor (+ drop pattern
+  contrast, lift exposure) — a genuine soft-focus; FEEDBACK/echo = 1-2
+  extra winner-only silhouette taps at lagged offsets drawn translucent
+  (+ an offset second grid sample); LENS RIPPLE = radial domain warp of
+  community space before the search so the whole world bends coherently.
+  Schedule as occasional enveloped interludes (Poisson ~30s, 4-7s,
+  smooth in/out) — periodic global effects hold interest through
+  static-camera stretches without a persistent look change.
+- **Winner-only detail is how a nearest-SDF search affords rich per-item
+  art.** b2's species body plans (beetle legs/antennae, leaf veins, diatom
+  spokes, bacterium flagella) would have blown the budget inside the
+  9-cell search; instead the search silhouette only gets cheap per-family
+  BIAS (elongation + wobble character from a shared `specParams` helper —
+  one source of truth so search and detail never disagree), and the
+  recognizable ink detail draws once per fragment for the winner. Median
+  frame cost was unchanged. Also: keep event grammars visually disjoint —
+  the beetle's first full-width crossing marks read as pre-applied
+  strike-out X's; interior marks must stop short of the silhouette edge.
+- **Overlays that must POP draw AFTER the grade.** b2's link lines,
+  strike X's, and grid runners drew before the desat/rust grade and came
+  out the same dusty monochrome as the field — the same reason poke
+  ripples always drew post-grade. Events are the machine's live overlay:
+  draw them after grading, and where events restore color to specimens
+  (which ARE graded), carry an `eventGlow` scalar into the grade and
+  locally suppress desat/rust so the restored color survives.
+- **Exempt envelopes whose MOTION is the content from the act-hold idiom.**
+  The hold fix (below) applied to b2's spatial machine-order made the
+  scatter→drawer assembly TELEPORT in one frame at the drop — Alex never
+  saw it move ("the morphs appear briefly early and then never again").
+  If watching a parameter change IS the payoff, drive it as a continuous
+  song-time envelope (`orderAt(t)`, an arcAt clone with its own keys)
+  ramping across the act, not an act keyframe. Discrete cliffs for
+  arrivals; continuous ramps for processes.
+- **Static = dead, even when every system is technically animated.** A
+  hash-of-position world reads as wallpaper the moment nothing is born or
+  dies. The b2 lifecycle recipe (cheap, deterministic, beat-coupled):
+  CPU-accumulated `uLifeClock` (rate × act param, tripled briefly by a
+  bass-onset beatPulse scalar) → per-specimen `cycle = clock + hash
+  phase`; presence per epoch = `hash(cc, epoch) < uPresence`; the organic
+  anchor RE-ROLLS per epoch so respawns land in new places; crossfade the
+  last 15% of each cycle + pop-in overshoot. Pin one hero cell always-
+  present for openings/loop identity. Also: events that only write an
+  already-saturated sim channel are INVISIBLE — every event needs a
+  display-side representation (b2's wave got a ring sheen + specimen
+  swell only in round 2).
+- **The 6s crossfade LEAKS the next act's maximum into a quiet act.**
+  paramsAt's generic pre-boundary lerp is right for gradual arrivals but
+  fatally wrong for a restraint-act → drop-act boundary: act 5's
+  grid/rust/drain crept into the withheld act 4 and the scripted drop
+  arrived pre-spent (ARC failure mode 7, caught on screen at t≈231.7).
+  Fix idiom: while inside a held act, use the PURE `ACTS[i]` object
+  instead of `section.params` (b2 index.ts holds indices 3 and 4) — the
+  boundary becomes a true cliff, amplified by the edge-triggered hit.
+  Generalize a3's zoom-hold to ALL params whenever a discrete boundary
+  matters.
+- **The embedded Browser pane's fps HUD is NOT a benchmark.** The pane's
+  rAF pauses when occluded and runs UNCAPPED (300-1300fps) during
+  screenshot-forced composites, so the HUD's EMA mixes paused/uncapped/
+  vsynced windows and reads anywhere from 17 to 344 for the same shader.
+  A whole false "6x regression" was chased before spotting it. Protocol:
+  monkey-patch `render()` from the console to record
+  `performance.now()` per frame, force composites with 2-3 screenshots,
+  and take the MEDIAN inter-frame delta inside bursts (<100ms) — b2 Lite
+  measured 8.0ms median (≥120Hz vsync-met) while the HUD said 45. The
+  fallback song clock also FREEZES while the pane is occluded — nudge
+  `__sv.host.fallbackClock` from the console to cross scripted
+  boundaries instead of waiting.
+- **Additive light dies on a pale ground.** The album's first light-ground
+  track inverted several habits: accents that read as glow on dark
+  grounds (additive rings, rust-on-rust code) vanish on bone — draw
+  marks as INK (mix-darken toward a vivid or dark color) and keep VALUE
+  contrast, not just hue contrast, in every overlay (dark-stamp machine
+  code pulsing bright; the outro flicker drawn as ink).
+- **Per-community procedural glyph "languages" are cheap and legible as
+  writing**: a 3x3-endpoint stroke lattice per glyph cell, language =
+  4 hash bits (stroke-angle family, curvature, column count, baseline
+  rotation), chatter = per-cell hash-staggered re-rolls
+  (`floor(uTime*rate + hash(gid))`) so script writes without strobing.
+  2 strokes on Lite still reads as script. A second fixed grammar
+  (axis-aligned ticks/dots, raster row pulse) reads unmistakably as
+  machine code against it.
+
 ## Workflow: from master WAV to shipped visuals
 
 1. Profile the track's master (2s RMS + low/high bands) → section table.
@@ -420,8 +529,19 @@ Starting sketches only — concept per track is decided with the user:
   fruiting bodies, spore bursts; tap drops a nutrient. Alex's premise:
   "full life... many components and forms coming together, with all the
   ugliness... a full biosphere."
-- **b2 Terminal Taxonomy** — cataloguing the dying: specimens isolated,
-  pinned, labeled; order imposed as life drains; rust ascendant.
+- **b2 Terminal Taxonomy** ✅ — misclassification as devastation (Alex's
+  premise: AI systems evolving past small forgotten languages, erasing the
+  distinction between micro-communities). Discrete SPECIMENS on catalogue
+  paper — organic ink-rimmed silhouettes, each with its own hue,
+  Turing-blotch skin, and unreadable procedural glyph script — scanned,
+  labeled, and flattened into one rust machine catalogue on pale bone
+  (the album's one light ground). `machineOrder` morphs the page from
+  natural scatter to aligned museum-drawer rows as the catalogue wins.
+  Signature: classification reticles + per-community glyph languages
+  (hash-bit grammars: stroke-angle family, curvature, columns, rotation)
+  collapsing to one fixed machine code. Poke = resistance (un-classifies).
+  The long-orphaned `skinPattern` idea landed here as the stateless
+  per-community fbm banding.
 - **b3 Sterile Breath** — the emptied world: barely anything left; the a1
   void revisited, but hollow instead of expectant. Almost no events.
 
@@ -430,9 +550,8 @@ Starting sketches only — concept per track is decided with the user:
 - **Bloom**: not yet added. Use the battle-tested WebGL `UnrealBloomPass`
   (EffectComposer) via the optional `Viz.render()` hook, Full quality only.
   Do NOT re-attempt the TSL bloom path.
-- `skinPattern` act param exists but is unused since the WebGL rebuild —
-  a surface-pattern idea (Turing spots via fragment noise) waiting for a
-  home on b1/b2 forms.
+- ~~`skinPattern` act param~~ — the Turing-spots-via-fragment-noise idea
+  found its home as b2's per-community interior banding.
 - `audio.frequency` (64 bins) untouched — spectrum-driven geometry is an
   open register for a2+.
 - Phone verification of the full experience is still pending as of the a1
