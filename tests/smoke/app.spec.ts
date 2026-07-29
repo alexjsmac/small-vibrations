@@ -105,6 +105,61 @@ for (const q of ['full', 'lite'] as const) {
   });
 }
 
+/**
+ * Every test above loads track index 0 (a1) — either the default `goto('')`
+ * or `?t=140` (still idx 0, VizHost only uses `t` to seed the song clock,
+ * not to pick a track). A b3 (Sterile Breath) shader that fails to compile
+ * would sail through this whole suite undetected. Reach it the same way a
+ * user browsing would: mic-skip into browse mode (lands on idx 0 = a1, see
+ * src/tracks.ts's TRACKS order), then one '.js-prev' click — go(idx - 1) in
+ * src/main.ts wraps via `(nextIdx + TRACKS.length) % TRACKS.length`, so
+ * idx -1 -> 5, TRACKS[5] = b3.
+ *
+ * `?t=150` seeds the 'the-purge' act (src/viz/b3-sterile-breath/sections.ts,
+ * CUES[4]=140..CUES[5]=162) — the album-max-intensity hot living pocket
+ * against the pale sterile field, this track's brightest, densest stretch,
+ * so a single frame doubles as both the luminance-floor check (bug #2) and,
+ * via the settle window below, the shader-compile gate (bug #1's console-
+ * error cousin: a GLSL compile failure logs console errors and would
+ * otherwise silently leave this specific stage black without ever failing
+ * the a1-only tests above).
+ *
+ * Calibrated 2026-07-29 against 4 real local runs at ?t=150: measured
+ * 210.28-218.58/255 (the purge's white sterile half plus the hot pocket
+ * pushes this far brighter than a1's own BRIGHT_ACT_QUERY floor above). 60
+ * keeps ~3.5x margin below the dimmest measured run while still comfortably
+ * clearing MIN_MEAN_LUMINANCE and catching a genuinely black/failed stage.
+ */
+const MIN_MEAN_LUMINANCE_B3 = 60;
+
+test('b3 (Sterile Breath) via manual nav: compiles clean and renders a bright, non-black purge frame', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', (err) => errors.push(String(err)));
+
+  await page.goto('?t=150&debug=1');
+  await page.click('#mic-skip');
+  // Scoped to the rail's copy (see the 'browse entry' test above) — controls()
+  // is rendered 2x (rail + sheet), so the bare class would be a strict-mode
+  // violation.
+  await page.click('#rail .js-prev');
+
+  await waitForRenderLoop(page); // the direct signal the render loop actually started
+  await expect(page.locator('#now-title')).toHaveText('Sterile Breath');
+
+  // A ~3s settle after the track loads: a GLSL compile failure's console
+  // errors can land a beat after the first tick, not necessarily before
+  // avgFps() first reads > 0.
+  await page.waitForTimeout(3000);
+
+  const luminance = await stageMeanLuminance(page);
+  // Printed (not just asserted) so the threshold above can be calibrated against a real run.
+  console.log(`[smoke] b3 stage mean luminance @ ?t=150 (the-purge): ${luminance.toFixed(2)} / 255`);
+  expect(luminance).toBeGreaterThan(MIN_MEAN_LUMINANCE_B3);
+
+  expect(errors, `console/page errors: ${JSON.stringify(errors)}`).toEqual([]);
+});
+
 test('mobile: stage is full-bleed and never shrinks for the sheet overlay; liner notes read in browse', async ({ page }) => {
   // The mobile redesign's core regressions: (1) the stage used to be a flex
   // sibling of the sheet, losing real estate to it in every mode; (2) the

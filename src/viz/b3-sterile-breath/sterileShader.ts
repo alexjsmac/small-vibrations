@@ -176,6 +176,33 @@
  * own doc). `?seedpt=always` (index.ts) forces the SEED phase for
  * deterministic screenshots.
  *
+ * Increment 9 (perf: side-gated clump searches + analytic AA, no intended
+ * visual change): profiling (live shader patching against the built app,
+ * not committed) found sbBiomass's 3x3 clump search and sbSterileSide's own
+ * duplicate sbWatermarkSd 3x3 search running UNCONDITIONALLY on every
+ * fragment regardless of which side of the front that fragment sat on --
+ * together ~75% of the Lite frame cost (~17ms baseline down to ~4ms with
+ * both ablated). Fix, two parts: (1) sbWatermarkSd cut from a 3x3-cell union
+ * down to the fragment's 2x2 NEAREST cells (a real screenshot comparison at
+ * t=170, the 'sterile' act's own watermark=0.7 peak, ruled out the 1x1
+ * fragment's-own-cell-only version tried first -- visibly blockier / grid-
+ * tiled against the original's smooth organic blobs; 2x2-nearest reads
+ * indistinguishably close in the same comparison); (2) both searches now SIDE-GATE
+ * on S -- sbBiomass skips outright once its sGate parameter clears
+ * sbSearchGate() on the sterile side (past that point livingMask has
+ * already zeroed every consumer of the search's result -- see sbBiomass's
+ * own doc for the exact argument), sbSterileSide's watermark sample skips
+ * once s clears -sbSearchGate() on the living side (a watermark could never
+ * show there). This introduced the file's first non-uniform fragment
+ * branches, which made every remaining fwidth()-based AA width (sbAA(), the
+ * increment-7 bug-fix wrapper) load-bearing undefined behaviour
+ * (fwidth/dFdx/dFdy are UB across a divergent branch) -- so sbAA() was
+ * rebuilt as a purely analytic, per-frame CPU-uploaded value
+ * (uFieldPxScale, index.ts's update()) instead, with zero fwidth() calls
+ * left anywhere in this file. Welcome side effect: this also permanently
+ * retires the increment-7 triangle-seam fwidth() artifact class (see
+ * SB_MAX_FWIDTH's own doc) rather than merely clamping it.
+ *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
  * have compile-time constant bounds. Reserved-word identifiers (active,
@@ -247,6 +274,7 @@ varying vec2 vUv;
 
 uniform vec2 uCover;
 uniform float uZoom;
+uniform float uFieldPxScale; // field-uv units per screen pixel THIS frame (increment 9) — analytic replacement for fwidth()-based AA; recomputed every frame in index.ts's update() (uZoom itself moves every frame). See sbAA()'s own doc below.
 uniform vec2 uPan;
 uniform float uTime;
 uniform float uSterile;
@@ -456,7 +484,40 @@ float sbFbm(vec2 p) {
 // call site -- the ghost-motif SDFs and the S-field/watermark ones share
 // the identical "branchy code feeding fwidth()" shape.
 const float SB_MAX_FWIDTH = 0.003;
-float sbAA(float x) { return min(fwidth(x), SB_MAX_FWIDTH); }
+
+// Increment 9: sbAA() no longer touches fwidth() at all -- every AA width in
+// this file now rides uFieldPxScale, a per-frame CPU-computed analytic value
+// (field-uv units per screen pixel, index.ts's update()) derived from the
+// SAME field=(vUv-0.5)*uCover/uZoom+0.5+uPan mapping main() uses:
+// d(field)/d(pixel) per axis = uCover_axis / (uZoom * canvasSize_axis_px);
+// max(uCover.x,uCover.y) over min(canvasWidth_px,canvasHeight_px) is a
+// conservative (worst-axis) isotropic bound, matching fwidth()'s own
+// multi-pixel-conservative estimate under the SDFs' |gradient|~=1
+// assumption. Forced by this increment's OTHER change (side-gating the
+// biomass/watermark clump searches on S, sbBiomass/sbSterileSide below):
+// fwidth()/dFdx/dFdy are undefined in non-uniform control flow, and a
+// branch on a per-fragment value like S is exactly that shape. Welcome side
+// effect: this also permanently removes the triangle-seam fwidth()
+// artifact class the increment-7 doc above diagnosed -- SB_MAX_FWIDTH's
+// clamp is kept verbatim as an upper-bound safety net (now normally
+// redundant, since uFieldPxScale never spikes the way a derivative-
+// estimation hazard could, but harmless to keep).
+float sbAA() { return min(uFieldPxScale, SB_MAX_FWIDTH); }
+
+// Increment 9: shared side-gate threshold for the biomass/watermark clump
+// searches below -- a couple of AA-widths beyond sbAA() itself (comfortably
+// past the widest AA band either search's own output feeds, rimAA's 1.5x),
+// so a search is skipped only once its result is PROVABLY invisible (see
+// sbBiomass's gate doc for the exact argument). One shared function, not a
+// duplicated literal, so the two gates can never drift apart.
+const float SEARCH_GATE_MULT = 3.0;
+float sbSearchGate() { return sbAA() * SEARCH_GATE_MULT + 0.001; }
+
+// Increment 9: sentinel sGate value solo modes 1/4 (?solo=biomass,
+// ?solo=ghosts) pass to sbBiomass to force its search to always run,
+// matching their "ignore S entirely" convention -- comfortably below any
+// -sbSearchGate() this shader will ever compute.
+const float FORCE_SEARCH_S = -1.0;
 
 // iq's polynomial smooth-min: fuses two SDFs with a rounded blend of radius k.
 float sbSmin(float a, float b, float k) {
@@ -576,18 +637,31 @@ float sbClumpSd(vec2 fieldUv, vec2 cc, float lifeClock, float presence, float br
   return sd;
 }
 
-// Watermark residue SDF (increment 3): the SAME clump union search as
-// sbBiomass, but sampled with a FROZEN lifecycle (WM_LIFE_CLOCK,
-// WM_PRESENCE, zero breath) — so the returned distance is a fixed snapshot
-// of "biomass that was recently here", never a live/breathing shape. No
-// crowd tracking, no nearest/second-nearest colour bookkeeping — the caller
-// only wants the union silhouette's interior mask.
+// Watermark residue SDF: samples the SAME per-cell clump SDF sbBiomass's own
+// search uses, with a FROZEN lifecycle (WM_LIFE_CLOCK, WM_PRESENCE, zero
+// breath) — so the returned distance is a fixed snapshot of "biomass that
+// was recently here", never a live/breathing shape. Increment 9: reduced
+// from the original 3x3-cell union down to the fragment's own 2x2 NEAREST
+// cells — the fixed cell (n0) plus its true nearest neighbour on each axis,
+// picked by which half of the cell fieldUv falls in (dir), not always the
+// fixed +1 direction — a real screenshot comparison at t=170 (sections.ts's
+// 'sterile' act, watermark=0.7, its own peak) first tried the fragment's OWN
+// cell only (1x1): visibly blockier / grid-tiled against the original 3x3
+// union's smooth organic blobs, a real regression, not a barely-perceptible
+// seam. 2x2-nearest reads indistinguishably close to the original 3x3 union
+// in the same comparison while still only sampling 4 cells instead of 9.
+// Paired with the caller-side gate in sbSterileSide (increment 9): this
+// function is now only ever invoked when s > -sbSearchGate(), so the living
+// side never pays for it at all.
 float sbWatermarkSd(vec2 fieldUv) {
-  vec2 n0 = floor(fieldUv * CLUMP_FREQ);
+  vec2 scaled = fieldUv * CLUMP_FREQ;
+  vec2 n0 = floor(scaled);
+  vec2 fr = scaled - n0;
+  vec2 dir = vec2(fr.x < 0.5 ? -1.0 : 1.0, fr.y < 0.5 ? -1.0 : 1.0);
   float sdUnion = 9.0;
-  for (int j = -1; j <= 1; j++) {
-    for (int i = -1; i <= 1; i++) {
-      vec2 cc = n0 + vec2(float(i), float(j));
+  for (int j = 0; j <= 1; j++) {
+    for (int i = 0; i <= 1; i++) {
+      vec2 cc = n0 + vec2(dir.x * float(i), dir.y * float(j));
       float sdC = sbClumpSd(fieldUv, cc, WM_LIFE_CLOCK, WM_PRESENCE, 0.0);
       if (sdC > 5.0) continue;
       sdUnion = sbSmin(sdUnion, sdC, SMIN_K);
@@ -644,7 +718,7 @@ float sbCombMotif(vec2 rp, float stampR) {
   float apothem = stampR * 0.5;
   float lineW = stampR * 0.09;
   float d0 = abs(sbSdHexagon(rp, apothem)) - lineW;
-  float aa0 = sbAA(d0) * 1.25 + 0.0006;
+  float aa0 = sbAA() * 1.25 + 0.0006;
   float m0 = 1.0 - smoothstep(0.0, aa0, d0);
 
   vec2 nOff = vec2(apothem * 1.85, 0.0);
@@ -652,7 +726,7 @@ float sbCombMotif(vec2 rp, float stampR) {
   float ang2 = atan(rp2.y, rp2.x);
   float arcGate = smoothstep(1.6, 2.2, abs(ang2));
   float d1 = abs(sbSdHexagon(rp2, apothem)) - lineW;
-  float aa1 = sbAA(d1) * 1.25 + 0.0006;
+  float aa1 = sbAA() * 1.25 + 0.0006;
   float m1 = (1.0 - smoothstep(0.0, aa1, d1)) * arcGate;
 
   return max(m0, m1);
@@ -673,7 +747,7 @@ float sbVeinMotif(vec2 rp, float stampR) {
     sbSdSegment(rp, p0, p1) - mix(r0, r1, 0.5),
     min(sbSdSegment(rp, p1, p2) - mix(r1, r2, 0.5), sbSdSegment(rp, p2, p3) - r2)
   );
-  float aa = sbAA(d) * 1.25 + 0.0006;
+  float aa = sbAA() * 1.25 + 0.0006;
   return 1.0 - smoothstep(0.0, aa, d);
 }
 
@@ -685,11 +759,11 @@ float sbSpecimenMotif(vec2 rp, float stampR) {
   float dEllipse = length(rp / axes) - 1.0;
   float ringW = 0.16;
   float dRing = abs(dEllipse) - ringW;
-  float aaR = sbAA(dRing) * 1.25 + 0.0006;
+  float aaR = sbAA() * 1.25 + 0.0006;
   float ring = 1.0 - smoothstep(0.0, aaR, dRing);
 
   float bandHalf = stampR * 0.05;
-  float aaBY = sbAA(rp.y) * 1.25 + 0.0006;
+  float aaBY = sbAA() * 1.25 + 0.0006;
   float bandY = 1.0 - smoothstep(bandHalf, bandHalf + aaBY, abs(rp.y));
   float bandX = 1.0 - smoothstep(axes.x * 0.75, axes.x * 0.75 + 0.01, abs(rp.x));
 
@@ -707,7 +781,7 @@ float sbChainMotif(vec2 rp, float stampR) {
   float r2 = stampR * 0.07;
 
   float d = min(length(rp - c0) - r0, min(length(rp - c1) - r1, length(rp - c2) - r2));
-  float aa = sbAA(d) * 1.25 + 0.0006;
+  float aa = sbAA() * 1.25 + 0.0006;
   return 1.0 - smoothstep(0.0, aa, d);
 }
 
@@ -740,7 +814,19 @@ float sbGhostMotifMask(int motifId, vec2 rp, float stampR) {
 // cleanly against a plain ground) and draws the winner-clump stamp at FULL
 // alpha in a bright cream rather than the composed scene's faint ink mix —
 // see the ghost-stamp block at the end of this function.
-vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, bool ghostDebug) {
+vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, float sGate, bool ghostDebug) {
+  // Side-gate (increment 9): every consumer of this search's result below
+  // (edgeMask, rim, the ghost-stamp's stampCoverage) is multiplied by
+  // livingMask before ever touching col -- and livingMask (main()'s own
+  // 1.0 - smoothstep(-sEdge, sEdge, S)) has ALREADY saturated to exactly 0
+  // by the time S clears sEdge, let alone sbSearchGate()'s couple-of-
+  // AA-widths-wider margin. Past that point the search's output is
+  // PROVABLY invisible, not an approximation -- skipping it outright is a
+  // pure perf win. Solo modes 1/4 (?solo=biomass / ?solo=ghosts) pass
+  // FORCE_SEARCH_S, comfortably below any -sbSearchGate() ever reaches, so
+  // the gate never trips for their "ignore S entirely" convention.
+  if (sGate >= sbSearchGate()) return ground;
+
   vec2 n0 = floor(fieldUv * CLUMP_FREQ);
 
   float sdUnion = 9.0;
@@ -771,7 +857,7 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, bool ghostDebug) {
   // ground vs biomass in the final composite below. fwidth ties the
   // transition to actual screen pixels instead of a field-uv constant, so
   // it stays crisp regardless of zoom/resolution.
-  float edgeAA = sbAA(sdUnion) * 0.75 + 0.0004;
+  float edgeAA = sbAA() * 0.75 + 0.0004;
   float edgeMask = clamp(1.0 - smoothstep(-edgeAA, edgeAA, sdUnion), 0.0, 1.0);
   // Increment 3: the sterilization front truncates the biomass silhouette
   // itself — a clump half-overtaken by the front shows its scrubbed half
@@ -784,7 +870,7 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, bool ghostDebug) {
   // Thin rim: a narrow, fwidth-scaled |SDF| band hugging the silhouette — a
   // bright line, not a halo. Also truncated by livingMask so the rim never
   // ghosts past the front either.
-  float rimAA = sbAA(sdUnion) * 1.5 + 0.0006;
+  float rimAA = sbAA() * 1.5 + 0.0006;
   float rim = (1.0 - smoothstep(0.0, rimAA, abs(sdUnion))) * livingMask;
 
   vec3 interior = vec3(0.30, 0.06, 0.14);
@@ -1108,10 +1194,23 @@ vec3 sbSterileSide(vec2 fieldUv, float s) {
   col = mix(col, vec3(0.788, 0.847, 0.886), cornerFall * 0.35);
 
   // Watermarks: faint prints of erased biomass, sampled from the SAME clump
-  // union SDF with a FROZEN life clock / full presence / zero breath —
-  // frozen ghosts, not living forms (no rim, no speckle).
-  float wmSd = sbWatermarkSd(fieldUv);
-  float wmAA = sbAA(wmSd) * 0.75 + 0.0004;
+  // cell SDF with a FROZEN life clock / full presence / zero breath —
+  // frozen ghosts, not living forms (no rim, no speckle). Side-gated
+  // (increment 9): skipped once s clears -sbSearchGate() on the living
+  // side, where a watermark could never show -- this composed-scene call's
+  // contribution there is already zeroed by main()'s own outer
+  // mix(groundLiving, sterileBase, 1-livingMask) anyway. Mode 5
+  // (?solo=sterile, this function's only other caller) is a debug-only
+  // diagnostic where the gate additionally trims a pre-existing quirk: the
+  // un-gated wmAlpha formula below never zeroed on the living side either,
+  // so that mode used to show a faint watermark ghost even where S said
+  // "living" -- gating removes that debug-only artifact, nothing
+  // composed-scene-visible.
+  float wmSd = 9.0;
+  if (s > -sbSearchGate()) {
+    wmSd = sbWatermarkSd(fieldUv);
+  }
+  float wmAA = sbAA() * 0.75 + 0.0004;
   float wmMask = clamp(1.0 - smoothstep(-wmAA, wmAA, wmSd), 0.0, 1.0);
   float wmAlpha = clamp(uWatermark * 0.35 * exp(-max(s, 0.0) * WM_FALL) * wmMask, 0.0, 1.0);
   col = mix(col, vec3(0.80, 0.86, 0.89), wmAlpha);
@@ -1192,22 +1291,25 @@ void main() {
   // the scrub line below.
   float eventRimD;
   float S = sbSterility(field, eventRimD);
-  float sEdge = sbAA(S) * 0.75 + 0.0004; // tight fwidth-based S_EDGE
+  float sEdge = sbAA() * 0.75 + 0.0004; // tight analytic S_EDGE (increment 9: was fwidth-based)
   // 1.0 living (S<0), 0.0 sterile (S>0). Written as 1.0 - smoothstep(-sEdge,
   // sEdge, S) rather than the mirrored smoothstep(sEdge, -sEdge, S) — both
   // are mathematically the same inverted ramp, but the GLSL spec leaves
   // edge0 > edge1 undefined, and this form keeps edge0 < edge1 always true.
   float livingMask = 1.0 - smoothstep(-sEdge, sEdge, S);
 
-  // uSoloMode switch: each branch computes only what it needs (sbBiomass
-  // and sbWatermarkSd are both full 3x3 neighbourhood searches — cheap
-  // enough for one composed-scene pass, expensive enough that a debug-only
-  // solo mode must not force a second one every frame of normal playback).
+  // uSoloMode switch: each branch computes only what it needs. sbBiomass's
+  // own 3x3 neighbourhood search and sbWatermarkSd's 2x2-nearest-cell sample
+  // (increment 9: both now side-gated on S, and watermark's own search
+  // width cut from 3x3 to 2x2 — see each function's own doc) are still
+  // expensive enough that a debug-only solo mode must not force a second
+  // pass of either every frame of normal playback.
   vec3 color;
   if (uSoloMode == 1) {
     // Biomass field alone over a flat mid-gray background, across the
-    // WHOLE frame, ignoring S entirely (unchanged from increment 2).
-    color = sbBiomass(field, vec3(0.5), 1.0, false);
+    // WHOLE frame, ignoring S entirely (unchanged from increment 2;
+    // FORCE_SEARCH_S, increment 9, keeps the search unconditional here).
+    color = sbBiomass(field, vec3(0.5), 1.0, FORCE_SEARCH_S, false);
   } else if (uSoloMode == 5) {
     // The real sterile-side treatment, forced full-screen.
     color = sbSterileSide(field, S);
@@ -1234,8 +1336,9 @@ void main() {
     // clump to host a stamp this epoch (drawn at full alpha, bright cream),
     // so the four motifs are visible immediately on load with no need for
     // the '?ghost=always' debug flag (that flag still works here too,
-    // harmlessly redundant with ghostDebug's own force).
-    color = sbBiomass(field, vec3(0.5), 1.0, true);
+    // harmlessly redundant with ghostDebug's own force). FORCE_SEARCH_S
+    // (increment 9) keeps the search unconditional here.
+    color = sbBiomass(field, vec3(0.5), 1.0, FORCE_SEARCH_S, true);
   } else {
     // Composed scene (mode 0): the ground itself transitions from the dark
     // living ground to the cold sterile side at the same S boundary that
@@ -1244,7 +1347,7 @@ void main() {
     vec3 groundLiving = vec3(0.045, 0.022, 0.04);
     vec3 sterileBase = sbSterileSide(field, S);
     vec3 ground = mix(groundLiving, sterileBase, 1.0 - livingMask);
-    color = sbBiomass(field, ground, livingMask, false);
+    color = sbBiomass(field, ground, livingMask, S, false);
   }
 
   // --- Energy / grade / vignette / film grain (increment 7) -- applied
@@ -1306,7 +1409,7 @@ ${GRAIN_BLOCK}
 
     // Narrow, fwidth-scaled band (~2-3 screen px) straddling the S=0
     // zero-crossing.
-    float lineAA = sbAA(S) * 1.25 + 0.0004;
+    float lineAA = sbAA() * 1.25 + 0.0004;
     float lineMask = 1.0 - smoothstep(0.0, lineAA, abs(S));
 
     // Droplet glints: sparse hash-driven bright points ON the line.
@@ -1359,7 +1462,7 @@ ${GRAIN_BLOCK}
     // an event rim already swallowed by the front (deep in already-sterile
     // territory, no S=0 crossing left to trace) never shows a floating
     // ghost ring.
-    float rimBoostAA = sbAA(eventRimD) * 1.25 + 0.0004;
+    float rimBoostAA = sbAA() * 1.25 + 0.0004;
     float eventRimMask = 1.0 - smoothstep(0.0, rimBoostAA, eventRimD);
     color += lineColor * lineMask * eventRimMask * uTick * 0.85;
 
@@ -1520,7 +1623,7 @@ ${GRAIN_BLOCK}
       float coreR = FINAL_SEED_SCREEN_R / uZoom;
       float ringOuterR = coreR * (1.0 + FINAL_SEED_RING_FRAC);
       float haloR = coreR * FINAL_SEED_HALO_MULT;
-      float finalHaloAA = sbAA(finalDist) * 2.0 + 0.0006; // "soft 2px" edge AA
+      float finalHaloAA = sbAA() * 2.0 + 0.0006; // "soft 2px" edge AA
       float seedAlpha = uSeedFade * finalSGate;
 
       // Halo: a soft warm glow bleeding out to FINAL_SEED_HALO_MULT x the

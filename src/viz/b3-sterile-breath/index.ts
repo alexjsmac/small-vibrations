@@ -394,6 +394,10 @@ class SterileBreath implements Viz {
   /** Cover-fit scale (keeps the world square regardless of viewport aspect) — same idiom as b2's `cover`. */
   private cover = new THREE.Vector2(1, 1);
 
+  /** Drawing-buffer pixel dimensions (post dpr/quality-scale — renderer.domElement.width/height, NOT the CSS w/h resize() receives), cached at resize() — feeds uFieldPxScale's per-frame recompute in update() (increment 9, see sterileShader.ts's sbAA() doc). */
+  private canvasPxW = 1;
+  private canvasPxH = 1;
+
   /** Latest paramsAt(songTime) result — read every frame via `this.section.params` to drive the biomass field's uniforms. */
   private section: ReturnType<typeof paramsAt> | null = null;
 
@@ -661,6 +665,10 @@ class SterileBreath implements Viz {
       uniforms: {
         uCover: { value: new THREE.Vector2(1, 1) },
         uZoom: { value: 1 },
+        // Increment 9: field-uv units per screen pixel THIS frame — analytic
+        // AA replacement for fwidth(), recomputed every frame in update()
+        // (uZoom itself moves every frame; see sterileShader.ts's sbAA() doc).
+        uFieldPxScale: { value: 0 },
         // uPan is bound to panDisplay (increment 7), NOT this.pan directly —
         // see panDisplay's own doc (act-4 shake jitter without mutating the
         // "true" pan pointer()/pickLivingPoint reason about).
@@ -861,6 +869,23 @@ class SterileBreath implements Viz {
     // was ready this frame) — verified the existing wiring had NO breath
     // term; this multiply is the whole addition.
     u.uZoom.value = (u.uZoom.value as number) * (1 - BREATH_ZOOM_AMOUNT * (u.uBreath.value as number));
+
+    // uFieldPxScale (increment 9): field-uv units per screen pixel THIS
+    // frame — analytic replacement for fwidth()-based AA (sterileShader.ts's
+    // sbAA()), recomputed every frame since uZoom itself changes every frame
+    // (zoomAt + the breathing multiply just above). Derived from the SAME
+    // field=(vUv-0.5)*uCover/uZoom+0.5+uPan mapping the shader uses:
+    // d(field)/d(pixel) per axis = uCover_axis/(uZoom*canvasPx_axis); the
+    // worst-axis (max cover, min canvas px) combination is a conservative
+    // isotropic bound, matching fwidth()'s own multi-pixel-conservative
+    // estimate. cover/canvasPx are cached in resize() (rare); only uZoom
+    // moves every frame.
+    {
+      const zoomFinal = u.uZoom.value as number;
+      const coverMax = Math.max(this.cover.x, this.cover.y);
+      const minCanvasPx = Math.max(1, Math.min(this.canvasPxW, this.canvasPxH));
+      u.uFieldPxScale.value = coverMax / (Math.max(1e-4, zoomFinal) * minCanvasPx);
+    }
 
     this.breathPhase += dt * BREATH_PHASE_RATE;
     u.uBreathPhase.value = this.breathPhase;
@@ -1284,6 +1309,16 @@ class SterileBreath implements Viz {
     if (aspect >= 1) this.cover.set(aspect, 1);
     else this.cover.set(1, 1 / aspect);
     (this.material.uniforms.uCover.value as THREE.Vector2).copy(this.cover);
+
+    // Increment 9: actual drawing-buffer pixel dimensions (post dpr/quality
+    // scaling — renderer.domElement.width/height, NOT the CSS w/h this
+    // method receives) feed uFieldPxScale's per-frame recompute in update();
+    // fwidth() measured real rendered-pixel derivatives, so its analytic
+    // replacement must use the same physical resolution, not CSS px. Safe
+    // to read here: VizHost.resize() always calls renderer.setSize() before
+    // this.current.resize(w, h).
+    this.canvasPxW = this.renderer.domElement.width || 1;
+    this.canvasPxH = this.renderer.domElement.height || 1;
 
     // rMaxEff depends on uCover (the visible field rect's corners), so it's
     // recomputed here every time cover changes — see computeRMaxEff's doc.
