@@ -2,11 +2,19 @@
  * Fullscreen display shader for b3 "Sterile Breath". Increment 3 landed the
  * real signed sterility field S(p) and the full sterile side, replacing
  * increment 1's placeholder vertical split and increment 2's flat pale
- * "blank". Increment 4 lands swab strikes -- bass-driven ellipse "wounds"
+ * "blank". Increment 4 landed swab strikes -- bass-driven ellipse "wounds"
  * smax'd into S itself (see sbSterility's strike loop) -- the EXTENSION
- * POINT that increment-3 doc promised. Shares b2's passthrough vertex
- * shader shape and the house screen->field mapping formula (b1's dish
- * shader, b2's catalogueShader.ts):
+ * POINT that increment-3 doc promised. Increment 5 lands the other two
+ * event systems that same extension point promised, plus pointer
+ * interaction (index.ts's `pointer()`): condensation BLOOMS (uBloom, the
+ * track's recurring breath motif -- a soft cool misty lift + faint droplet
+ * sparkle over living ground, drawn post-overlay in main()) and pointer
+ * POKES (uPoke, a rebloom -- sbPokeRadius's grow/hold/re-scrub envelope
+ * smin'd into S, pushing the boundary back OUT instead of carving in, the
+ * opposite of a strike) plus their ripple feedback ring (uRipple, house
+ * idiom). Shares b2's passthrough vertex shader shape and the house
+ * screen->field mapping formula (b1's dish shader, b2's
+ * catalogueShader.ts):
  *
  *   field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan
  *
@@ -23,9 +31,9 @@
  * smax'd into that same value with a shared blend radius (K_BLEND), so every
  * caller below (biomass truncation, the diagnostic solo modes, the scrub
  * line) reads the strike-augmented S through that one function and never
- * needs to know strikes exist as a separate thing. Increment 5's pokes will
- * fold in here the same way (smin, pushing the boundary back OUT instead of
- * carving in).
+ * needs to know strikes exist as a separate thing. Increment 5's pokes
+ * (`sbPokeRadius`'s grow/hold/re-scrub envelope, uPoke) fold in here the
+ * same way -- smin, pushing the boundary back OUT instead of carving in.
  *
  * uRMax (increment 4 follow-up, replacing the old global-worst-case R_MAX
  * const): a PER-SEED value computed on the CPU (index.ts's rMaxEff, see its
@@ -104,10 +112,10 @@ export const FRONT_NOISE_AMP = 0.6;
  * bakes reticleSlots/reach/glyphStrokes the same way). `lobes` and `fbmOct`
  * were unused placeholders in increment 1; increment 2 was their first real
  * consumer (LOBES drives sbClumpSd's per-clump lobe count, FBM_OCT drives
- * sbFbm's octave count) -- they're dropped from `futureLayerBudget`'s
- * checksum below accordingly, since they now have real compiled uses.
- * strike/bloom/poke/rippleSlots remain unused until their own increments and
- * stay in the checksum.
+ * sbFbm's octave count). `strikeSlots` became real in increment 4
+ * (uStrikeA/uStrikeB); `bloomSlots`/`pokeSlots`/`rippleSlots` become real in
+ * increment 5 (uBloom, uPoke, uRipple) -- every field of this config now has
+ * a real compiled use, no placeholder checksum needed anymore.
  */
 export interface SterileShaderConfig {
   strikeSlots: number;
@@ -161,11 +169,11 @@ uniform float uSterileSpec; // 0..1 clinical specular sheen of the sterile surfa
 // independent of any existing scalar, feeds the young-strike rim pop only.
 uniform float uTick;
 
-// Increment 2-8 layer budgets, baked as compile-time constants. LOBES/
-// FBM_OCT are real consumed constants now (sbClumpSd / sbFbm below); the
-// event-slot budgets below remain unused until their own increments, so
-// they're still folded into futureLayerBudget() to keep them real,
-// declared-and-used GLSL constants rather than inert string interpolation.
+// Increment 2-8 layer budgets, baked as compile-time constants. Every
+// budget is now a real consumed constant (LOBES/FBM_OCT since increment 2,
+// STRIKE_SLOTS since increment 4, BLOOM_SLOTS/POKE_SLOTS/RIPPLE_SLOTS as of
+// this increment -- see uBloom/uPoke/uRipple below and sbSterility's poke
+// loop) -- no more inert placeholders left to guard with a checksum.
 const int STRIKE_SLOTS = ${STRIKE_SLOTS};
 const int BLOOM_SLOTS = ${BLOOM_SLOTS};
 const int POKE_SLOTS = ${POKE_SLOTS};
@@ -182,6 +190,35 @@ const int FBM_OCT = ${FBM_OCT};
 // strike loop below and index.ts's fireStrike.
 uniform vec4 uStrikeA[STRIKE_SLOTS]; // xy = centre (field-uv), z = age (s), w = active 0/1, fades 1->0 over a failed strike's last 1.5s before freeing
 uniform vec4 uStrikeB[STRIKE_SLOTS]; // x = rMax (field-uv), y = ellipse aspect 1.15-1.65, z = orientation angle (radians), w = healRate (1/s; 0 = holds rMax forever, CPU frees it after 14s)
+
+// Condensation blooms (increment 5) -- the track's recurring breath motif:
+// a soft cool misty lift + faint droplet sparkle over LIVING ground only,
+// drawn post-overlay in main() (after the composite + scrub line). Fired by
+// index.ts's fireBloom (slow-bass threshold crossing + ambient Poisson,
+// always centre-biased so a bloom reads as the frame's subject) or
+// fireBloomAt (act 6's poke-births-a-bloom route, exact tap point, no
+// bias) -- index-parallel with index.ts's SlotPool(BLOOM_SLOTS).
+uniform vec4 uBloom[BLOOM_SLOTS]; // xy = centre (field-uv), z = age (s), w = active 0/1
+uniform float uBloomAmp; // 0..1 bloom event amplitude (ActParams.bloomAmp)
+
+// Pointer pokes (increment 5) -- a REBLOOM: sbPokeRadius's grow/hold/
+// re-scrub circle is smin'd into S (sbSterility's poke loop) so a scrubbed
+// patch of ground carves back into living territory, then closes again --
+// biomass regrows automatically wherever S<0 (sbBiomass already keys off
+// livingMask, no change needed there). Fired unconditionally on pointer
+// 'down' (index.ts's pointer()), no tap-vs-drag threshold -- EXCEPT in act
+// 6 ('last-breath'), where a tap fires a bloom (uBloom) instead, since the
+// world is gone by then. Index-parallel with index.ts's
+// SlotPool(POKE_SLOTS); a fixed envelope (unlike strikes' per-instance
+// healRate) means the CPU pool needs no extra baked-constants array.
+uniform vec4 uPoke[POKE_SLOTS]; // xy = centre (field-uv), z = age (s), w = active 0/1
+
+// Poke ripple (increment 5) -- a thin expanding near-white ring, the
+// display-side half of every tap (house idiom, verbatim shape from b2's
+// activateRipple/uRipple). Drawn post-overlay, unmasked by livingMask -- a
+// tap's feedback reads the same whether it lands on living or sterile
+// ground. Index-parallel with index.ts's SlotPool(RIPPLE_SLOTS).
+uniform vec4 uRipple[RIPPLE_SLOTS]; // xy = centre (field-uv), z = age (s), w = active 0/1
 
 // Biomass field constants: CLUMP_FREQ cells across field-uv, SMIN_K the iq
 // smooth-min blend radius for fusing a clump's lobes into one mounded body.
@@ -212,20 +249,6 @@ const float FRONT_NOISE_AMP = ${FRONT_NOISE_AMP};
 const float WM_LIFE_CLOCK = 0.35;
 const float WM_PRESENCE = 0.92;
 const float WM_FALL = 2.2;
-
-// STRIKE_SLOTS dropped from this checksum in increment 4 (same treatment as
-// LOBES/FBM_OCT in increment 2): it now has a real compiled use of its own
-// (uStrikeA/uStrikeB's array size and the strike loop in sbSterility below),
-// so folding it in here too would double-count it for no reason.
-// BLOOM_SLOTS/POKE_SLOTS/RIPPLE_SLOTS remain unused until their own
-// increments.
-float futureLayerBudget() {
-  float acc = 0.0;
-  for (int i = 0; i < BLOOM_SLOTS; i++) acc += 1.0;
-  for (int i = 0; i < POKE_SLOTS; i++) acc += 1.0;
-  for (int i = 0; i < RIPPLE_SLOTS; i++) acc += 1.0;
-  return acc;
-}
 
 // --- hash / noise (sb-prefixed so concatenation with any other shader's
 // own hash21 etc. never collides, matching b2's tt-prefix convention) ---
@@ -524,6 +547,39 @@ float sbStrikeSd(vec2 p, vec2 center, float r, float aspect, float angle) {
   return length(rp) - r;
 }
 
+// Poke (rebloom) geometry & envelope constants (increment 5). Unlike a
+// strike's per-instance rMax/healRate (uStrikeB), every poke shares the
+// exact same fixed age->radius envelope, so index.ts's CPU pool needs no
+// second baked-constants array -- just a plain fixed-lifetime SlotPool.age()
+// call timed to POKE_GROW+POKE_HOLD+POKE_RESCRUB (index.ts's POKE_LIFETIME),
+// which MUST mirror the spans below exactly so the CPU frees the slot the
+// instant this curve reaches back to 0. POKE_RIM_YOUNG mirrors
+// STRIKE_RIM_YOUNG's role (main()'s tick-driven rim-pop boost).
+const float POKE_R_MAX = 0.09;
+const float POKE_GROW = 0.3;
+const float POKE_HOLD_END = 4.3; // POKE_GROW + 4.0s hold
+const float POKE_RESCRUB_END = 7.3; // POKE_HOLD_END + 3.0s re-scrub
+const float POKE_RIM_YOUNG = 0.5; // seconds -- the young-poke rim-pop window
+
+// Age -> radius (field-uv), the poke's fixed grow/hold/re-scrub curve: an
+// ease-out cubic climb to POKE_R_MAX over POKE_GROW, a hold at POKE_R_MAX,
+// then an eased (smoothstep) close back to 0 over the final POKE_RESCRUB
+// seconds -- the ground scrubbing itself shut again once the tap's living
+// patch has had its moment.
+float sbPokeRadius(float age) {
+  if (age < POKE_GROW) {
+    float t = age / POKE_GROW;
+    return POKE_R_MAX * (1.0 - pow(1.0 - t, 3.0));
+  } else if (age < POKE_HOLD_END) {
+    return POKE_R_MAX;
+  } else if (age < POKE_RESCRUB_END) {
+    float t = (age - POKE_HOLD_END) / (POKE_RESCRUB_END - POKE_HOLD_END);
+    float te = t * t * (3.0 - 2.0 * t);
+    return POKE_R_MAX * (1.0 - te);
+  }
+  return 0.0;
+}
+
 // The signed sterility field S(p): positive = sterile, negative = living,
 // the zero-crossing IS the scrub line. phi is a stretched, noise-wobbled
 // distance from the pocket (the LAST living place); R shrinks from uRMax
@@ -555,12 +611,21 @@ float sbStrikeSd(vec2 p, vec2 center, float r, float aspect, float angle) {
 // near the strike) as w shrinks, since an unbounded sdf value far from the
 // strike shrinks right along with it; blending the final scalar has no such
 // footgun and still satisfies "scale the strike's effect by w" (w=0 is an
-// exact no-op, w=1 is the full smax). strikeRimD (out param) is written to
-// the closest approach, in local strike-sdf units, to any currently active
-// strike younger than STRIKE_RIM_YOUNG -- consumed by main()'s young-strike
-// rim-pop boost so that pass doesn't need its own second loop over
-// STRIKE_SLOTS.
-float sbSterility(vec2 p, out float strikeRimD) {
+// exact no-op, w=1 is the full smax). Increment 5's pokes then fold in with
+// the OPPOSITE operator: sbSmin (not smax) pulls S toward whichever is
+// SMALLER (more living), so a poke's circle always pushes its interior
+// toward living regardless of what the front/strikes alone would say there
+// -- pushing the boundary back OUT instead of carving in. No w-blend is
+// needed for pokes the way strikes need one: a poke's own radius envelope
+// (sbPokeRadius) already returns exactly 0 at both its birth and its
+// re-scrubbed end, so skipping the merge below r<=0.0001 is already a clean
+// no-op at both ends. eventRimD (out param, renamed from increment 4's
+// strike-only strikeRimD now that pokes contribute too) is written to the
+// closest approach, in local sdf units, to any currently active strike
+// younger than STRIKE_RIM_YOUNG OR poke younger than POKE_RIM_YOUNG --
+// consumed by main()'s young-event rim-pop boost so that pass doesn't need
+// its own second loop over STRIKE_SLOTS/POKE_SLOTS.
+float sbSterility(vec2 p, out float eventRimD) {
   vec2 d = (p - uPocket) * uStretch;
   float fineN = sbFbm(p * 3.0 + uFrontDrift) - 0.5;
   float coarseN = sbFbm(p * 1.2 + uFrontDrift * 0.6) - 0.5;
@@ -570,7 +635,7 @@ float sbSterility(vec2 p, out float strikeRimD) {
   float R = uRMax * (1.0 - uSterile);
   float s = phi - R;
 
-  strikeRimD = 9.0;
+  eventRimD = 9.0;
   for (int i = 0; i < STRIKE_SLOTS; i++) {
     float w = uStrikeA[i].w;
     if (w <= 0.0) continue;
@@ -592,7 +657,23 @@ float sbSterility(vec2 p, out float strikeRimD) {
     s = mix(s, sWithStrike, w);
 
     if (age < STRIKE_RIM_YOUNG) {
-      strikeRimD = min(strikeRimD, abs(strikeSd));
+      eventRimD = min(eventRimD, abs(strikeSd));
+    }
+  }
+
+  for (int i = 0; i < POKE_SLOTS; i++) {
+    float pw = uPoke[i].w;
+    if (pw <= 0.0) continue;
+    vec2 center = uPoke[i].xy;
+    float age = uPoke[i].z;
+    float r = sbPokeRadius(age);
+    if (r <= 0.0001) continue; // not yet grown / already re-scrubbed shut
+
+    float pokeSd = length(p - center) - r; // circle SDF, negative inside
+    s = sbSmin(s, pokeSd, K_BLEND);
+
+    if (age < POKE_RIM_YOUNG) {
+      eventRimD = min(eventRimD, abs(pokeSd));
     }
   }
 
@@ -636,17 +717,36 @@ vec3 sbSterileSide(vec2 fieldUv, float s) {
   return col;
 }
 
+// Condensation bloom render constants (increment 5) -- BLOOM_LIFETIME MUST
+// mirror index.ts's own BLOOM_LIFETIME (the CPU pool's SlotPool.age()
+// deactivation span). BLOOM_FADE_RATE is tuned so the exponential fade
+// starting at BLOOM_FADE_START has decayed to a visually negligible ~2% by
+// BLOOM_LIFETIME, so the slot's CPU-side deactivation never reads as a pop.
+const float BLOOM_R_MIN = 0.05;
+const float BLOOM_R_MAX = 0.14;
+const float BLOOM_LIFETIME = 2.5;
+const float BLOOM_INTRO = 0.35;
+const float BLOOM_FADE_START = 1.2;
+const float BLOOM_FADE_RATE = 3.0;
+const vec3 BLOOM_TINT = vec3(0.82, 0.90, 0.93);
+
+// Poke ripple render constants (increment 5) -- RIPPLE_LIFETIME MUST mirror
+// index.ts's own RIPPLE_LIFETIME (the CPU pool's SlotPool.age() span).
+const float RIPPLE_R_MAX = 0.12;
+const float RIPPLE_LIFETIME = 1.2;
+
 void main() {
-  // Screen uv -> field uv (house formula, shared with the later pointer.ts).
+  // Screen uv -> field uv (house formula, shared with index.ts's pointer()).
   vec2 field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan;
 
   // Signed sterility field, computed once and shared by every mode below
   // (biomass truncation, the sterile-side ground colour, the diagnostic
   // solo mode, and the scrub line) so they can never disagree about where
-  // the front actually is. strikeRimD (increment 4) rides along for the
-  // young-strike rim-pop boost, drawn with the scrub line below.
-  float strikeRimD;
-  float S = sbSterility(field, strikeRimD);
+  // the front actually is. eventRimD (strikes since increment 4, pokes since
+  // increment 5) rides along for the young-event rim-pop boost, drawn with
+  // the scrub line below.
+  float eventRimD;
+  float S = sbSterility(field, eventRimD);
   float sEdge = fwidth(S) * 0.75 + 0.0004; // tight fwidth-based S_EDGE
   // 1.0 living (S<0), 0.0 sterile (S>0). Written as 1.0 - smoothstep(-sEdge,
   // sEdge, S) rather than the mirrored smoothstep(sEdge, -sEdge, S) — both
@@ -730,16 +830,18 @@ void main() {
     color = mix(color, lineColor, lineMask * clamp(glowStrength, 0.0, 1.0));
     color += lineColor * glint;
 
-    // Young-strike rim pop (increment 4): an extra brightness kick, scaled
-    // by uTick (the CPU bass-onset decay scalar), wherever the visible
-    // scrub line (lineMask) is ALSO tracing a strike younger than
-    // STRIKE_RIM_YOUNG (strikeRimD, written by sbSterility's strike loop).
-    // Gated by lineMask rather than standing alone so a strike rim already
-    // swallowed by the front (deep in already-sterile territory, no S=0
-    // crossing left to trace) never shows a floating ghost ring.
-    float rimBoostAA = fwidth(strikeRimD) * 1.25 + 0.0004;
-    float strikeRimMask = 1.0 - smoothstep(0.0, rimBoostAA, strikeRimD);
-    color += lineColor * lineMask * strikeRimMask * uTick * 0.85;
+    // Young-event rim pop (strikes since increment 4, pokes since
+    // increment 5): an extra brightness kick, scaled by uTick (the CPU
+    // bass-onset / poke-tap decay scalar), wherever the visible scrub line
+    // (lineMask) is ALSO tracing a strike younger than STRIKE_RIM_YOUNG or a
+    // poke younger than POKE_RIM_YOUNG (eventRimD, written by sbSterility's
+    // strike + poke loops). Gated by lineMask rather than standing alone so
+    // an event rim already swallowed by the front (deep in already-sterile
+    // territory, no S=0 crossing left to trace) never shows a floating
+    // ghost ring.
+    float rimBoostAA = fwidth(eventRimD) * 1.25 + 0.0004;
+    float eventRimMask = 1.0 - smoothstep(0.0, rimBoostAA, eventRimD);
+    color += lineColor * lineMask * eventRimMask * uTick * 0.85;
 
     // Faint interior glow bleeding ~2x the line width into the LIVING side
     // only — the front "heats" what it's about to consume.
@@ -748,7 +850,60 @@ void main() {
     color += lineColor * livingBleed * glowStrength * 0.18;
   }
 
-  color += vec3(0.0) * futureLayerBudget();
+  // --- Condensation blooms (increment 5, the breath motif), drawn
+  // post-overlay (after the composite + scrub line above): a soft cool
+  // misty lift, radius growing 0.05->0.14 field-uv over its 2.5s life
+  // (ease-out), intensity ramping in over 0.35s then exponential-fading
+  // past 1.2s, masked to LIVING ground only (livingMask, already computed
+  // above) and scaled by uBloomAmp -- plus a faint droplet-bead sparkle in
+  // the disc's inner half, the scrub line's own glint hash idiom (cell hash
+  // + breath-phase-epoch twinkle) at a lower existence density so it reads
+  // as a quieter cousin, not a second scrub line.
+  for (int i = 0; i < BLOOM_SLOTS; i++) {
+    vec4 bl = uBloom[i];
+    if (bl.w <= 0.0) continue;
+    vec2 bloomCenter = bl.xy;
+    float bloomAge = bl.z;
+
+    float lifeT = clamp(bloomAge / BLOOM_LIFETIME, 0.0, 1.0);
+    float growT = 1.0 - pow(1.0 - lifeT, 3.0); // ease-out across the whole life
+    float bloomR = mix(BLOOM_R_MIN, BLOOM_R_MAX, growT);
+
+    float introEnv = smoothstep(0.0, BLOOM_INTRO, bloomAge);
+    float fadeEnv = bloomAge > BLOOM_FADE_START
+      ? exp(-(bloomAge - BLOOM_FADE_START) * BLOOM_FADE_RATE)
+      : 1.0;
+    float envelope = introEnv * fadeEnv * uBloomAmp;
+
+    float bloomDist = length(field - bloomCenter);
+    float disc = 1.0 - smoothstep(0.0, bloomR, bloomDist);
+    float bloomAlpha = clamp(envelope * disc, 0.0, 1.0) * livingMask;
+    color = mix(color, BLOOM_TINT, bloomAlpha);
+
+    float innerGate = 1.0 - smoothstep(bloomR * 0.35, bloomR * 0.5, bloomDist);
+    vec2 sparkleCell = floor(field * 70.0);
+    float sparkleBaseH = sbHash21(sparkleCell + bloomCenter * 13.0 + vec2(5.5, 9.1));
+    float sparkleExists = step(sparkleBaseH, 0.12);
+    float sparkleEpoch = floor(uBreathPhase * 6.0 + sparkleBaseH);
+    float sparkleTwinkle = sbHash21(sparkleCell + vec2(sparkleEpoch + 31.7, 2.2));
+    float sparkle = sparkleExists * sparkleTwinkle * innerGate * envelope * livingMask;
+    color += vec3(0.97, 1.0, 1.0) * sparkle * 0.6;
+  }
+
+  // --- Poke ripple (increment 5): a thin expanding near-white ring, house
+  // idiom (verbatim shape from b2's activateRipple/uRipple), drawn
+  // post-overlay. Unmasked by livingMask -- a tap's feedback should read
+  // the same whether it lands on living or already-sterile ground.
+  for (int i = 0; i < RIPPLE_SLOTS; i++) {
+    vec4 rp = uRipple[i];
+    if (rp.w <= 0.0) continue;
+    float rippleAge = rp.z;
+    float rippleT = clamp(rippleAge / RIPPLE_LIFETIME, 0.0, 1.0);
+    float ringR = mix(0.0, RIPPLE_R_MAX, rippleT);
+    float ringDist = length(field - rp.xy);
+    float ring = exp(-pow((ringDist - ringR) * 70.0, 2.0)) * rp.w * (1.0 - rippleT);
+    color += vec3(0.92, 0.97, 1.0) * ring;
+  }
 
   gl_FragColor = vec4(color, 1.0);
 }

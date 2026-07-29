@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Viz, VizContext, AudioFrame, VizModule } from '../types';
+import type { Viz, VizContext, AudioFrame, VizModule, VizPointerEvent } from '../types';
 import { STERILE_VERT, buildSterileFragment, FRONT_NOISE_AMP } from './sterileShader';
 import { paramsAt, sterileAt, zoomAt, lifeClockAt, type ActParams } from './sections';
 import { mulberry32 } from '../random';
@@ -89,6 +89,79 @@ const STRIKE_FAIL_FADE = 1.5;
 const SEEK_JUMP_SECONDS = 10;
 
 /**
+ * Condensation-bloom lifetime (s) — SlotPool(3) auto-deactivates via
+ * `this.bloomPool.age(dt, BLOOM_LIFETIME)`; MUST mirror sterileShader.ts's
+ * own BLOOM_LIFETIME exactly (the GPU's radius/intensity envelope is
+ * derived from the same span, so the slot must never free before the GPU
+ * curve has already faded to ~0).
+ */
+const BLOOM_LIFETIME = 2.5;
+
+/**
+ * Slow-bass threshold-crossing bloom trigger (index.ts's own `this.bassSlow`
+ * EMA, the same one driving uBreath) — a simpler cousin of the strike
+ * onset detector (BASS_ONSET_*, above): a level crossing with a cooldown,
+ * not a fast/slow EMA gap, since blooms are the breath motif (sustained
+ * swells), not a percussive hit.
+ */
+const BLOOM_ONSET_THRESHOLD = 0.45;
+const BLOOM_ONSET_COOLDOWN = 1.2;
+
+/** `?bloom=always` forces the ambient Poisson bloom rate to this (events/min), same debug idiom as `?strike=always`. */
+const BLOOM_DEBUG_RATE = 30;
+
+/**
+ * Bloom placement bias (fireBloom -> pickLivingPoint(true)): the random
+ * screen-uv offset from centre is scaled by this before mapping to
+ * field-uv, so blooms land inside the frame's centre third rather than
+ * anywhere in the visible field — they read as THE subject when they fire.
+ */
+const BLOOM_CENTER_BIAS = 0.6;
+
+/**
+ * Poke (rebloom) lifecycle spans (s): 0->POKE_R_MAX ease-out grow over
+ * POKE_GROW, hold POKE_HOLD, then eased back to 0 over POKE_RESCRUB.
+ * POKE_LIFETIME (their sum) MUST mirror sterileShader.ts's own
+ * POKE_GROW/POKE_HOLD_END/POKE_RESCRUB_END spans exactly — the CPU pool
+ * (SlotPool.age's fixed-lifetime path) deactivates the slot the instant the
+ * GPU radius curve has eased back to exactly 0.
+ */
+const POKE_GROW = 0.3;
+const POKE_HOLD = 4.0;
+const POKE_RESCRUB = 3.0;
+const POKE_LIFETIME = POKE_GROW + POKE_HOLD + POKE_RESCRUB; // 7.3
+
+/** Small uTick kick on every poke (vs. the bass onset's full 1) — the SAME decay scalar (TICK_DECAY_RATE) drives both, so a poke's rim-pop reads as a quieter cousin of a strike's. `Math.max`'d against the current tick rather than overwritten, so a poke landing during a bass onset never dims an already-hotter tick. */
+const POKE_TICK_KICK = 0.6;
+
+/** Poke ripple lifetime (s) — SlotPool(4) auto-deactivates via `this.ripplePool.age(dt, RIPPLE_LIFETIME)`; MUST mirror sterileShader.ts's own RIPPLE_LIFETIME (radius/alpha envelope span). */
+const RIPPLE_LIFETIME = 1.2;
+
+/**
+ * Drag-pan momentum constants — the verbatim a1/a2/a3/b1/b2 house idiom
+ * (BRIEFING.md's Interaction section), replicated exactly rather than
+ * re-derived: EMA the instantaneous velocity while held, integrate with
+ * exponential friction after release, snap to 0 below the stop speed.
+ */
+const VEL_EMA_RATE = 10;
+const VEL_MAX = 1.5;
+const MOMENTUM_FRICTION = 2.5;
+const MOMENTUM_STOP_SPEED = 0.0005;
+
+/**
+ * Per-axis pan clamp (field-uv) — keeps the pocket region draggable but
+ * never fully offscreen. b2 uses a circular MAX_PAN radius instead; b3's
+ * off-centre pocket + anisotropic uStretch make a simple per-axis box bound
+ * the better fit (the task's own spec), applied every frame after momentum
+ * integration (zeroing velocity on the clamped axis so momentum doesn't keep
+ * fighting the wall), mirroring b2's clamp-after-integrate placement.
+ */
+const PAN_CLAMP = 0.35;
+
+/** Act index (paramsAt's SectionState.actIndex) at which a poke births a condensation bloom instead of a poke-carve — 'last-breath' (ACTS[6] in sections.ts): the world is gone by then, only breath remains. */
+const BLOOM_ONLY_ACT_INDEX = 6;
+
+/**
  * "Sterile Breath" — a living, breathing dark field is slowly, irreversibly
  * overtaken by a cold sterile blank: the track's antiseptic erasure of
  * life, rendered as an advancing bleach front across the frame.
@@ -114,8 +187,31 @@ const SEEK_JUMP_SECONDS = 10;
  * `ageStrikes`'s doc for the heal/fail/free lifecycle. `this.tick` is a NEW,
  * independent decay scalar (kicked to 1 on every bass onset, `uTick`) for
  * the shader's young-strike rim pop — it does NOT reuse `beatBonus` below.
- * Bloom/poke/ripple events, ghost trails, and the scripted camera remain for
- * later increments on top of this.
+ *
+ * Increment 5 lands the two other event systems and pointer interaction:
+ * condensation BLOOMS — the track's recurring breath motif — fire on a
+ * slow-bass threshold crossing (`this.bassSlow` vs. BLOOM_ONSET_THRESHOLD,
+ * a simpler cousin of the strike onset detector) plus an independent
+ * Poisson process, both routed through `fireBloom` (center-biased via
+ * `pickLivingPoint(true)` so a bloom reads as the frame's subject); one
+ * `SlotPool(BLOOM_SLOTS)` (`this.bloomPool`, bound as `uBloom`). Pointer
+ * POKES — a rebloom carving a living patch back into scrubbed ground — fire
+ * unconditionally on `pointer()`'s 'down' (no drag threshold; a pure tap
+ * fires no 'move', so pan/momentum never trigger, the a1/b2 disambiguation-
+ * for-free idiom); one `SlotPool(POKE_SLOTS)` (`this.pokePool`, bound as
+ * `uPoke`) with a FIXED grow/hold/re-scrub envelope (unlike a strike's
+ * per-instance heal rate), so `ageStrikes`'s hand-rolled heal/fail logic has
+ * no poke equivalent — `this.pokePool.age(dt, POKE_LIFETIME)` alone frees
+ * the slot. Every poke also fires a near-white RIPPLE ring (house idiom,
+ * `this.ripplePool`/`uRipple`) and kicks `this.tick` by POKE_TICK_KICK (the
+ * same decay scalar strikes use, so a poke's rim pop reads as a quieter
+ * cousin). In act 6 ('last-breath', BLOOM_ONLY_ACT_INDEX) a tap fires a
+ * bloom (`fireBloomAt`, the exact tap point, no living-search/centre-bias)
+ * INSTEAD of a poke-carve — the world is gone, only breath remains. Drag
+ * pans `this.pan` (now a live field, not the fixed (0,0) increment 4's docs
+ * described) with the verbatim a1/a2/a3/b1/b2 momentum idiom, clamped per-
+ * axis to ±PAN_CLAMP. Ghost trails and the scripted camera remain for later
+ * increments on top of this.
  *
  * Debug: `?solo=<0-5>` selects a solo layer (0 = full composed scene,
  * default; `?solo=biomass` -> mode 1, the biomass field alone over a flat
@@ -135,9 +231,10 @@ const SEEK_JUMP_SECONDS = 10;
  * forces the ambient Poisson strike rate to 60/min regardless of act,
  * `?heal=off`/`?heal=on` overrides EVERY newly-fired strike's baked
  * healRate to 0 / 0.22 regardless of act (existing strikes keep whatever
- * they were baked with) — all for deterministic screenshots — plus the
- * standard `?t=`, `?q=`, `?debug=1` handled outside this module (VizHost /
- * QualityManager).
+ * they were baked with), `?bloom=always` forces the ambient Poisson bloom
+ * rate to BLOOM_DEBUG_RATE (30/min) regardless of act — all for
+ * deterministic screenshots — plus the standard `?t=`, `?q=`, `?debug=1`
+ * handled outside this module (VizHost / QualityManager).
  */
 class SterileBreath implements Viz {
   private renderer!: THREE.WebGLRenderer;
@@ -219,6 +316,39 @@ class SterileBreath implements Viz {
   /** Per-seed S-field radius at uSterile=0 (uRMax's CPU-side source of truth) — computeRMaxEff's doc; recomputed in resize() since it depends on uCover. Also feeds pickLivingPoint's own CPU S-estimate, so both sides of the front agree on where it is. */
   private rMaxEff = 0;
 
+  /** Condensation-bloom slot pool (increment 5): `slots` IS uBloom (xy/z/w set here, bound by reference) — see fireBloom/fireBloomAt's docs. */
+  private bloomPool!: SlotPool;
+  /** Seconds remaining before another slow-bass-threshold-crossing bloom may fire (BLOOM_ONSET_COOLDOWN idiom). */
+  private bloomCooldown = 0;
+  /** Seconds until the next Poisson-scheduled ambient bloom (nextPoissonDelay, pools.ts) — independent of the onset channel's cooldown, same shape as strikeTimeToNext. */
+  private bloomTimeToNext = 0;
+  /** `?bloom=always` — forces the ambient Poisson bloom rate to BLOOM_DEBUG_RATE regardless of the current act. */
+  private forceBloomAlways = false;
+
+  /** Pointer-poke (rebloom) slot pool (increment 5): `slots` IS uPoke (xy/z/w set here, bound by reference) — see firePoke's doc. Fixed grow/hold/re-scrub envelope (sterileShader.ts's sbPokeRadius), so unlike strikes no parallel baked-constants array is needed. */
+  private pokePool!: SlotPool;
+
+  /** Poke-ripple slot pool (increment 5): `slots` IS uRipple (xy/z/w set here, bound by reference) — see fireRipple's doc. */
+  private ripplePool!: SlotPool;
+
+  /**
+   * Field-space pan offset — pointer-drag only (increment 5), the a1/a2/a3/
+   * b1/b2 momentum idiom. Bound BY REFERENCE as uPan's uniform value (init(),
+   * matching b2's `uPan: { value: this.pan }`) so mutating this Vector2 in
+   * place is all that's needed to update the GPU uniform — no separate
+   * per-frame assignment. Clamped per-axis to ±PAN_CLAMP (update()'s
+   * momentum block).
+   */
+  private pan = new THREE.Vector2(0, 0);
+  /** True while the primary pointer is down (pointer()'s 'down'/'up'/'cancel'). */
+  private held = false;
+  /** This frame's accumulated drag delta (uv), consumed + zeroed by update()'s velocity EMA every frame. */
+  private dragDx = 0;
+  private dragDy = 0;
+  /** EMA'd drag velocity (uv/s) while held; integrates `pan` with exponential friction after release (update()'s momentum block). */
+  private velX = 0;
+  private velY = 0;
+
   init(ctx: VizContext) {
     const { renderer, seed, quality } = ctx;
     this.renderer = renderer;
@@ -241,6 +371,7 @@ class SterileBreath implements Viz {
     this.soloMode = soloMode;
     this.forceLifeFast = params.get('life') === 'fast';
     this.forceStrikeAlways = params.get('strike') === 'always';
+    this.forceBloomAlways = params.get('bloom') === 'always';
     const healParam = params.get('heal');
     if (healParam === 'off') this.healOverride = 0;
     else if (healParam === 'on') this.healOverride = 0.22;
@@ -294,6 +425,20 @@ class SterileBreath implements Viz {
     this.strikePool = new SlotPool(strikeSlots);
     for (let i = 0; i < strikeSlots; i++) this.strikeB.push(new THREE.Vector4(0, 0, 0, 0));
 
+    // Bloom/poke/ripple pools (increment 5): sized to match the SAME
+    // bloomSlots/pokeSlots/rippleSlots budgets passed to buildSterileFragment
+    // below — same array-length-must-agree rule as strikeSlots above. No
+    // secondary baked-constants array needed for any of the three (unlike
+    // strikes' uStrikeB): bloom's amplitude rides the shared uBloomAmp
+    // uniform, poke's envelope is a fixed shader-side curve, and ripple has
+    // no per-instance parameters at all.
+    const bloomSlots = 3;
+    const pokeSlots = 4;
+    const rippleSlots = 4;
+    this.bloomPool = new SlotPool(bloomSlots);
+    this.pokePool = new SlotPool(pokeSlots);
+    this.ripplePool = new SlotPool(rippleSlots);
+
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
@@ -301,9 +446,9 @@ class SterileBreath implements Viz {
       vertexShader: STERILE_VERT,
       fragmentShader: buildSterileFragment({
         strikeSlots,
-        bloomSlots: 3,
-        pokeSlots: 4,
-        rippleSlots: 4,
+        bloomSlots,
+        pokeSlots,
+        rippleSlots,
         lobes: this.full ? 5 : 3,
         fbmOct: this.full ? 3 : 2,
       }),
@@ -312,7 +457,7 @@ class SterileBreath implements Viz {
       uniforms: {
         uCover: { value: new THREE.Vector2(1, 1) },
         uZoom: { value: 1 },
-        uPan: { value: new THREE.Vector2(0, 0) },
+        uPan: { value: this.pan },
         uTime: { value: 0 },
         uSterile: { value: 0 },
         uSoloMode: { value: soloMode },
@@ -335,6 +480,10 @@ class SterileBreath implements Viz {
         uTick: { value: 0 },
         uStrikeA: { value: this.strikePool.slots },
         uStrikeB: { value: this.strikeB },
+        uBloom: { value: this.bloomPool.slots },
+        uBloomAmp: { value: 0 },
+        uPoke: { value: this.pokePool.slots },
+        uRipple: { value: this.ripplePool.slots },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -374,6 +523,13 @@ class SterileBreath implements Viz {
     if (Math.abs(songTime - this.lastSongTime) > SEEK_JUMP_SECONDS) {
       this.strikePool.clearAll();
       this.strikeTimeToNext = 0;
+      // Increment 5: the bloom/poke/ripple pools and the bloom Poisson
+      // schedule are equally stale across a seek/loop — same "due now" reset
+      // idiom as the strike pool above.
+      this.bloomPool.clearAll();
+      this.bloomTimeToNext = 0;
+      this.pokePool.clearAll();
+      this.ripplePool.clearAll();
     }
     this.lastSongTime = songTime;
 
@@ -387,6 +543,10 @@ class SterileBreath implements Viz {
     u.uLifeClock.value = lifeClockAt(songTime) * lifeMul + this.beatBonus;
     u.uPresence.value = p.clumpPresence;
 
+    // prevBassSlow captured BEFORE this frame's EMA update — the condensation
+    // bloom onset detector (below) needs the pre-update value to test a
+    // threshold CROSSING, not just "currently above".
+    const prevBassSlow = this.bassSlow;
     this.bassSlow += (audio.bass - this.bassSlow) * Math.min(1, dt * BASS_SLOW_RATE);
     u.uBreath.value = this.pinnedBreath !== null ? this.pinnedBreath : this.bassSlow * p.breathAmp;
 
@@ -445,6 +605,77 @@ class SterileBreath implements Viz {
     }
 
     this.ageStrikes(dt);
+
+    // Condensation bloom firing (increment 5, the breath motif): a
+    // slow-bass threshold CROSSING (prevBassSlow below BLOOM_ONSET_THRESHOLD,
+    // this.bassSlow now at/above it), cooldown-gated so a sustained loud
+    // passage births one bloom per swell rather than one per frame — meant
+    // to catch the intro's alternating lo pulses, one bloom each. PLUS an
+    // independent Poisson ambient channel (p.bloomRate/min, `?bloom=always`
+    // forces BLOOM_DEBUG_RATE for screenshots) so the motif still breathes
+    // without a mic. Both channels share fireBloom's centre-biased
+    // pickLivingPoint draw.
+    this.bloomCooldown = Math.max(0, this.bloomCooldown - dt);
+    if (
+      this.bloomCooldown <= 0 &&
+      prevBassSlow < BLOOM_ONSET_THRESHOLD &&
+      this.bassSlow >= BLOOM_ONSET_THRESHOLD
+    ) {
+      this.bloomCooldown = BLOOM_ONSET_COOLDOWN;
+      this.fireBloom();
+    }
+    const bloomRatePerMin = this.forceBloomAlways ? BLOOM_DEBUG_RATE : p.bloomRate;
+    if (bloomRatePerMin > 0) {
+      this.bloomTimeToNext -= dt;
+      while (this.bloomTimeToNext <= 0) {
+        this.fireBloom();
+        this.bloomTimeToNext += nextPoissonDelay(this.rand, bloomRatePerMin);
+      }
+    }
+    u.uBloomAmp.value = p.bloomAmp;
+
+    // Fixed-lifetime pools (increment 5): unlike strikePool's hand-rolled
+    // heal/fail deactivation (ageStrikes), bloom/poke/ripple each have one
+    // fixed CPU-side lifetime that already mirrors their GPU envelope's own
+    // span exactly, so SlotPool's own lifetime-based auto-deactivation
+    // (age()'s `lifetime > 0` path) is sufficient — no per-slot bookkeeping
+    // needed here.
+    this.bloomPool.age(dt, BLOOM_LIFETIME);
+    this.pokePool.age(dt, POKE_LIFETIME);
+    this.ripplePool.age(dt, RIPPLE_LIFETIME);
+
+    // Pointer drag momentum (increment 5, verbatim a1/a2/a3/b1/b2 house
+    // idiom): held — EMA the instantaneous velocity from this frame's
+    // accumulated drag delta (pointer()'s 'move' already applied the 1:1
+    // pan directly; this branch only tracks velocity for the release fling).
+    // Released — integrate `pan` by the decaying velocity. No ambient drift.
+    const zoom = u.uZoom.value as number;
+    if (this.held) {
+      if (dt > 1e-5) {
+        const kv = Math.min(1, dt * VEL_EMA_RATE);
+        const instVelX = Math.min(VEL_MAX, Math.max(-VEL_MAX, this.dragDx / dt));
+        const instVelY = Math.min(VEL_MAX, Math.max(-VEL_MAX, this.dragDy / dt));
+        this.velX += (instVelX - this.velX) * kv;
+        this.velY += (instVelY - this.velY) * kv;
+      }
+      this.dragDx = 0;
+      this.dragDy = 0;
+    } else if (this.velX !== 0 || this.velY !== 0) {
+      this.pan.x += (this.velX * this.cover.x / zoom) * dt;
+      this.pan.y += (this.velY * this.cover.y / zoom) * dt;
+      const friction = Math.exp(-MOMENTUM_FRICTION * dt);
+      this.velX *= friction;
+      this.velY *= friction;
+      if (Math.abs(this.velX) < MOMENTUM_STOP_SPEED) this.velX = 0;
+      if (Math.abs(this.velY) < MOMENTUM_STOP_SPEED) this.velY = 0;
+    }
+
+    // Per-axis clamp (not b2's circular MAX_PAN — see PAN_CLAMP's doc): zero
+    // velocity on a clamped axis so momentum doesn't keep fighting the wall.
+    if (this.pan.x > PAN_CLAMP) { this.pan.x = PAN_CLAMP; this.velX = 0; }
+    else if (this.pan.x < -PAN_CLAMP) { this.pan.x = -PAN_CLAMP; this.velX = 0; }
+    if (this.pan.y > PAN_CLAMP) { this.pan.y = PAN_CLAMP; this.velY = 0; }
+    else if (this.pan.y < -PAN_CLAMP) { this.pan.y = -PAN_CLAMP; this.velY = 0; }
   }
 
   /**
@@ -462,8 +693,14 @@ class SterileBreath implements Viz {
    * disagree about where the front roughly is. Returns null after every try
    * fails — late acts are mostly sterile by then, so skipping the strike
    * entirely is the CORRECT behaviour, not a bug to work around.
+   *
+   * `centerBias` (increment 5, consumed by fireBloom): when true, the random
+   * screen-uv sample's offset from centre is scaled by BLOOM_CENTER_BIAS
+   * before mapping to field-uv, biasing candidates toward the frame's centre
+   * third — condensation blooms read as THE subject when they fire, rather
+   * than appearing anywhere in the visible field the way a strike can.
    */
-  private pickLivingPoint(): { x: number; y: number } | null {
+  private pickLivingPoint(centerBias = false): { x: number; y: number } | null {
     const u = this.material.uniforms;
     const cover = u.uCover.value as THREE.Vector2;
     const zoom = u.uZoom.value as number;
@@ -473,8 +710,12 @@ class SterileBreath implements Viz {
     const sterile = u.uSterile.value as number;
     const R = this.rMaxEff * (1 - sterile);
     for (let i = 0; i < STRIKE_PICK_TRIES; i++) {
-      const sx = this.rand();
-      const sy = this.rand();
+      let sx = this.rand();
+      let sy = this.rand();
+      if (centerBias) {
+        sx = 0.5 + (sx - 0.5) * BLOOM_CENTER_BIAS;
+        sy = 0.5 + (sy - 0.5) * BLOOM_CENTER_BIAS;
+      }
       const fx = (sx - 0.5) * cover.x / zoom + 0.5 + pan.x;
       const fy = (sy - 0.5) * cover.y / zoom + 0.5 + pan.y;
       const dx = (fx - pocket.x) * stretch.x;
@@ -507,6 +748,65 @@ class SterileBreath implements Viz {
     const angle = this.rand() * Math.PI * 2;
     const healRate = this.healOverride !== null ? this.healOverride : p.strikeHeal;
     this.strikeB[idx].set(rMax, aspect, angle, healRate);
+  }
+
+  /**
+   * Fires one condensation bloom (increment 5) at a RANDOM living point,
+   * centre-biased (pickLivingPoint(true), BLOOM_CENTER_BIAS) so it reads as
+   * the frame's subject — the slow-bass-onset and Poisson-ambient trigger
+   * channels in update() both share this one entry point. Skips entirely on
+   * a pickLivingPoint failure, same "late acts are mostly sterile" behaviour
+   * as fireStrike. No baked constants beyond xy: uBloomAmp (shared, not
+   * per-instance) and the shader's own fixed grow/fade envelope cover the
+   * rest.
+   */
+  private fireBloom() {
+    const point = this.pickLivingPoint(true);
+    if (!point) return;
+    const idx = this.bloomPool.fire();
+    const a = this.bloomPool.slots[idx];
+    a.x = point.x;
+    a.y = point.y;
+  }
+
+  /**
+   * Fires one condensation bloom at an EXACT field-uv point — act 6's
+   * poke-births-a-bloom route (pointer()'s 'down' handler): no living-point
+   * search, no centre bias, the tap itself IS the point.
+   */
+  private fireBloomAt(fx: number, fy: number) {
+    const idx = this.bloomPool.fire();
+    const a = this.bloomPool.slots[idx];
+    a.x = fx;
+    a.y = fy;
+  }
+
+  /**
+   * Fires one rebloom poke (increment 5) at field-uv (fx, fy) — exactly the
+   * tap point, no living-point search (unlike strikes/blooms, a poke is
+   * placed wherever the user touched, living or already sterile). Only xy
+   * needs setting: SlotPool.fire() already resets z/w, and the shader's
+   * sbPokeRadius envelope is fixed (no per-instance uStrikeB-style constants
+   * to bake).
+   */
+  private firePoke(fx: number, fy: number) {
+    const idx = this.pokePool.fire();
+    const a = this.pokePool.slots[idx];
+    a.x = fx;
+    a.y = fy;
+  }
+
+  /**
+   * Fires one near-white expanding ripple ring at field-uv (fx, fy) — the
+   * display-side feedback half of every tap (house idiom, b2's
+   * activateRipple), regardless of whether the tap carved a poke or (act 6)
+   * birthed a bloom.
+   */
+  private fireRipple(fx: number, fy: number) {
+    const idx = this.ripplePool.fire();
+    const a = this.ripplePool.slots[idx];
+    a.x = fx;
+    a.y = fy;
   }
 
   /**
@@ -563,7 +863,10 @@ class SterileBreath implements Viz {
    * max distance (phi, WITHOUT the front's noise wobble) from THIS play's
    * own uPocket/uStretch draw to any of the four corners of the act-1
    * camera's visible field rect — zoomAt(0) (=1.45, the opening act's
-   * zoom), pan=(0,0) (uPan is always 0 this increment), the CURRENT
+   * zoom), pan=(0,0) (the rect's ORIGINAL framing at open, deliberately
+   * evaluated independent of any later pointer-driven uPan — increment 5's
+   * drag pans the live scene but never retroactively changes where "the
+   * front was invisible at t=0" was calibrated), the CURRENT
    * this.cover — times the wobble's exact analytic upper bound
    * (WOBBLE_MAX_MULT) and a small epsilon (R_MAX_EFF_EPS). Uploaded as
    * uRMax, this is the R the front starts at when uSterile=0 (see
@@ -596,6 +899,74 @@ class SterileBreath implements Viz {
       }
     }
     return maxPhi * WOBBLE_MAX_MULT * R_MAX_EFF_EPS;
+  }
+
+  /**
+   * Canvas pointer/touch gestures (increment 5), the BRIEFING.md Interaction
+   * contract: poke on 'down' (no tap-vs-drag threshold — a pure tap fires no
+   * 'move', so pan/momentum never trigger, disambiguation falls out free),
+   * drag pans 1:1 (b2's verbatim sign convention: `pan += e.d * cover /
+   * zoom`, NOT the naively-derived negation — replicated exactly since it's
+   * the tested, shipped a1/a2/a3/b1/b2 house behaviour), momentum after
+   * release handled entirely in update() (this method only tracks
+   * held/dragDx/dragDy/velocity state).
+   */
+  pointer(e: VizPointerEvent) {
+    const zoom = this.material.uniforms.uZoom.value as number;
+    const cover = this.cover;
+
+    if (e.type === 'down') {
+      this.held = true;
+      this.dragDx = 0;
+      this.dragDy = 0;
+      this.velX = 0;
+      this.velY = 0;
+
+      // Screen uv -> field uv, the house formula (shared with the display
+      // shader itself, sterileShader.ts's main()). No wrap: b3's S-field is
+      // a fixed pocket, not a toroidal/tiled page like b2's catalogue.
+      const fx = (e.x - 0.5) * cover.x / zoom + 0.5 + this.pan.x;
+      const fy = (e.y - 0.5) * cover.y / zoom + 0.5 + this.pan.y;
+
+      const actIndex = this.section ? this.section.actIndex : 0;
+      if (actIndex === BLOOM_ONLY_ACT_INDEX) {
+        // Act 6 ('last-breath'): the world is gone, only breath remains — a
+        // tap births a condensation bloom exactly at the tap point instead
+        // of carving a poke.
+        this.fireBloomAt(fx, fy);
+      } else {
+        this.firePoke(fx, fy);
+        // Small uTick kick so the poke's rim pops (sterileShader.ts's
+        // eventRimD/POKE_RIM_YOUNG) — Math.max'd, never overwritten, so a
+        // poke landing during a hot bass onset doesn't dim the tick.
+        this.tick = Math.max(this.tick, POKE_TICK_KICK);
+      }
+      // Ripple fires unconditionally — a tap's feedback reads the same
+      // whether it carved a poke or (act 6) birthed a bloom.
+      this.fireRipple(fx, fy);
+      return;
+    }
+
+    if (e.type === 'move') {
+      if (!this.held) return;
+      this.pan.x += (e.dx * cover.x) / zoom;
+      this.pan.y += (e.dy * cover.y) / zoom;
+      this.dragDx += e.dx;
+      this.dragDy += e.dy;
+      return;
+    }
+
+    if (e.type === 'up') {
+      this.held = false;
+      return;
+    }
+
+    // 'cancel': no fling from an interrupted gesture.
+    this.held = false;
+    this.velX = 0;
+    this.velY = 0;
+    this.dragDx = 0;
+    this.dragDy = 0;
   }
 
   render() {
