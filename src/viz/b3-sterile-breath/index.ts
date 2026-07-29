@@ -210,29 +210,43 @@ const BLOOM_ONLY_ACT_INDEX = 6;
  * INSTEAD of a poke-carve — the world is gone, only breath remains. Drag
  * pans `this.pan` (now a live field, not the fixed (0,0) increment 4's docs
  * described) with the verbatim a1/a2/a3/b1/b2 momentum idiom, clamped per-
- * axis to ±PAN_CLAMP. Ghost trails and the scripted camera remain for later
- * increments on top of this.
+ * axis to ±PAN_CLAMP.
+ *
+ * Increment 6 lands winner-clump ghost stamps: rare, small, low-contrast
+ * ink marks inside a clump's own interior, hinting at the other four
+ * tracks' visual motifs (comb cell / vein filament / specimen silhouette /
+ * falling chain — a2/b1/b2/a3's echoes respectively) before that clump gets
+ * scrubbed away. All the actual mechanism — winner-clump tracking, the
+ * per-epoch hosting hash, the four motif SDFs — lives in sterileShader.ts
+ * (see its own top doc); index.ts's only job is wiring `uGhostAmp` from
+ * `ActParams.ghostAmp` every frame and parsing the two new debug params
+ * below. The scripted camera remains for a later increment on top of this.
  *
  * Debug: `?solo=<0-5>` selects a solo layer (0 = full composed scene,
  * default; `?solo=biomass` -> mode 1, the biomass field alone over a flat
  * mid-gray background across the whole frame, ignoring S entirely; `?solo=
  * front` -> mode 2, the S-field diagnostic (living side dark gray, sterile
  * side light gray, scrub line + glints at full strength, no biomass);
- * `?solo=events` -> mode 3 (NEW this increment), uSterile pinned to 0 here
- * so ONLY strikes carve — neutral mid-gray field, no biomass, no front,
- * strike interiors + scrub-line rims + tick pops at full visibility; 4
- * ghosts lands in a later increment and currently falls through to the
- * composed scene; 5 sterile forces the real sterile-side treatment
- * full-screen), `?life=fast` multiplies the lifecycle clock's advance by
- * LIFE_FAST_MUL (12) so clump birth/death is visible in seconds, `?breath=
- * <0..1>` pins uBreath to a constant (bypassing audio), `?sterile=<0..1>`
- * pins uSterile to a constant (bypassing sterileAt's envelope), `?glint=
- * <0..1>` pins uGlint to a constant (bypassing audio), `?strike=always`
- * forces the ambient Poisson strike rate to 60/min regardless of act,
- * `?heal=off`/`?heal=on` overrides EVERY newly-fired strike's baked
- * healRate to 0 / 0.22 regardless of act (existing strikes keep whatever
- * they were baked with), `?bloom=always` forces the ambient Poisson bloom
- * rate to BLOOM_DEBUG_RATE (30/min) regardless of act — all for
+ * `?solo=events` -> mode 3, uSterile pinned to 0 here so ONLY strikes carve
+ * — neutral mid-gray field, no biomass, no front, strike interiors +
+ * scrub-line rims + tick pops at full visibility; `?solo=ghosts` -> mode 4
+ * (NEW this increment), biomass alone over a flat mid-gray ground (same
+ * "ignore S" convention as mode 1) with every clump forced to host a stamp
+ * every epoch, drawn at full alpha in bright cream instead of the composed
+ * scene's faint ink mix — all four motifs visible immediately on load; 5
+ * sterile forces the real sterile-side treatment full-screen), `?life=fast`
+ * multiplies the lifecycle clock's advance by LIFE_FAST_MUL (12) so clump
+ * birth/death is visible in seconds, `?breath=<0..1>` pins uBreath to a
+ * constant (bypassing audio), `?sterile=<0..1>` pins uSterile to a constant
+ * (bypassing sterileAt's envelope), `?glint=<0..1>` pins uGlint to a
+ * constant (bypassing audio), `?strike=always` forces the ambient Poisson
+ * strike rate to 60/min regardless of act, `?heal=off`/`?heal=on` overrides
+ * EVERY newly-fired strike's baked healRate to 0 / 0.22 regardless of act
+ * (existing strikes keep whatever they were baked with), `?bloom=always`
+ * forces the ambient Poisson bloom rate to BLOOM_DEBUG_RATE (30/min)
+ * regardless of act, `?ghost=always` (NEW this increment) forces every
+ * winner clump to host a ghost stamp every epoch (sterileShader.ts's
+ * uGhostForce) and uGhostAmp to 1.0 regardless of act — all for
  * deterministic screenshots — plus the standard `?t=`, `?q=`, `?debug=1`
  * handled outside this module (VizHost / QualityManager).
  */
@@ -299,6 +313,9 @@ class SterileBreath implements Viz {
   /** `?heal=off` / `?heal=on` — overrides every NEWLY-fired strike's baked healRate (0 / 0.22) regardless of act; null = use the act's own ActParams.strikeHeal. */
   private healOverride: number | null = null;
 
+  /** `?ghost=always` (increment 6) — forces sterileShader.ts's uGhostForce uniform true (every winner clump hosts a stamp every epoch) AND uGhostAmp to 1.0 in update(), regardless of the current act's ghostAmp. */
+  private forceGhostAlways = false;
+
   /** Fast-smoothed bass (BASS_FAST_RATE) chasing a slower EMA of itself (BASS_ONSET_EMA_RATE) — the bass onset detector's two EMAs (house recipe, see update()'s doc). */
   private bassFast = 0;
   private bassOnsetEma = 0;
@@ -364,6 +381,8 @@ class SterileBreath implements Viz {
       soloMode = 2;
     } else if (soloParam === 'events') {
       soloMode = 3;
+    } else if (soloParam === 'ghosts') {
+      soloMode = 4;
     } else {
       const parsedSolo = soloParam !== null ? parseInt(soloParam, 10) : NaN;
       soloMode = Number.isFinite(parsedSolo) ? parsedSolo : 0;
@@ -372,6 +391,12 @@ class SterileBreath implements Viz {
     this.forceLifeFast = params.get('life') === 'fast';
     this.forceStrikeAlways = params.get('strike') === 'always';
     this.forceBloomAlways = params.get('bloom') === 'always';
+    // `?ghost=always` (increment 6): forces sterileShader.ts's per-epoch
+    // ghost-hosting hash check to always-true (uGhostForce) AND uGhostAmp to
+    // 1.0 below (update()) regardless of the current act's ghostAmp — the
+    // same "deterministic for screenshots" idiom as forceStrikeAlways/
+    // forceBloomAlways above.
+    this.forceGhostAlways = params.get('ghost') === 'always';
     const healParam = params.get('heal');
     if (healParam === 'off') this.healOverride = 0;
     else if (healParam === 'on') this.healOverride = 0.22;
@@ -484,6 +509,12 @@ class SterileBreath implements Viz {
         uBloomAmp: { value: 0 },
         uPoke: { value: this.pokePool.slots },
         uRipple: { value: this.ripplePool.slots },
+        // Winner-clump ghost stamps (increment 6). uGhostAmp is set every
+        // frame in update() (ActParams.ghostAmp, or 1.0 under
+        // forceGhostAlways); uGhostForce is set once here since
+        // forceGhostAlways never changes after init()'s URL parse.
+        uGhostAmp: { value: 0 },
+        uGhostForce: { value: this.forceGhostAlways ? 1 : 0 },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -558,6 +589,10 @@ class SterileBreath implements Viz {
 
     u.uHeat.value = p.heat;
     u.uPaleness.value = p.paleness;
+    // uGhostAmp: winner-clump ghost-stamp ink strength (increment 6) — rides
+    // ActParams.ghostAmp (already 0 in the last two acts, by data) unless
+    // `?ghost=always` forces it to 1.0 for deterministic screenshots.
+    u.uGhostAmp.value = this.forceGhostAlways ? 1.0 : p.ghostAmp;
 
     // uFrontDrift: CPU-accumulated domain offset for the S-field's noise
     // wobble (sbSterility, sterileShader.ts) — slightly different per-axis

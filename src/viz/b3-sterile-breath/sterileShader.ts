@@ -62,6 +62,37 @@
  * by the front shows its scrubbed half gone, revealing the sterile ground
  * beneath instead of biomass.
  *
+ * Ghost stamps (increment 6, `sbBiomass`'s winner-clump tracking + the
+ * sb*Motif family below): the album closer occasionally lets the biomass
+ * carry a faint, half-remembered echo of one of the other four tracks'
+ * visual motifs. sbBiomass's 3x3 clump search already tracks the NEAREST
+ * present clump every fragment (`ccNearest`/`sdNearest`, kept for the
+ * colour-blend/crowding terms) -- since a clump SDF is negative inside and
+ * `sdNearest` is the running MINIMUM across the neighbourhood, that nearest
+ * clump IS, by construction, the DEEPEST (most-interior) present clump at
+ * this fragment: no second tracking pass needed, just a `winnerCell` alias
+ * on the existing `ccNearest` once the loop ends. A cheap post-loop
+ * `sbClumpLife` re-call on just that one cell recovers its epoch (needed to
+ * re-roll the ghost-hosts-or-not decision and the motif choice every time
+ * the clump respawns, not just once ever) and its lifecycle envelope (the
+ * stamp scales in/out with the SAME value that scales the clump's own lobe
+ * radii). A per-epoch hash (`GHOST_PROB` = 0.07) decides whether the winner
+ * clump hosts a stamp this epoch; two more hash draws pick which of the
+ * four motifs (`sbGhostMotifMask`: comb cell / vein filament / specimen
+ * silhouette / falling chain -- a2/b1/b2/a3's echoes respectively) and its
+ * rotation. The stamp is drawn as INK -- a low-alpha (0.18 * uGhostAmp)
+ * mix-darken of the composited colour toward the clump's own deep interior
+ * tone, never a new bright colour or an additive glow (the anti-goal: it
+ * must read as something half-remembered in the tissue, not an imported
+ * shape) -- and masked twice: an inset band on `sdNearest` (the winner
+ * clump's own SDF, already in hand) keeps it away from the silhouette edge,
+ * and a `livingMask` multiply means a clump half-scrubbed by the front
+ * shows only the stamp's living-side half, automatically, the same
+ * mechanism that already truncates the clump's own silhouette. `uGhostAmp`
+ * rides `ActParams.ghostAmp` (already 0 in the last two acts, so ghosts
+ * fade out well before the world does). `?ghost=always` (`uGhostForce`)
+ * forces every epoch to host a stamp, for deterministic screenshots.
+ *
  * The scrub line + droplet glints (main(), drawn LAST so they pop over
  * everything): a bright cold-white band straddling the S=0 zero-crossing,
  * sparse hash-driven glints hashed by arc-position (angle * current
@@ -76,10 +107,15 @@
  * index.ts pins uSterile to 0 in this mode) -- neutral mid-gray field, no
  * biomass, no front (R stays at uRMax so it essentially never trips inside
  * the frame), ONLY strikes carve visible sterile territory, scrub-line rims
- * + young-strike tick pops forced to full strength alongside mode 2; 4
- * ghosts has no dedicated layer yet and falls through to the composed
- * scene; 5 = the real sterile-side treatment forced full-screen (was a flat
- * placeholder in increments 1-2; now the genuine layered `sbSterileSide`).
+ * + young-strike tick pops forced to full strength alongside mode 2; 4 =
+ * ghost-stamp diagnostic (increment 6) -- flat dark-gray clump silhouettes
+ * over a flat mid-gray ground across the WHOLE frame (ignoring S, same
+ * "ignore S entirely" convention as mode 1), stamps forced present every
+ * epoch (sbBiomass's `ghostDebug` param) and drawn at FULL alpha in a
+ * bright cream tone (rather than the composed scene's faint ink mix) so all
+ * four motifs are trivially screenshot-able; 5 = the real sterile-side
+ * treatment forced full-screen (was a flat placeholder in increments 1-2;
+ * now the genuine layered `sbSterileSide`).
  *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
@@ -168,6 +204,16 @@ uniform float uSterileSpec; // 0..1 clinical specular sheen of the sterile surfa
 // (tick *= exp(-7*dt)) kicked to 1 on every bass onset (index.ts) --
 // independent of any existing scalar, feeds the young-strike rim pop only.
 uniform float uTick;
+
+// Winner-clump ghost stamps (increment 6) -- see this file's top doc for
+// the full mechanism. uGhostAmp rides ActParams.ghostAmp (0..1, already 0
+// in the final two acts); uGhostForce is the '?ghost=always' debug flag's
+// force switch, read as a bool via the house >0.5 convention (no GLSL
+// uniform-bool plumbing needed) rather than a compile-time constant, since
+// every other runtime debug toggle in this shader (uSoloMode, the
+// pinned-value uniforms) is a uniform too, not a template-baked literal.
+uniform float uGhostAmp;
+uniform float uGhostForce;
 
 // Increment 2-8 layer budgets, baked as compile-time constants. Every
 // budget is now a real consumed constant (LOBES/FBM_OCT since increment 2,
@@ -329,6 +375,27 @@ vec3 sbClumpCrown(vec2 cc) {
   return mix(hotCrown, rustGreen, step(familyH, 0.25));
 }
 
+// Per-clump base silhouette radius (0.55/CLUMP_FREQ scaled per clump by a
+// hash in [0.55, 1.05]) -- factored out of sbClumpSd (increment 6) so the
+// ghost-stamp winner lookup (sbBiomass, after its 3x3 search) can recover
+// the SAME radius for exactly one cell (the winner) without re-deriving the
+// hash literal a second time, guaranteeing the stamp's size budget can never
+// silently drift from the clump's own silhouette scale.
+float sbClumpBaseR(vec2 cc) {
+  float baseHash = sbHash21(cc + vec2(41.1, 19.3));
+  return (0.55 / CLUMP_FREQ) * mix(0.55, 1.05, baseHash);
+}
+
+// Per-clump anchor point (cell-centre plus a small per-epoch jitter) --
+// same extraction reasoning as sbClumpBaseR above; epoch is passed in
+// (rather than re-derived) since every caller already has it from its own
+// sbClumpLife call.
+vec2 sbClumpAnchor(vec2 cc, float epoch) {
+  vec2 cellCenter = (cc + vec2(0.5)) / CLUMP_FREQ;
+  vec2 jitterH = sbHash22(cc + vec2(epoch * 5.1 + 3.3, epoch * 2.7 + 8.8));
+  return cellCenter + (jitterH - 0.5) * (0.5 / CLUMP_FREQ);
+}
+
 // Signed distance to clump cc's silhouette at field-uv point p: a smin union
 // of LOBES circular lobes hashed around the cell's anchor. Lobe centre
 // spread is kept SMALLER than the lobe radii (offsets within 0.55 x base
@@ -347,12 +414,8 @@ float sbClumpSd(vec2 fieldUv, vec2 cc, float lifeClock, float presence, float br
   float scaleEnv = sbClumpLife(cc, epoch, lifeClock, presence);
   if (scaleEnv < 0.01) return 9.0;
 
-  vec2 cellCenter = (cc + vec2(0.5)) / CLUMP_FREQ;
-  vec2 jitterH = sbHash22(cc + vec2(epoch * 5.1 + 3.3, epoch * 2.7 + 8.8));
-  vec2 anchor = cellCenter + (jitterH - 0.5) * (0.5 / CLUMP_FREQ);
-
-  float baseHash = sbHash21(cc + vec2(41.1, 19.3));
-  float baseR = (0.55 / CLUMP_FREQ) * mix(0.55, 1.05, baseHash);
+  vec2 anchor = sbClumpAnchor(cc, epoch);
+  float baseR = sbClumpBaseR(cc);
 
   float clumpPhaseHash = sbHash21(cc + vec2(6.6, 22.2));
   float breathScale = 1.0 + 0.06 * breath * sin(6.2831853 * (uBreathPhase + clumpPhaseHash));
@@ -392,6 +455,131 @@ float sbWatermarkSd(vec2 fieldUv) {
   return sdUnion;
 }
 
+// Ghost-stamp constants (increment 6) -- see this file's top doc for the
+// full winner-clump mechanism. GHOST_PROB is the per-epoch hosting chance;
+// GHOST_STAMP_FRAC bounds a stamp's footprint to a fraction of its clump's
+// own base radius; GHOST_INSET_FRAC (also relative to baseR) is the width
+// of the soft fade band keeping every stamp off the silhouette edge;
+// GHOST_ALPHA is the composed scene's ink-mix strength (scaled further by
+// uGhostAmp). GHOST_DEBUG_GRAY/GHOST_DEBUG_CREAM are solo-mode-4-only
+// (uSoloMode == 4): a flat dark-gray silhouette so the four motifs read at
+// a glance, and a bright warm cream for the stamp itself at full alpha --
+// never used in the composed scene, where the stamp always mixes toward
+// the clump's OWN interior tone instead of a new colour (the anti-goal:
+// stamps must never read as importing another track's geometry).
+const float GHOST_PROB = 0.07;
+const float GHOST_STAMP_FRAC = 0.6;
+const float GHOST_INSET_FRAC = 0.28;
+const float GHOST_ALPHA = 0.18;
+const vec3 GHOST_DEBUG_GRAY = vec3(0.2);
+const vec3 GHOST_DEBUG_CREAM = vec3(0.97, 0.93, 0.78);
+
+// Unsigned distance from p to segment a-b (iq's standard construction) --
+// shared by every ghost motif that needs a capsule-like stroke (the vein
+// filament's chained bows below).
+float sbSdSegment(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a;
+  vec2 ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+// iq's hexagon SDF (flat-top, takes the APOTHEM/inradius) -- the same
+// construction as a2-hive's wallShader.ts sdHexagon, sb-prefixed per house
+// convention since it is its own independent copy here, not a shared
+// import.
+float sbSdHexagon(vec2 p, float r) {
+  const vec3 k = vec3(-0.8660254, 0.5, 0.5773503);
+  p = abs(p);
+  p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+  p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+  return length(p) * sign(p.y);
+}
+
+// Motif 0 -- COMB CELL (a2-hive echo): one hexagon outline plus a partial
+// arc of a neighbouring hex, suggesting the golden lattice without drawing
+// enough of it to read as an imported grid.
+float sbCombMotif(vec2 rp, float stampR) {
+  float apothem = stampR * 0.5;
+  float lineW = stampR * 0.09;
+  float d0 = abs(sbSdHexagon(rp, apothem)) - lineW;
+  float aa0 = fwidth(d0) * 1.25 + 0.0006;
+  float m0 = 1.0 - smoothstep(0.0, aa0, d0);
+
+  vec2 nOff = vec2(apothem * 1.85, 0.0);
+  vec2 rp2 = rp - nOff;
+  float ang2 = atan(rp2.y, rp2.x);
+  float arcGate = smoothstep(1.6, 2.2, abs(ang2));
+  float d1 = abs(sbSdHexagon(rp2, apothem)) - lineW;
+  float aa1 = fwidth(d1) * 1.25 + 0.0006;
+  float m1 = (1.0 - smoothstep(0.0, aa1, d1)) * arcGate;
+
+  return max(m0, m1);
+}
+
+// Motif 1 -- VEIN FILAMENT (b1-biosphere echo): a chain of 3 bowed capsule
+// segments, each thinner than the last, tapering toward its tip.
+float sbVeinMotif(vec2 rp, float stampR) {
+  vec2 p0 = vec2(-stampR * 0.55, -stampR * 0.10);
+  vec2 p1 = vec2(-stampR * 0.05, stampR * 0.18);
+  vec2 p2 = vec2(stampR * 0.40, stampR * 0.05);
+  vec2 p3 = vec2(stampR * 0.75, -stampR * 0.12);
+  float r0 = stampR * 0.10;
+  float r1 = stampR * 0.065;
+  float r2 = stampR * 0.035;
+
+  float d = min(
+    sbSdSegment(rp, p0, p1) - mix(r0, r1, 0.5),
+    min(sbSdSegment(rp, p1, p2) - mix(r1, r2, 0.5), sbSdSegment(rp, p2, p3) - r2)
+  );
+  float aa = fwidth(d) * 1.25 + 0.0006;
+  return 1.0 - smoothstep(0.0, aa, d);
+}
+
+// Motif 2 -- SPECIMEN SILHOUETTE (b2-terminal-taxonomy echo): a small
+// ellipse outline with one interior horizontal band, suggesting a specimen
+// plate.
+float sbSpecimenMotif(vec2 rp, float stampR) {
+  vec2 axes = vec2(stampR * 0.62, stampR * 0.38);
+  float dEllipse = length(rp / axes) - 1.0;
+  float ringW = 0.16;
+  float dRing = abs(dEllipse) - ringW;
+  float aaR = fwidth(dRing) * 1.25 + 0.0006;
+  float ring = 1.0 - smoothstep(0.0, aaR, dRing);
+
+  float bandHalf = stampR * 0.05;
+  float aaBY = fwidth(rp.y) * 1.25 + 0.0006;
+  float bandY = 1.0 - smoothstep(bandHalf, bandHalf + aaBY, abs(rp.y));
+  float bandX = 1.0 - smoothstep(axes.x * 0.75, axes.x * 0.75 + 0.01, abs(rp.x));
+
+  return max(ring, bandY * bandX);
+}
+
+// Motif 3 -- FALLING CHAIN (a3-biome-dominoes echo): three diminishing
+// filled dots along a slight arc, suggesting the domino cascade.
+float sbChainMotif(vec2 rp, float stampR) {
+  vec2 c0 = vec2(-stampR * 0.5, stampR * 0.28);
+  vec2 c1 = vec2(stampR * 0.02, -stampR * 0.04);
+  vec2 c2 = vec2(stampR * 0.48, -stampR * 0.32);
+  float r0 = stampR * 0.16;
+  float r1 = stampR * 0.11;
+  float r2 = stampR * 0.07;
+
+  float d = min(length(rp - c0) - r0, min(length(rp - c1) - r1, length(rp - c2) - r2));
+  float aa = fwidth(d) * 1.25 + 0.0006;
+  return 1.0 - smoothstep(0.0, aa, d);
+}
+
+// Picks the winner clump's motif by id (0-3, see sbBiomass's ghost-stamp
+// block for how motifId is hashed) -- an if/if/if chain rather than a
+// GLSL ES 1.00-incompatible switch statement.
+float sbGhostMotifMask(int motifId, vec2 rp, float stampR) {
+  if (motifId == 0) return sbCombMotif(rp, stampR);
+  if (motifId == 1) return sbVeinMotif(rp, stampR);
+  if (motifId == 2) return sbSpecimenMotif(rp, stampR);
+  return sbChainMotif(rp, stampR);
+}
+
 // Full biomass field composited over ground at field-uv point fieldUv:
 // searches the 3x3 clump-cell neighbourhood, smin-unions every present
 // clump's SDF for the coverage field, tracks the two nearest clumps for a
@@ -405,7 +593,13 @@ float sbWatermarkSd(vec2 fieldUv) {
 // into edgeMask and rim so a clump half-overtaken by the sterilization front
 // shows its scrubbed half gone, revealing bare ground instead of biomass.
 // Solo mode 1 passes a constant 1.0 here to ignore S entirely, as before.
-vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask) {
+// ghostDebug (increment 6, true only for uSoloMode == 4) swaps the crown-
+// shaded biomassCol for a flat dark-gray silhouette (skipping the
+// speckle/crowd/paleness modifiers too, so the four ghost motifs read
+// cleanly against a plain ground) and draws the winner-clump stamp at FULL
+// alpha in a bright cream rather than the composed scene's faint ink mix —
+// see the ghost-stamp block at the end of this function.
+vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, bool ghostDebug) {
   vec2 n0 = floor(fieldUv * CLUMP_FREQ);
 
   float sdUnion = 9.0;
@@ -462,26 +656,31 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask) {
   vec3 crown = mix(crownNearest, crownSecond, 0.5 * boundaryBlend);
 
   float hHot = clamp(h * mix(0.85, 1.3, uHeat), 0.0, 1.0);
-  vec3 biomassCol = mix(interior, crown, hHot) * mix(1.0, 1.1, uHeat);
+  vec3 biomassCol = ghostDebug ? GHOST_DEBUG_GRAY : mix(interior, crown, hHot) * mix(1.0, 1.1, uHeat);
 
-  // Interior speckle: 2(+)-octave value noise, domain drifting by the
-  // CPU-accumulated uMotionPhase (not raw time) — interior only (gated by h,
-  // excluded from the rim band).
-  vec2 noiseP = fieldUv * CLUMP_FREQ * 9.0 + vec2(uMotionPhase * 0.35, -uMotionPhase * 0.27);
-  float speck = sbFbm(noiseP);
-  biomassCol += (speck - 0.5) * 0.28 * h * (1.0 - rim);
+  // Interior speckle/crowding/paleness modifiers are skipped in ghostDebug
+  // (uSoloMode == 4): the flat silhouette above is deliberately plain so the
+  // four ghost motifs read at a glance, with no competing texture.
+  if (!ghostDebug) {
+    // Interior speckle: 2(+)-octave value noise, domain drifting by the
+    // CPU-accumulated uMotionPhase (not raw time) — interior only (gated by
+    // h, excluded from the rim band).
+    vec2 noiseP = fieldUv * CLUMP_FREQ * 9.0 + vec2(uMotionPhase * 0.35, -uMotionPhase * 0.27);
+    float speck = sbFbm(noiseP);
+    biomassCol += (speck - 0.5) * 0.28 * h * (1.0 - rim);
 
-  // Crowding: darkens valleys where several clumps' edges meet (many nearby
-  // present clumps AND this fragment sits between two near-equidistant
-  // ones).
-  float crowdWeight = smoothstep(2.0, 6.0, float(crowdCount));
-  float valley = 1.0 - clamp((sdSecond - sdNearest) / 0.05, 0.0, 1.0);
-  biomassCol *= 1.0 - crowdWeight * valley * 0.3;
+    // Crowding: darkens valleys where several clumps' edges meet (many
+    // nearby present clumps AND this fragment sits between two
+    // near-equidistant ones).
+    float crowdWeight = smoothstep(2.0, 6.0, float(crowdCount));
+    float valley = 1.0 - clamp((sdSecond - sdNearest) / 0.05, 0.0, 1.0);
+    biomassCol *= 1.0 - crowdWeight * valley * 0.3;
 
-  // Paleness: mixes the biomass's OWN colour (not the bare ground) toward
-  // the chalky remission tone.
-  vec3 pale = vec3(0.72, 0.70, 0.66);
-  biomassCol = mix(biomassCol, pale, uPaleness);
+    // Paleness: mixes the biomass's OWN colour (not the bare ground) toward
+    // the chalky remission tone.
+    vec3 pale = vec3(0.72, 0.70, 0.66);
+    biomassCol = mix(biomassCol, pale, uPaleness);
+  }
 
   vec3 col = mix(ground, biomassCol, edgeMask);
 
@@ -493,6 +692,68 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask) {
   // highlight back out.
   vec3 rimTone = mix(crown, vec3(0.75, 0.55, 0.62), 0.5);
   col = mix(col, rimTone * 1.25, rim * 0.55);
+
+  // Ghost stamp (increment 6): the winner clump is exactly the nearest one
+  // already tracked above -- sdNearest/ccNearest are the running MINIMUM
+  // clump SDF across the 3x3 neighbourhood, and since a clump SDF is
+  // negative INSIDE, that minimum is, by construction, the DEEPEST (most-
+  // interior) present clump at this fragment. Aliased as winnerCell purely
+  // for readability here; no second tracking pass needed. Guarded on
+  // sdNearest < 5.0 (the same "was a real clump, not the search's own empty
+  // sentinel" test sbBiomass already uses above) so an all-absent 3x3
+  // neighbourhood never hosts a stamp.
+  if (sdNearest < 5.0) {
+    vec2 winnerCell = ccNearest;
+    // A cheap post-loop sbClumpLife re-call on just this one cell recovers
+    // its epoch (needed to re-roll the hosts-a-ghost decision and the motif
+    // choice every time the clump respawns, not just once ever) and its
+    // lifecycle envelope scaleEnvW (the stamp scales in/out with the SAME
+    // value that already scales the clump's own lobe radii, see sbClumpSd).
+    float epochW;
+    float scaleEnvW = sbClumpLife(winnerCell, epochW, uLifeClock, uPresence);
+
+    float ghostH = sbHash21(winnerCell + vec2(31.7 + epochW * 7.7, 77.3));
+    bool hostsGhost = ghostDebug || uGhostForce > 0.5 || ghostH < GHOST_PROB;
+
+    if (hostsGhost) {
+      // Two more hash draws: which of the four motifs, and its rotation.
+      float motifH = sbHash21(winnerCell + vec2(52.1 + epochW * 7.7, 9.4));
+      int motifId = int(min(3.0, floor(motifH * 4.0)));
+      float angleH = sbHash21(winnerCell + vec2(83.3 + epochW * 7.7, 15.2));
+      float stampAngle = angleH * 6.2831853;
+
+      vec2 anchorW = sbClumpAnchor(winnerCell, epochW);
+      float baseRW = sbClumpBaseR(winnerCell);
+      float stampR = baseRW * GHOST_STAMP_FRAC * scaleEnvW;
+
+      vec2 lp = fieldUv - anchorW;
+      float ca = cos(stampAngle);
+      float sa = sin(stampAngle);
+      vec2 rp = vec2(ca * lp.x + sa * lp.y, -sa * lp.x + ca * lp.y);
+      float motifMask = sbGhostMotifMask(motifId, rp, stampR);
+
+      // Inset band on the winner clump's OWN sdf (sdNearest, already in
+      // hand) keeps the stamp off the silhouette edge entirely -- never a
+      // stamp bisected by its own clump's rim, only by the (separate)
+      // sterility front via livingMask below.
+      float insetBand = baseRW * GHOST_INSET_FRAC;
+      float interiorMask = 1.0 - smoothstep(-insetBand, 0.0, sdNearest);
+
+      // livingMask here is the SAME multiply edgeMask/rim already apply
+      // above -- a clump half-scrubbed by the front shows only the stamp's
+      // living-side half, automatically, with no extra bookkeeping.
+      float stampCoverage = motifMask * interiorMask * livingMask;
+
+      if (ghostDebug) {
+        col = mix(col, GHOST_DEBUG_CREAM, stampCoverage);
+      } else {
+        // INK, not a new colour: mix-darken toward the clump's own deep
+        // interior tone at a low, further uGhostAmp-scaled alpha -- "half-
+        // remembered in the tissue", never an imported bright shape.
+        col = mix(col, interior, stampCoverage * GHOST_ALPHA * uGhostAmp);
+      }
+    }
+  }
 
   return col;
 }
@@ -762,7 +1023,7 @@ void main() {
   if (uSoloMode == 1) {
     // Biomass field alone over a flat mid-gray background, across the
     // WHOLE frame, ignoring S entirely (unchanged from increment 2).
-    color = sbBiomass(field, vec3(0.5), 1.0);
+    color = sbBiomass(field, vec3(0.5), 1.0, false);
   } else if (uSoloMode == 5) {
     // The real sterile-side treatment, forced full-screen.
     color = sbSterileSide(field, S);
@@ -781,25 +1042,38 @@ void main() {
     // forced to full strength alongside mode 2) -- reads in isolation, with
     // no biomass and no front to compete with it.
     color = mix(vec3(0.5), vec3(0.82), 1.0 - livingMask);
+  } else if (uSoloMode == 4) {
+    // Ghost-stamp diagnostic (increment 6): biomass alone over a flat
+    // mid-gray ground across the WHOLE frame, ignoring S entirely (same
+    // "ignore S" convention as mode 1) -- sbBiomass's ghostDebug=true both
+    // flattens the clump silhouette to dark gray AND forces every present
+    // clump to host a stamp this epoch (drawn at full alpha, bright cream),
+    // so the four motifs are visible immediately on load with no need for
+    // the '?ghost=always' debug flag (that flag still works here too,
+    // harmlessly redundant with ghostDebug's own force).
+    color = sbBiomass(field, vec3(0.5), 1.0, true);
   } else {
-    // Composed scene (mode 0, and 4's fallthrough): the ground itself
-    // transitions from the dark living ground to the cold sterile side at
-    // the same S boundary that truncates the biomass silhouette, so a
-    // scrubbed clump reveals sterile ground beneath it, not the old dark
-    // ground.
+    // Composed scene (mode 0): the ground itself transitions from the dark
+    // living ground to the cold sterile side at the same S boundary that
+    // truncates the biomass silhouette, so a scrubbed clump reveals sterile
+    // ground beneath it, not the old dark ground.
     vec3 groundLiving = vec3(0.045, 0.022, 0.04);
     vec3 sterileBase = sbSterileSide(field, S);
     vec3 ground = mix(groundLiving, sterileBase, 1.0 - livingMask);
-    color = sbBiomass(field, ground, livingMask);
+    color = sbBiomass(field, ground, livingMask, false);
   }
 
   // --- Scrub line + droplet glints, drawn LAST so they pop over
-  // everything above. Skipped for the two solo modes that isolate a single
-  // layer's own colour (1 biomass-only, 5 sterile-only); the diagnostic
-  // modes 2 (front) and 3 (events) both want it forced to full strength
-  // regardless of the current act's glow/glint knobs, so debugging never
-  // depends on song position.
-  if (uSoloMode != 1 && uSoloMode != 5) {
+  // everything above. Skipped for the three solo modes that isolate a
+  // single layer's own colour and deliberately ignore S entirely (1
+  // biomass-only, 4 ghost-stamp diagnostic, 5 sterile-only) — mode 4's
+  // sbBiomass call above already passes a constant livingMask=1.0 the same
+  // way mode 1 does, so drawing a real S=0 scrub line over it would
+  // contradict that "ignore S" framing and clutter the motif screenshot
+  // with an unrelated line. The diagnostic modes 2 (front) and 3 (events)
+  // both want it forced to full strength regardless of the current act's
+  // glow/glint knobs, so debugging never depends on song position.
+  if (uSoloMode != 1 && uSoloMode != 4 && uSoloMode != 5) {
     bool diagFront = (uSoloMode == 2 || uSoloMode == 3);
     float glowStrength = diagFront ? 1.0 : (0.35 + uScrubGlow);
     float glintStrength = diagFront ? 1.0 : uGlint;
