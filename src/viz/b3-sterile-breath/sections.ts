@@ -294,10 +294,10 @@ export function paramsAt(songTime: number): SectionState {
  */
 const STERILE_KEYS: [number, number][] = [
   [0, 0],
-  [12, 0.02],
-  [30, 0.06],
-  [78, 0.20],
-  [104, 0.42],
+  [12, 0.03],
+  [30, 0.12],
+  [78, 0.28],
+  [104, 0.44],
   [110, 0.41],
   [118, 0.34],
   [128, 0.33],

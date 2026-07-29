@@ -1,9 +1,12 @@
 /**
- * Fullscreen display shader for b3 "Sterile Breath". Increment 3: the real
- * signed sterility field S(p) and the full sterile side land here, replacing
+ * Fullscreen display shader for b3 "Sterile Breath". Increment 3 landed the
+ * real signed sterility field S(p) and the full sterile side, replacing
  * increment 1's placeholder vertical split and increment 2's flat pale
- * "blank". Shares b2's passthrough vertex shader shape and the house
- * screen->field mapping formula (b1's dish shader, b2's catalogueShader.ts):
+ * "blank". Increment 4 lands swab strikes -- bass-driven ellipse "wounds"
+ * smax'd into S itself (see sbSterility's strike loop) -- the EXTENSION
+ * POINT that increment-3 doc promised. Shares b2's passthrough vertex
+ * shader shape and the house screen->field mapping formula (b1's dish
+ * shader, b2's catalogueShader.ts):
  *
  *   field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan
  *
@@ -11,21 +14,28 @@
  * pocket (the LAST living place) -- positive = sterile, the zero-crossing
  * IS the scrub line. `phi(p) = length((p - uPocket) * uStretch) * wobble`,
  * `wobble` a low-frequency fbm modulation (`sbFbm`) driving an irregular
- * organic boundary, `S = phi - R`, `R = R_MAX * (1 - uSterile)`: as
- * uSterile climbs from 0 to 1, R shrinks from R_MAX to 0, so the living
+ * organic boundary, `S = phi - R`, `R = uRMax * (1 - uSterile)`: as
+ * uSterile climbs from 0 to 1, R shrinks from uRMax to 0, so the living
  * island (phi < R) shrinks from covering the whole visible field down to a
  * single point at the pocket -- exactly the "condenses to a single seed
- * point" arc the sections.ts doc describes. EXTENSION POINT for increments
- * 4-5: strikes/pokes will smax/smin their own local fields into the value
- * `sbSterility` returns, so every caller below (biomass truncation, the
- * diagnostic solo mode, the scrub line) reads S through that one function
- * and composition only ever touches that one spot.
+ * point" arc the sections.ts doc describes. Every active swab strike (a
+ * rotated-ellipse SDF, index.ts's SlotPool-backed uStrikeA/uStrikeB) is then
+ * smax'd into that same value with a shared blend radius (K_BLEND), so every
+ * caller below (biomass truncation, the diagnostic solo modes, the scrub
+ * line) reads the strike-augmented S through that one function and never
+ * needs to know strikes exist as a separate thing. Increment 5's pokes will
+ * fold in here the same way (smin, pushing the boundary back OUT instead of
+ * carving in).
  *
- * R_MAX derivation (see the constant's own comment): calibrated so the
- * front just kisses the viewport's farthest corner at t=12 (uSterile=0.02,
- * zoomAt=1.45), worst-case ~1.9 horizontal uCover aspect, nominal
- * (unjittered) pocket/stretch -- then verified live across the walk
- * timestamps and adjusted once.
+ * uRMax (increment 4 follow-up, replacing the old global-worst-case R_MAX
+ * const): a PER-SEED value computed on the CPU (index.ts's rMaxEff, see its
+ * own doc) from the act-1 camera's visible-corner distance to THIS play's
+ * own uPocket/uStretch draw, times the wobble's exact analytic upper bound
+ * (derived from FRONT_NOISE_AMP, not hardcoded) plus a small epsilon --
+ * every seed's sterileAt now lands at the SAME visual moment instead of the
+ * old fixed worst-case constant leaving most (non-worst-case) seeds with a
+ * huge unused margin. Recomputed in index.ts's resize() since it depends on
+ * uCover.
  *
  * Sterile side (`sbSterileSide`): layered and deliberately subtle --
  * (1) a cold blue-white base, (2) a slow-drifting specular ramp plus a
@@ -54,10 +64,14 @@
  * flat mid-gray background across the WHOLE frame, ignoring S entirely
  * (unchanged from increment 2); 2 = S-field diagnostic (living side dark
  * gray, sterile side light gray, scrub line + glints forced to full
- * strength, no biomass) -- NEW this increment; 3 events / 4 ghosts have no
- * dedicated layer yet and fall through to the composed scene; 5 = the real
- * sterile-side treatment forced full-screen (was a flat placeholder in
- * increments 1-2; now the genuine layered `sbSterileSide`).
+ * strength, no biomass); 3 = events diagnostic (NEW this increment,
+ * index.ts pins uSterile to 0 in this mode) -- neutral mid-gray field, no
+ * biomass, no front (R stays at uRMax so it essentially never trips inside
+ * the frame), ONLY strikes carve visible sterile territory, scrub-line rims
+ * + young-strike tick pops forced to full strength alongside mode 2; 4
+ * ghosts has no dedicated layer yet and falls through to the composed
+ * scene; 5 = the real sterile-side treatment forced full-screen (was a flat
+ * placeholder in increments 1-2; now the genuine layered `sbSterileSide`).
  *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
@@ -72,6 +86,16 @@ void main() {
   gl_Position = vec4(position.xy, 0.0, 1.0);
 }
 `;
+
+/**
+ * Baseline relative amplitude of the S-field's noise wobble (see
+ * sbSterility's doc) -- exported (rather than left as a GLSL-only literal)
+ * so index.ts's rMaxEff derivation can compute the EXACT wobble upper bound
+ * (1 + FRONT_NOISE_AMP * 1.0 * 0.5, uFrontNoise's max being 1.0) from this
+ * single source of truth instead of a separately-typed mirror that could
+ * silently drift if this value ever changes.
+ */
+export const FRONT_NOISE_AMP = 0.6;
 
 /**
  * Slot/quality budgets for the layers landing in increments 2-8 -- baked
@@ -126,10 +150,16 @@ uniform vec2 uPocket; // field-uv centre of the S-field — the LAST living plac
 uniform vec2 uStretch; // per-axis elongation of the S-field's potential
 uniform vec2 uFrontDrift; // CPU-accumulated domain offset for the front's noise wobble (NOT raw time)
 uniform float uFrontNoise; // 0..1 turbulence/roughness of the front edge (ActParams.frontNoise)
+uniform float uRMax; // per-seed S-field radius at uSterile=0 (index.ts's rMaxEff) -- REPLACES the old global-worst-case R_MAX const (increment 4 follow-up); see sbSterility's doc
 uniform float uScrubGlow; // scrub-line glow strength, bass-reactive (index.ts)
 uniform float uGlint; // droplet-glint amplitude on the scrub line, fast-highs-reactive (index.ts)
 uniform float uWatermark; // 0..1 residual stain/watermark opacity (ActParams.watermark)
 uniform float uSterileSpec; // 0..1 clinical specular sheen of the sterile surface (ActParams.sterileSpec)
+
+// Swab-strike events (increment 4). uTick is a CPU-decayed scalar
+// (tick *= exp(-7*dt)) kicked to 1 on every bass onset (index.ts) --
+// independent of any existing scalar, feeds the young-strike rim pop only.
+uniform float uTick;
 
 // Increment 2-8 layer budgets, baked as compile-time constants. LOBES/
 // FBM_OCT are real consumed constants now (sbClumpSd / sbFbm below); the
@@ -142,6 +172,16 @@ const int POKE_SLOTS = ${POKE_SLOTS};
 const int RIPPLE_SLOTS = ${RIPPLE_SLOTS};
 const int LOBES = ${LOBES};
 const int FBM_OCT = ${FBM_OCT};
+
+// Swab-strike display arrays (increment 4), index-parallel with index.ts's
+// SlotPool(STRIKE_SLOTS) (uStrikeA IS that pool's own Vector4 slots, bound by
+// reference) plus a second, hand-maintained Vector4 array for the values
+// baked once at fire time (uStrikeB). xy/z/w on A follow the SlotPool
+// convention (z = age seconds, w = active/fade 0..1); B's four fields are
+// all fire-time constants for that strike's lifetime -- see sbSterility's
+// strike loop below and index.ts's fireStrike.
+uniform vec4 uStrikeA[STRIKE_SLOTS]; // xy = centre (field-uv), z = age (s), w = active 0/1, fades 1->0 over a failed strike's last 1.5s before freeing
+uniform vec4 uStrikeB[STRIKE_SLOTS]; // x = rMax (field-uv), y = ellipse aspect 1.15-1.65, z = orientation angle (radians), w = healRate (1/s; 0 = holds rMax forever, CPU frees it after 14s)
 
 // Biomass field constants: CLUMP_FREQ cells across field-uv, SMIN_K the iq
 // smooth-min blend radius for fusing a clump's lobes into one mounded body.
@@ -156,32 +196,12 @@ const float SMIN_K = 0.045;
 // conic/circle (the "petri-dish" composition that collides with b1) — at
 // uFrontNoise=1 the combined wobble now swings roughly plus-or-minus 30%,
 // still never inverting the monotonic radial falloff (no disconnected
-// islands), just a much more irregular boundary.
-const float FRONT_NOISE_AMP = 0.6;
-
-// R_MAX derivation: calibrated so sterile stays invisible at t=0 (uSterile
-// =0, R=R_MAX) even for an unlucky per-play draw of uPocket/uStretch.
-// Composition round: uPocket's jitter widened to 0.5 ± (0.10 + rand*0.14)
-// per axis with an INDEPENDENT random sign (was ±0.08) and uStretch's
-// dominant-axis range widened to 1.0 + rand*0.55 (was 1.0 + rand*0.35) —
-// both deliberately push the pocket well off-centre so the front reads as
-// entering from one side/corner rather than enclosing a centred island.
-// That widened jitter pushes the worst-case farthest-corner phi much
-// higher than the previous 0.80 derivation covered (Monte Carlo over
-// realistic app-canvas aspect ~1.16-1.5, zoom=1.45: p50 ~0.87, p99 ~1.14,
-// p999 ~1.21 of 300k trials) — re-derived against a representative
-// near-worst-case corner instead of the true (much rarer) extremum: cover
-// ~= (1.3, 1.0), zoom = 1.45, pocket shifted to its MAX magnitude (0.24)
-// toward the opposite corner on both axes = (0.26, 0.26), that corner's
-// dominant (cover-major) axis stretched to its new max 1.55x, the other to
-// 0.65x. Farthest-corner field-uv (0.9483, 0.8448); delta from pocket =
-// (0.6883, 0.5848); stretched = (0.6883*1.55, 0.5848*0.65) =
-// (1.0669, 0.3801); phi = length(...) = 1.1326. R_MAX = 1.1326 / 0.98 =
-// 1.1557, rounded up for margin (sits around the simulated p99.5-p99.8).
-// Verified live at ?t=0 across several reseeded plays (no sterile) and
-// ?t=30/60/104/150/170 across 3+ reseeds (see index.ts / the increment-3
-// build notes for the walk).
-const float R_MAX = 1.20;
+// islands), just a much more irregular boundary. Interpolated from the
+// TS-exported FRONT_NOISE_AMP (this file's own module scope, above
+// buildSterileFragment) rather than a separate GLSL literal, so index.ts's
+// rMaxEff wobble-bound derivation can never silently drift from the value
+// actually compiled into the shader.
+const float FRONT_NOISE_AMP = ${FRONT_NOISE_AMP};
 
 // Watermark sampling constants (sbWatermarkSd / sbSterileSide): a FROZEN
 // snapshot of the clump lifecycle — constant life clock, full presence, no
@@ -193,9 +213,14 @@ const float WM_LIFE_CLOCK = 0.35;
 const float WM_PRESENCE = 0.92;
 const float WM_FALL = 2.2;
 
+// STRIKE_SLOTS dropped from this checksum in increment 4 (same treatment as
+// LOBES/FBM_OCT in increment 2): it now has a real compiled use of its own
+// (uStrikeA/uStrikeB's array size and the strike loop in sbSterility below),
+// so folding it in here too would double-count it for no reason.
+// BLOOM_SLOTS/POKE_SLOTS/RIPPLE_SLOTS remain unused until their own
+// increments.
 float futureLayerBudget() {
   float acc = 0.0;
-  for (int i = 0; i < STRIKE_SLOTS; i++) acc += 1.0;
   for (int i = 0; i < BLOOM_SLOTS; i++) acc += 1.0;
   for (int i = 0; i < POKE_SLOTS; i++) acc += 1.0;
   for (int i = 0; i < RIPPLE_SLOTS; i++) acc += 1.0;
@@ -228,6 +253,12 @@ float sbSmin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
   return mix(b, a, h) - k * h * (1.0 - h);
 }
+
+// iq's polynomial smooth-max, built on sbSmin (standard identity: max(a,b) =
+// -min(-a,-b)) -- used to smoothly UNION a strike's sterile wound into S
+// (see sbSterility's strike loop) so its rim merges with the front's own
+// zero-crossing instead of a hard crease.
+float sbSmax(float a, float b, float k) { return -sbSmin(-a, -b, k); }
 
 // This cell (integer clump-grid coord, floor(fieldUv * CLUMP_FREQ)) nearest
 // field-uv (0.5, 0.5) — the HERO clump, always present (sbClumpLife bypasses
@@ -443,9 +474,59 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask) {
   return col;
 }
 
+// Strike geometry & envelope constants (increment 4). K_BLEND is THE smax
+// blend radius shared by every strike merge below (front<->strike AND, since
+// strikes accumulate into S one at a time, strike<->strike where two
+// overlap) -- one constant so every rim reads as the same material seaming
+// into itself, never a per-strike-tuned blend. STRIKE_GROW/STRIKE_SETTLE
+// shape the age->radius envelope: 0->1.08x rMax over [0, STRIKE_GROW]
+// (punch-in overshoot), eased back 1.08x->1.0x over [STRIKE_GROW,
+// STRIKE_SETTLE] (settle), holding at 1.0x from then on -- healRate (if > 0)
+// then shrinks from that settled 1.0x, exactly matching the CPU's own
+// healed-radius-reaches-zero bookkeeping (index.ts's ageStrikes) so a slot
+// frees the instant its GPU radius would hit 0.
+const float K_BLEND = 0.05;
+const float STRIKE_GROW = 0.18;
+const float STRIKE_SETTLE = 0.3;
+const float STRIKE_RIM_YOUNG = 0.5; // seconds -- the young-strike rim-pop window
+
+// Age -> radius fraction of rMax (0..~1.08), the punch-in/overshoot/settle
+// curve described above. Healing (age past STRIKE_SETTLE, healRate > 0) is
+// applied by the caller on top of this, matching the task's literal
+// r = rMax * max(0, 1 - healRate * max(0, age - STRIKE_SETTLE)) formula --
+// at STRIKE_SETTLE this curve is already exactly 1.0, so the two pieces
+// connect continuously.
+float sbStrikeRadiusNorm(float age) {
+  if (age < STRIKE_GROW) {
+    float t = age / STRIKE_GROW;
+    float te = t * t * (3.0 - 2.0 * t);
+    return te * 1.08;
+  } else if (age < STRIKE_SETTLE) {
+    float t = (age - STRIKE_GROW) / (STRIKE_SETTLE - STRIKE_GROW);
+    float te = t * t * (3.0 - 2.0 * t);
+    return mix(1.08, 1.0, te);
+  }
+  return 1.0;
+}
+
+// Rotated-ellipse SDF: rotate (p - center) by angle, scale the rotated y by
+// aspect, then a plain circle SDF -- exactly the construction the increment
+// spec calls for (aspect > 1 narrows the ellipse along its LOCAL y-axis
+// relative to x, since scaling a coordinate UP shrinks that axis's
+// semi-length at a fixed radius r). Standard SDF sign convention: negative
+// inside, positive outside.
+float sbStrikeSd(vec2 p, vec2 center, float r, float aspect, float angle) {
+  vec2 d = p - center;
+  float ca = cos(angle);
+  float sa = sin(angle);
+  vec2 rp = vec2(ca * d.x + sa * d.y, -sa * d.x + ca * d.y);
+  rp.y *= aspect;
+  return length(rp) - r;
+}
+
 // The signed sterility field S(p): positive = sterile, negative = living,
 // the zero-crossing IS the scrub line. phi is a stretched, noise-wobbled
-// distance from the pocket (the LAST living place); R shrinks from R_MAX
+// distance from the pocket (the LAST living place); R shrinks from uRMax
 // toward 0 as uSterile climbs from 0 to 1, so the living island (phi < R)
 // shrinks from the whole visible field down to a single point. The wobble
 // is TWO-SCALE (composition round): a coarse, low-frequency fbm term (p *
@@ -455,20 +536,67 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask) {
 // LOBES of the front finger ahead of or lag behind the mean radius (an
 // advancing bleach stain, not a smoothly shrinking circle); the fine term
 // keeps the edge itself from reading as a bare polygon.
-// EXTENSION POINT (increments 4-5): strikes/pokes will smax/smin their own
-// local fields into the value returned here (a strike carves a temporary
-// living hole; a poke's regrowth bloom pushes the boundary back out) —
-// every caller below reads S through this one function, so future
-// composition only ever needs to touch this one spot.
-float sbSterility(vec2 p) {
+//
+// Increment 4: swab strikes fold in here, the EXTENSION POINT the increment-
+// 3 doc promised -- every caller below (biomass truncation, the diagnostic
+// solo modes, the scrub line) reads S through this one function, so a
+// strike carving into it is automatically visible everywhere at once. Each
+// active strike is a rotated-ellipse "wound": its OWN sdf (sbStrikeSd,
+// negative inside) is negated (positive inside, i.e. sterile) and smax'd
+// into the running S with sbSmax/K_BLEND, exactly the SDF-subtraction
+// identity max(a, -b) = a MINUS shape-b's interior -- so a strike always
+// pushes its interior toward sterile regardless of what the front alone
+// would say there, and its rim reads as a genuine (smax-rounded) S=0
+// boundary, which is why the scrub line automatically traces it with no
+// separate drawing pass. w (index.ts's fade-on-expiry for failed,
+// unhealed strikes) blends the WHOLE smax'd result back toward the
+// pre-strike S rather than scaling the raw sdf contribution directly --
+// scaling the raw contribution would drag S toward 0 everywhere (not just
+// near the strike) as w shrinks, since an unbounded sdf value far from the
+// strike shrinks right along with it; blending the final scalar has no such
+// footgun and still satisfies "scale the strike's effect by w" (w=0 is an
+// exact no-op, w=1 is the full smax). strikeRimD (out param) is written to
+// the closest approach, in local strike-sdf units, to any currently active
+// strike younger than STRIKE_RIM_YOUNG -- consumed by main()'s young-strike
+// rim-pop boost so that pass doesn't need its own second loop over
+// STRIKE_SLOTS.
+float sbSterility(vec2 p, out float strikeRimD) {
   vec2 d = (p - uPocket) * uStretch;
   float fineN = sbFbm(p * 3.0 + uFrontDrift) - 0.5;
   float coarseN = sbFbm(p * 1.2 + uFrontDrift * 0.6) - 0.5;
   float wobbleN = (coarseN * 2.0 + fineN) / 3.0;
   float wobble = 1.0 + FRONT_NOISE_AMP * uFrontNoise * wobbleN;
   float phi = length(d) * wobble;
-  float R = R_MAX * (1.0 - uSterile);
-  return phi - R;
+  float R = uRMax * (1.0 - uSterile);
+  float s = phi - R;
+
+  strikeRimD = 9.0;
+  for (int i = 0; i < STRIKE_SLOTS; i++) {
+    float w = uStrikeA[i].w;
+    if (w <= 0.0) continue;
+    vec2 center = uStrikeA[i].xy;
+    float age = uStrikeA[i].z;
+    float rMax = uStrikeB[i].x;
+    float aspect = uStrikeB[i].y;
+    float angle = uStrikeB[i].z;
+    float healRate = uStrikeB[i].w;
+
+    float r = rMax * sbStrikeRadiusNorm(age);
+    if (healRate > 0.0) {
+      r *= max(0.0, 1.0 - healRate * max(0.0, age - STRIKE_SETTLE));
+    }
+    if (r <= 0.0001) continue; // fully healed -- no wound left to merge
+
+    float strikeSd = sbStrikeSd(p, center, r, aspect, angle);
+    float sWithStrike = sbSmax(s, -strikeSd, K_BLEND);
+    s = mix(s, sWithStrike, w);
+
+    if (age < STRIKE_RIM_YOUNG) {
+      strikeRimD = min(strikeRimD, abs(strikeSd));
+    }
+  }
+
+  return s;
 }
 
 // The sterile side's layered appearance (increment 3): (1) a cold
@@ -515,8 +643,10 @@ void main() {
   // Signed sterility field, computed once and shared by every mode below
   // (biomass truncation, the sterile-side ground colour, the diagnostic
   // solo mode, and the scrub line) so they can never disagree about where
-  // the front actually is.
-  float S = sbSterility(field);
+  // the front actually is. strikeRimD (increment 4) rides along for the
+  // young-strike rim-pop boost, drawn with the scrub line below.
+  float strikeRimD;
+  float S = sbSterility(field, strikeRimD);
   float sEdge = fwidth(S) * 0.75 + 0.0004; // tight fwidth-based S_EDGE
   // 1.0 living (S<0), 0.0 sterile (S>0). Written as 1.0 - smoothstep(-sEdge,
   // sEdge, S) rather than the mirrored smoothstep(sEdge, -sEdge, S) — both
@@ -541,8 +671,18 @@ void main() {
     // no biomass — the scrub line + glints (below) are forced to full
     // strength on this branch.
     color = mix(vec3(0.85), vec3(0.2), livingMask);
+  } else if (uSoloMode == 3) {
+    // Events diagnostic (increment 4): uSterile is pinned to 0 CPU-side in
+    // this mode (index.ts), so R stays at uRMax and the front's own S
+    // essentially never trips inside the visible frame -- ONLY strikes
+    // carve real sterile territory into livingMask here. Neutral mid-gray
+    // base (deliberately NOT the living/sterile palette) so the event
+    // grammar -- strike shape, heal shrink, rim traces, tick pops (below,
+    // forced to full strength alongside mode 2) -- reads in isolation, with
+    // no biomass and no front to compete with it.
+    color = mix(vec3(0.5), vec3(0.82), 1.0 - livingMask);
   } else {
-    // Composed scene (mode 0, and 3/4's fallthrough): the ground itself
+    // Composed scene (mode 0, and 4's fallthrough): the ground itself
     // transitions from the dark living ground to the cold sterile side at
     // the same S boundary that truncates the biomass silhouette, so a
     // scrubbed clump reveals sterile ground beneath it, not the old dark
@@ -556,10 +696,11 @@ void main() {
   // --- Scrub line + droplet glints, drawn LAST so they pop over
   // everything above. Skipped for the two solo modes that isolate a single
   // layer's own colour (1 biomass-only, 5 sterile-only); the diagnostic
-  // mode 2 wants it forced to full strength regardless of the current
-  // act's glow/glint knobs, so debugging never depends on song position.
+  // modes 2 (front) and 3 (events) both want it forced to full strength
+  // regardless of the current act's glow/glint knobs, so debugging never
+  // depends on song position.
   if (uSoloMode != 1 && uSoloMode != 5) {
-    bool diagFront = (uSoloMode == 2);
+    bool diagFront = (uSoloMode == 2 || uSoloMode == 3);
     float glowStrength = diagFront ? 1.0 : (0.35 + uScrubGlow);
     float glintStrength = diagFront ? 1.0 : uGlint;
 
@@ -576,7 +717,7 @@ void main() {
     // so glints never sync across the line.
     vec2 sd0 = (field - uPocket) * uStretch;
     float theta = atan(sd0.y, sd0.x);
-    float rNow = R_MAX * (1.0 - uSterile);
+    float rNow = uRMax * (1.0 - uSterile);
     float arcPos = theta * rNow;
     float glintCell = floor(arcPos * 40.0);
     float glintBaseH = sbHash21(vec2(glintCell, 3.3));
@@ -588,6 +729,17 @@ void main() {
     vec3 lineColor = vec3(0.97, 1.0, 1.0);
     color = mix(color, lineColor, lineMask * clamp(glowStrength, 0.0, 1.0));
     color += lineColor * glint;
+
+    // Young-strike rim pop (increment 4): an extra brightness kick, scaled
+    // by uTick (the CPU bass-onset decay scalar), wherever the visible
+    // scrub line (lineMask) is ALSO tracing a strike younger than
+    // STRIKE_RIM_YOUNG (strikeRimD, written by sbSterility's strike loop).
+    // Gated by lineMask rather than standing alone so a strike rim already
+    // swallowed by the front (deep in already-sterile territory, no S=0
+    // crossing left to trace) never shows a floating ghost ring.
+    float rimBoostAA = fwidth(strikeRimD) * 1.25 + 0.0004;
+    float strikeRimMask = 1.0 - smoothstep(0.0, rimBoostAA, strikeRimD);
+    color += lineColor * lineMask * strikeRimMask * uTick * 0.85;
 
     // Faint interior glow bleeding ~2x the line width into the LIVING side
     // only — the front "heats" what it's about to consume.
