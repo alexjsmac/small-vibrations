@@ -130,6 +130,52 @@
  * -- see sbAA's own doc for the full diagnosis) that was visible in every
  * mode calling sbBiomass (composed, `?solo=biomass`, `?solo=ghosts`).
  *
+ * Increment 8 (the final condensation-to-seed sequence, the album's closing
+ * image): a scripted overlay drawn LAST of all -- after every other layer,
+ * post-grade -- at a fixed seeded point (uFinalPos, index.ts's init()) near
+ * frame centre. index.ts's finalEnvAt (a PURE function of songTime, unlike
+ * increment 7's edge-triggered scripted hits, so it renders correctly from
+ * any ?t= deep link into act 6) drives uFinalPhase/uFinalT/uSeedFade; this
+ * file's own job is main()'s final block (below the poke-ripple loop).
+ * SWELL and CONDENSE are an INK-side condensation fog: mixed toward
+ * FINAL_FOG_TONE, a cooler AND DARKER tone than the pale sterile ground
+ * (not the pooled bloom's own additive-leaning BLOOM_TINT -- an initial
+ * cut that reused it verbatim measured a peak delta of only ~2-6/255
+ * against the ground in a real screenshot, i.e. invisible; the b2 lesson
+ * about light-on-light re-learned), with a Gaussian-ish radial falloff
+ * (dense core, softly feathered edge -- not a single smoothstep disc,
+ * which read as a flat coin) as a single scripted instance rather than a
+ * uBloom slot. CONDENSE's radius eases toward FINAL_CONDENSE_SCREEN_R
+ * while its intensity concentrates by the inverse AREA ratio toward a
+ * near-opaque ceiling, so the fog visibly densens AND darkens as it
+ * shrinks, not fades. Bead sparkle draws ADDITIVELY on top of the fog
+ * afterward, popping against the now-dark backdrop. SEED swaps the fog for
+ * the actual seed mote -- a warm rust core (FINAL_SEED_CORE) with a thin
+ * darker ink ring (FINAL_SEED_RING) just outside it plus a soft warm halo
+ * bleeding further out, quoting a1's "lone point in the void" seed image,
+ * value-inverted for this pale ground (ink-dark edge, warm heart); ring
+ * and core are two layered filled discs (ring first, full-size; core on
+ * top, slightly smaller) so only the ring's outer band stays visible as a
+ * rim, and the halo is a third, wider, much softer Gaussian-ish glow drawn
+ * underneath both. Every radius in this block (FINAL_SWELL_SCREEN_R,
+ * FINAL_CONDENSE_SCREEN_R, FINAL_SEED_SCREEN_R) is a SCREEN fraction of
+ * the frame's reference dimension, converted to a field-uv radius at draw
+ * time via `screenFrac / uZoom` -- an initial cut used field-uv constants
+ * directly, which rendered at the correct size at uZoom=1 but shrank to a
+ * couple of screen px once act 6's zoomAt pulls back to ~0.28-0.30
+ * (sections.ts) for the album's actual closing frame; the /uZoom
+ * conversion (derived from main()'s own `field` mapping: a field-space
+ * circle of radius R renders as a screen circle of radius
+ * R*uZoom*min(canvas.width,canvas.height) px regardless of aspect, so
+ * screenFrac = R*uZoom) keeps every shape's ON-SCREEN size constant
+ * regardless of the current zoom, matching every other constant in this
+ * block staying meaningful across whatever framing the camera is doing.
+ * A `smoothstep` on S gates the whole block to sterile ground only (a
+ * defensive guard: by 188s the front has long finished, R having shrunk to
+ * 0, so S is already positive everywhere in practice -- see sbSterility's
+ * own doc). `?seedpt=always` (index.ts) forces the SEED phase for
+ * deterministic screenshots.
+ *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
  * have compile-time constant bounds. Reserved-word identifiers (active,
@@ -260,6 +306,25 @@ uniform float uVignette;
 uniform float uFlash;
 uniform float uCrackle;
 uniform float uCrackleSeed;
+
+// Increment 8: the final condensation-to-seed sequence (the album's closing
+// image) -- a scripted overlay computed PURELY from songTime (index.ts's
+// finalEnvAt, NOT edge-triggered like increment 7's scripted hits, so it
+// renders correctly from any ?t= deep link into act 6). uFinalPhase is 0
+// off/gone, 1 swell, 2 condense, 3 seed (read via the house >0.5/<1.5/etc.
+// float-as-enum convention, matching uSoloMode/uGhostForce above -- no GLSL
+// int uniform plumbing needed). uFinalT is 0..1 progress WITHIN the current
+// phase (CPU-eased for swell/condense, see finalEnvAt's own doc -- this
+// shader just lerps with it directly, no re-easing here). uSeedFade is the
+// SEED phase's own 1->0 fade (harmlessly pinned to 1 outside SEED, where it
+// is never read). uFinalPos is a fixed seeded point (index.ts's init(),
+// within +-0.06 field-uv of frame centre) -- the SAME spot every phase,
+// quoting a1's "lone point in the void" seed image, value-inverted for this
+// pale ground.
+uniform float uFinalPhase;
+uniform float uFinalT;
+uniform float uSeedFade;
+uniform vec2 uFinalPos;
 
 // Increment 2-8 layer budgets, baked as compile-time constants. Every
 // budget is now a real consumed constant (LOBES/FBM_OCT since increment 2,
@@ -1072,6 +1137,49 @@ const vec3 BLOOM_TINT = vec3(0.82, 0.90, 0.93);
 const float RIPPLE_R_MAX = 0.12;
 const float RIPPLE_LIFETIME = 1.2;
 
+// Final condensation-to-seed sequence render constants (increment 8,
+// SCREEN-relative revision -- see this file's top doc addendum for the
+// full derivation). Sizes below are SCREEN fractions of the frame's
+// reference (shorter) dimension, NOT field-uv: act 6's zoomAt is pulled
+// back to as low as 0.28-0.30 (sections.ts), so a field-uv-only radius
+// (the pre-revision FINAL_SEED_R = 0.006 field-uv) rendered as ~2 screen
+// px -- invisible, for what is the album's closing image. Converted to a
+// field-uv radius at DRAW TIME via screenFrac / uZoom (derived from
+// main()'s own field = (vUv-0.5)*uCover/uZoom+0.5+uPan mapping: a
+// field-space circle of radius R renders as a screen circle of radius
+// R*uZoom*min(canvas.width,canvas.height) px REGARDLESS of aspect --
+// uCover's per-axis stretch exactly cancels out of that product -- so
+// screenFrac = R*uZoom and R = screenFrac/uZoom). FINAL_SEED_RING_FRAC and
+// FINAL_SEED_HALO_MULT are plain ratios against the (already
+// zoom-corrected) core radius, so they need no separate conversion.
+// FINAL_SWELL_SCREEN_R is the SWELL phase's fully-grown radius;
+// FINAL_CONDENSE_SCREEN_R is CONDENSE's end radius (close to, but
+// deliberately not identical to, FINAL_SEED_SCREEN_R -- the fog visibly
+// hands off to the SEED mote's tighter core + halo, not a perfectly
+// seamless splice, see main()'s SEED branch).
+const float FINAL_SWELL_SCREEN_R = 0.22;
+const float FINAL_CONDENSE_SCREEN_R = 0.008;
+const float FINAL_SEED_SCREEN_R = 0.006;
+const float FINAL_SEED_RING_FRAC = 0.28;
+const float FINAL_SEED_HALO_MULT = 2.5;
+const vec3 FINAL_SEED_CORE = vec3(0.72, 0.28, 0.16);
+const vec3 FINAL_SEED_RING = vec3(0.25, 0.12, 0.08);
+// SWELL's alpha ceiling (also CONDENSE's clamp FLOOR, so the two phases
+// hand off continuously) -- see FINAL_FOG_TONE's own doc for why a real
+// screenshot needs this to be a genuinely dark mix, not the ~0.5 a naive
+// reading of the spec might suggest: measured against the actual sterile
+// ground tone at frame centre, 0.5 alone landed under the "unmistakable at
+// a glance" bar, so this sits a little higher.
+const float FINAL_SWELL_PEAK_ALPHA = 0.65;
+// Ink-side condensation-fog tone (revision): the sterile ground is already
+// pale/pastel, so mixing toward an additive-leaning near-white tone (the
+// pooled bloom's own BLOOM_TINT, the pre-revision choice here) has almost
+// no value contrast there -- measured peak delta ~2-6/255, imperceptible
+// in a real screenshot (the b2 lesson: light-on-light dies). Mixing toward
+// a COOLER, DARKER tone instead reads as an unmistakable fog on the pale
+// blank while staying atmospheric (cool blue-gray, not black/gray-disc).
+const vec3 FINAL_FOG_TONE = vec3(0.60, 0.71, 0.78);
+
 void main() {
   // Screen uv -> field uv (house formula, shared with index.ts's pointer()).
   vec2 field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan;
@@ -1315,6 +1423,120 @@ ${GRAIN_BLOCK}
     float ringDist = length(field - rp.xy);
     float ring = exp(-pow((ringDist - ringR) * 70.0, 2.0)) * rp.w * (1.0 - rippleT);
     color += vec3(0.92, 0.97, 1.0) * ring;
+  }
+
+  // --- Final condensation-to-seed sequence (increment 8, the album's
+  // closing image), drawn LAST of all -- post-grade, after every other
+  // overlay above (scrub line, blooms, ripples) -- so nothing can ever draw
+  // over it. uFinalPhase 0 (off/gone) skips this block entirely; the S>0
+  // smoothstep gate is a defensive guard (act 6 is fully sterile by 188s
+  // regardless -- R has already shrunk to 0, see sbSterility's own doc --
+  // so this gate is a no-op under normal playback, kept only so the
+  // sequence can never bleed onto the living side if that assumption is
+  // ever wrong).
+  if (uFinalPhase > 0.5) {
+    float finalSGate = smoothstep(-0.01, 0.01, S);
+
+    if (uFinalPhase < 2.5) {
+      // SWELL (1) / CONDENSE (2): an INK-SIDE condensation fog -- mixes the
+      // ground toward FINAL_FOG_TONE (cooler AND DARKER than the pale
+      // sterile ground -- see its own doc for why the original additive
+      // BLOOM_TINT approach was a measured no-op here) with a Gaussian-ish
+      // radial falloff (dense core, softly feathered edge -- NOT a single
+      // smoothstep disc, which read as a flat gray coin rather than mist)
+      // as a SINGLE scripted instance at the fixed uFinalPos, sized in
+      // SCREEN fractions (FINAL_SWELL_SCREEN_R/FINAL_CONDENSE_SCREEN_R,
+      // converted to field-uv via /uZoom just below -- see those constants'
+      // own doc) rather than a uBloom slot (this is a one-off cue, not a
+      // pooled event). Bead sparkle draws ADDITIVELY on top afterward, so
+      // it pops against the now-dark fog.
+      float finalScreenR;
+      float finalIntensity;
+      float finalSparkleAmt;
+      if (uFinalPhase < 1.5) {
+        // SWELL: screen radius grows 0 -> FINAL_SWELL_SCREEN_R; alpha rides
+        // an ease-out-cubic (front-loaded, NOT linear-in-t) climb to
+        // FINAL_SWELL_PEAK_ALPHA so the fog already reads clearly well
+        // before the phase's very end, not only at its last instant.
+        finalScreenR = mix(0.0, FINAL_SWELL_SCREEN_R, uFinalT);
+        finalIntensity = FINAL_SWELL_PEAK_ALPHA * (1.0 - pow(1.0 - uFinalT, 3.0));
+        finalSparkleAmt = uFinalT;
+      } else {
+        // CONDENSE: screen radius eases FINAL_SWELL_SCREEN_R ->
+        // FINAL_CONDENSE_SCREEN_R while intensity concentrates by the
+        // inverse AREA ratio (screen-radius squared -- a pure ratio, so it
+        // is identical whether computed in screen or field units) up to a
+        // near-opaque ceiling, so the fog visibly DENSENS AND DARKENS as it
+        // shrinks -- reads as condensing, not fading. Bead sparkle dies
+        // away over the same span.
+        finalScreenR = mix(FINAL_SWELL_SCREEN_R, FINAL_CONDENSE_SCREEN_R, uFinalT);
+        float areaRatio = (FINAL_SWELL_SCREEN_R * FINAL_SWELL_SCREEN_R)
+          / max(finalScreenR * finalScreenR, FINAL_CONDENSE_SCREEN_R * FINAL_CONDENSE_SCREEN_R);
+        finalIntensity = clamp(FINAL_SWELL_PEAK_ALPHA * areaRatio, FINAL_SWELL_PEAK_ALPHA, 1.0);
+        finalSparkleAmt = 1.0 - uFinalT;
+      }
+      // Screen-fraction radius -> field-uv radius (FINAL_SWELL_SCREEN_R's
+      // own doc: R = screenFrac / uZoom). A tiny floor avoids a degenerate
+      // zero-radius shape at uFinalT==0 feeding the falloff's division
+      // below (matching sbAA's own "never hand a degenerate zero-width
+      // band to a dependent calc" discipline).
+      float finalRadiusSafe = max(finalScreenR / uZoom, 1e-5);
+
+      float finalDist = length(field - uFinalPos);
+      float finalNormDist = finalDist / finalRadiusSafe;
+      // Gaussian-ish falloff: near 1.0 at the core, feathering smoothly
+      // outward with no hard edge -- the "atmospheric fog" shape.
+      float shapeFalloff = exp(-3.2 * finalNormDist * finalNormDist);
+      float finalAlpha = clamp(finalIntensity * shapeFalloff, 0.0, 1.0) * finalSGate;
+      color = mix(color, FINAL_FOG_TONE, finalAlpha);
+
+      // Bead sparkle -- the pooled bloom loop's own inner-gate hash idiom
+      // (sparkleCell/sparkleBaseH/sparkleTwinkle), a single instance keyed
+      // off uFinalPos instead of a per-slot centre, added on TOP of the
+      // fog so it pops against the new dark backdrop.
+      float finalInnerGate = 1.0 - smoothstep(finalRadiusSafe * 0.35, finalRadiusSafe * 0.5, finalDist);
+      vec2 finalSparkleCell = floor(field * 70.0);
+      float finalSparkleBaseH = sbHash21(finalSparkleCell + uFinalPos * 13.0 + vec2(41.7, 7.3));
+      float finalSparkleExists = step(finalSparkleBaseH, 0.12);
+      float finalSparkleEpoch = floor(uBreathPhase * 6.0 + finalSparkleBaseH);
+      float finalSparkleTwinkle = sbHash21(finalSparkleCell + vec2(finalSparkleEpoch + 61.1, 4.4));
+      float finalSparkle = finalSparkleExists * finalSparkleTwinkle * finalInnerGate
+        * finalIntensity * finalSparkleAmt * finalSGate;
+      color += vec3(0.97, 1.0, 1.0) * finalSparkle * 0.6;
+    } else {
+      // SEED (3): the condensed seed point -- a warm rust core with a thin
+      // darker ink ring just outside it, plus a soft warm halo bleeding
+      // further out, quoting a1's "lone point in the void" seed image,
+      // value-inverted for this pale ground (ink-dark edge, warm heart).
+      // Sized in SCREEN fractions (FINAL_SEED_SCREEN_R, converted via
+      // /uZoom -- see its own doc: the pre-revision field-uv-only radius
+      // rendered as ~2 screen px at act 6's pulled-back zoom, effectively
+      // invisible). Ring+core drawn as two layered filled discs (ring
+      // first, full-size; core on top, slightly smaller) so only the
+      // ring's outer band stays visible as a rim -- simpler and more
+      // robust than an explicit annulus SDF; the halo is a third, wider,
+      // much softer Gaussian-ish glow drawn first (underneath both).
+      float finalDist = length(field - uFinalPos);
+      float coreR = FINAL_SEED_SCREEN_R / uZoom;
+      float ringOuterR = coreR * (1.0 + FINAL_SEED_RING_FRAC);
+      float haloR = coreR * FINAL_SEED_HALO_MULT;
+      float finalHaloAA = sbAA(finalDist) * 2.0 + 0.0006; // "soft 2px" edge AA
+      float seedAlpha = uSeedFade * finalSGate;
+
+      // Halo: a soft warm glow bleeding out to FINAL_SEED_HALO_MULT x the
+      // core radius, the same feathered Gaussian-ish shape as the
+      // swell/condense fog above, so it reads as a gentle warmth around
+      // the mote rather than a second hard ring.
+      float haloNormDist = finalDist / haloR;
+      float haloShape = exp(-3.0 * haloNormDist * haloNormDist);
+      color = mix(color, FINAL_SEED_CORE, haloShape * 0.3 * seedAlpha);
+
+      float ringDisc = 1.0 - smoothstep(ringOuterR, ringOuterR + finalHaloAA, finalDist);
+      color = mix(color, FINAL_SEED_RING, ringDisc * seedAlpha);
+
+      float coreDisc = 1.0 - smoothstep(coreR, coreR + finalHaloAA, finalDist);
+      color = mix(color, FINAL_SEED_CORE, coreDisc * seedAlpha);
+    }
   }
 
   gl_FragColor = vec4(color, 1.0);

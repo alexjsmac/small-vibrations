@@ -233,6 +233,66 @@ const CRACKLE_DECAY_RATE = 7;
 const CRACKLE_DEBUG_INTERVAL = 0.5;
 
 /**
+ * Final condensation-to-seed sequence (increment 8, the album's closing
+ * image): scripted boundaries in song-seconds driving `finalEnvAt` (below).
+ * OFF before FINAL_SWELL_START, SWELL until FINAL_CONDENSE_START, CONDENSE
+ * until FINAL_SEED_START, SEED until FINAL_GONE_START, GONE from there to
+ * the album's true silence at 200.042s (sections.ts's CUES) — the record
+ * ends on the empty blank.
+ */
+const FINAL_SWELL_START = 188;
+const FINAL_CONDENSE_START = 191;
+const FINAL_SEED_START = 194;
+const FINAL_GONE_START = 199;
+
+/** Plain smoothstep ease-in-out on [0,1] — finalEnvAt's own easing for the SWELL/CONDENSE phases' uFinalT (kept local rather than importing sections.ts's own, unexported `smoothstep01`). */
+function finalPhaseEase(x: number): number {
+  const c = Math.min(1, Math.max(0, x));
+  return c * c * (3 - 2 * c);
+}
+
+/**
+ * Song-time (seconds) -> the final condensation-to-seed sequence's current
+ * phase/progress — a PURE function of songTime (unlike increment 7's
+ * edge-triggered scripted hits above), so it renders correctly from ANY
+ * `?t=` deep link into act 6, not just from continuous playback out of the
+ * track's start. Four phases (matches uFinalPhase's shader-side convention:
+ * 0 off/gone, 1 swell, 2 condense, 3 seed):
+ *  - OFF (< FINAL_SWELL_START): phase 0, nothing drawn.
+ *  - SWELL (FINAL_SWELL_START..FINAL_CONDENSE_START): phase 1, t eased
+ *    (ease-in-out) 0->1 — the condensation bloom grows in.
+ *  - CONDENSE (FINAL_CONDENSE_START..FINAL_SEED_START): phase 2, t eased
+ *    0->1 — the bloom's radius collapses toward the seed point.
+ *  - SEED (FINAL_SEED_START..FINAL_GONE_START): phase 3, t LINEAR 0->1 and
+ *    seedFade = 1 - t — the seed mote holds, then fades.
+ *  - GONE (>= FINAL_GONE_START): phase 0 again — same as OFF (the shader's
+ *    `uFinalPhase > 0.5` gate skips both identically) — seedFade 0.
+ * t/seedFade are inert defaults (0/1) for OFF, since the shader never reads
+ * either while phase is 0. Eased (not raw linear) t for SWELL/CONDENSE
+ * gives every phase boundary a zero-velocity RADIUS handoff (ease-in-out is
+ * 0 at both ends) so SWELL->CONDENSE and CONDENSE->SEED never pop in size —
+ * CONDENSE->SEED still deliberately swaps the cool mist tint for the warm
+ * seed-mote colours right at that handoff (sterileShader.ts's SEED branch),
+ * which is the intended reveal, not a continuity bug.
+ */
+function finalEnvAt(songTime: number): { phase: number; t: number; seedFade: number } {
+  if (songTime < FINAL_SWELL_START) return { phase: 0, t: 0, seedFade: 1 };
+  if (songTime < FINAL_CONDENSE_START) {
+    const raw = (songTime - FINAL_SWELL_START) / (FINAL_CONDENSE_START - FINAL_SWELL_START);
+    return { phase: 1, t: finalPhaseEase(raw), seedFade: 1 };
+  }
+  if (songTime < FINAL_SEED_START) {
+    const raw = (songTime - FINAL_CONDENSE_START) / (FINAL_SEED_START - FINAL_CONDENSE_START);
+    return { phase: 2, t: finalPhaseEase(raw), seedFade: 1 };
+  }
+  if (songTime < FINAL_GONE_START) {
+    const raw = (songTime - FINAL_SEED_START) / (FINAL_GONE_START - FINAL_SEED_START);
+    return { phase: 3, t: raw, seedFade: 1 - raw };
+  }
+  return { phase: 0, t: 0, seedFade: 0 };
+}
+
+/**
  * "Sterile Breath" — a living, breathing dark field is slowly, irreversibly
  * overtaken by a cold sterile blank: the track's antiseptic erasure of
  * life, rendered as an advancing bleach front across the frame.
@@ -462,6 +522,9 @@ class SterileBreath implements Viz {
   /** `?crackle=always` debug affordance timer (seconds to next forced crackle). */
   private crackleDebugTimer = 0;
 
+  /** `?seedpt=always` (increment 8) — forces the final condensation sequence's SEED phase (uFinalPhase=3, t=0, uSeedFade=1) regardless of songTime, so the closing seed-point image is screenshot-able from any deep link without waiting for the real 194s+ window. */
+  private forceSeedPointAlways = false;
+
   init(ctx: VizContext) {
     const { renderer, seed, quality } = ctx;
     this.renderer = renderer;
@@ -495,6 +558,8 @@ class SterileBreath implements Viz {
     this.forceGhostAlways = params.get('ghost') === 'always';
     // `?crackle=always` (increment 7) — see forceCrackleAlways's own doc.
     this.forceCrackleAlways = params.get('crackle') === 'always';
+    // `?seedpt=always` (increment 8) — see forceSeedPointAlways's own doc.
+    this.forceSeedPointAlways = params.get('seedpt') === 'always';
     const healParam = params.get('heal');
     if (healParam === 'off') this.healOverride = 0;
     else if (healParam === 'on') this.healOverride = 0.22;
@@ -543,6 +608,16 @@ class SterileBreath implements Viz {
     // Ambient drift's rotating direction phase (increment 7) — seeded once
     // per play so different plays wander in different starting directions.
     this.driftAngle = this.rand() * Math.PI * 2;
+
+    // uFinalPos (increment 8): the final condensation-to-seed sequence's
+    // fixed landing point — a small, seeded jitter (+-0.06 field-uv per
+    // axis) off frame centre, drawn once per play so it's deterministic
+    // across every phase (swell/condense/seed all converge on the exact
+    // same spot, per the increment's spec).
+    const finalPos = new THREE.Vector2(
+      0.5 + (this.rand() - 0.5) * 0.12,
+      0.5 + (this.rand() - 0.5) * 0.12,
+    );
 
     // Swab-strike pool (increment 4): sized to match the SAME strikeSlots
     // budget passed to buildSterileFragment below (8 Full / 6 Lite) — the
@@ -631,6 +706,14 @@ class SterileBreath implements Viz {
         uFlash: { value: 0 },
         uCrackle: { value: 0 },
         uCrackleSeed: { value: 0 },
+        // Increment 8: the final condensation-to-seed sequence (the album's
+        // closing image) — see finalEnvAt's own doc (module scope, above)
+        // for the phase/progress mechanism; uFinalPos is the fixed seeded
+        // landing point computed just above, constant for the whole play.
+        uFinalPhase: { value: 0 },
+        uFinalT: { value: 0 },
+        uSeedFade: { value: 0 },
+        uFinalPos: { value: finalPos },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -741,6 +824,21 @@ class SterileBreath implements Viz {
       this.flash = Math.max(this.flash, FLASH_KICK_LAST_POCKET);
     }
     this.lastSongTime = songTime;
+
+    // Final condensation-to-seed sequence (increment 8, the album's closing
+    // image) — a PURE function of songTime (finalEnvAt, module scope
+    // above), deliberately NOT edge-triggered like the scripted hits just
+    // above: it must render correctly from any `?t=` deep link into act 6,
+    // not just from continuous playback, and a loop/seek jump needs no
+    // reset of its own (there is no CPU state to go stale — next frame's
+    // songTime alone determines the phase). `?seedpt=always` pins the SEED
+    // phase at full fade for deterministic screenshots, bypassing songTime
+    // entirely — the same "debug override wins" precedent as
+    // pinnedBreath/pinnedSterile/pinnedGlint above.
+    const finalEnv = this.forceSeedPointAlways ? { phase: 3, t: 0, seedFade: 1 } : finalEnvAt(songTime);
+    u.uFinalPhase.value = finalEnv.phase;
+    u.uFinalT.value = finalEnv.t;
+    u.uSeedFade.value = finalEnv.seedFade;
 
     // uLifeClock: lifeClockAt(songTime) is a pure monotonic integral of
     // lifeRate over song time, so scaling its OUTPUT by a constant scales
