@@ -1,43 +1,66 @@
 /**
- * Fullscreen display shader for b3 "Sterile Breath". Increment 2: the real
- * living side lands here — a cushion-clump BIOMASS field (`sbBiomass`) on a
- * near-black warm ground, replacing increment 1's placeholder gradient. The
- * sterile side stays the increment-1 vertical-split placeholder (`uSterile`
- * still just steps field.x); increment 3 replaces that half with the real
- * S-field. Shares b2's passthrough vertex shader shape and the house
+ * Fullscreen display shader for b3 "Sterile Breath". Increment 3: the real
+ * signed sterility field S(p) and the full sterile side land here, replacing
+ * increment 1's placeholder vertical split and increment 2's flat pale
+ * "blank". Shares b2's passthrough vertex shader shape and the house
  * screen->field mapping formula (b1's dish shader, b2's catalogueShader.ts):
  *
  *   field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan
  *
- * Biomass geometry (this track's family — NEVER chains/filaments/branching,
- * those belong to other tracks): a DENSE hash-jittered grid at CLUMP_FREQ
- * cells across field-uv (many small cushions carpeting the field, not a
- * handful of large ones — the art-direction reset's density-over-scale
- * rule) (`sbBiomass`'s 3x3 neighbourhood search over
- * `sbClumpSd`). Each present cell hosts one CLUMP — an iq-smin union of
- * LOBES circular lobe SDFs (`sbClumpSd`) hashed around the cell's anchor,
- * offsets kept smaller than the lobe radii so clumps read as compact mounded
- * cushions, never thin chains. Presence/appear/disappear follows b2's
- * beat-coupled lifecycle idiom (`sbClumpLife`, mirrors catalogueShader.ts's
- * specLife): a hero cell (nearest field-uv (0.5,0.5)) is always present,
- * every other cell rolls presence per lifecycle epoch with a pop-in
- * overshoot and a crossfade scale-out. Shading (`sbBiomass`) turns the union
- * SDF into a soft height/coverage value h (deep interior -> bright crown by
- * h), adds a thin rim band at the silhouette edge, 2-octave value-noise
- * interior speckle (domain drifting by the CPU-accumulated uMotionPhase, not
- * raw time), and a crowding term that darkens valleys where several clumps'
- * edges meet. uHeat leans the palette hot, uPaleness mixes the whole
- * biomass patch toward a chalky pale remission tone.
+ * The S-field (`sbSterility`): a signed distance-ish potential around the
+ * pocket (the LAST living place) -- positive = sterile, the zero-crossing
+ * IS the scrub line. `phi(p) = length((p - uPocket) * uStretch) * wobble`,
+ * `wobble` a low-frequency fbm modulation (`sbFbm`) driving an irregular
+ * organic boundary, `S = phi - R`, `R = R_MAX * (1 - uSterile)`: as
+ * uSterile climbs from 0 to 1, R shrinks from R_MAX to 0, so the living
+ * island (phi < R) shrinks from covering the whole visible field down to a
+ * single point at the pocket -- exactly the "condenses to a single seed
+ * point" arc the sections.ts doc describes. EXTENSION POINT for increments
+ * 4-5: strikes/pokes will smax/smin their own local fields into the value
+ * `sbSterility` returns, so every caller below (biomass truncation, the
+ * diagnostic solo mode, the scrub line) reads S through that one function
+ * and composition only ever touches that one spot.
  *
- * uSoloMode: 0 = full composed scene (biomass + the increment-1 sterile
- * split); 1 = biomass shaded field alone over a flat mid-gray background,
- * across the WHOLE frame (ignores the sterile split entirely — isolates the
- * geometry for screenshots); 5 = the cold blank forced full-screen (already
- * wired in increment 1). Modes 2-4 (front / events / ghosts) have no
- * dedicated layer yet and fall through to the composed scene.
+ * R_MAX derivation (see the constant's own comment): calibrated so the
+ * front just kisses the viewport's farthest corner at t=12 (uSterile=0.02,
+ * zoomAt=1.45), worst-case ~1.9 horizontal uCover aspect, nominal
+ * (unjittered) pocket/stretch -- then verified live across the walk
+ * timestamps and adjusted once.
+ *
+ * Sterile side (`sbSterileSide`): layered and deliberately subtle --
+ * (1) a cold blue-white base, (2) a slow-drifting specular ramp plus a
+ * broad darker corner falloff (screen-space, a vignette on the viewport,
+ * not the world), (3) WATERMARKS (`sbWatermarkSd`) -- ultra-faint prints of
+ * erased biomass sampled from the SAME clump union SDF as the living side
+ * but with a FROZEN lifecycle (constant life clock, full presence, zero
+ * breath) so they read as fixed ghosts, never living forms: no rim, no
+ * speckle, no breathing. sbClumpLife/sbClumpSd take lifeClock/presence/
+ * breath as explicit parameters (rather than reading uLifeClock/uPresence/
+ * uBreath directly) precisely so the watermark pass can freeze them without
+ * duplicating the geometry functions.
+ *
+ * Biomass renders only where S < 0 (`sbBiomass`'s new `livingMask`
+ * parameter, multiplied into both edgeMask and rim): a clump half-overtaken
+ * by the front shows its scrubbed half gone, revealing the sterile ground
+ * beneath instead of biomass.
+ *
+ * The scrub line + droplet glints (main(), drawn LAST so they pop over
+ * everything): a bright cold-white band straddling the S=0 zero-crossing,
+ * sparse hash-driven glints hashed by arc-position (angle * current
+ * radius) that twinkle on a breath-phase epoch, plus a faint glow bleeding
+ * into the living side only.
+ *
+ * uSoloMode: 0 = full composed scene; 1 = biomass shaded field alone over a
+ * flat mid-gray background across the WHOLE frame, ignoring S entirely
+ * (unchanged from increment 2); 2 = S-field diagnostic (living side dark
+ * gray, sterile side light gray, scrub line + glints forced to full
+ * strength, no biomass) -- NEW this increment; 3 events / 4 ghosts have no
+ * dedicated layer yet and fall through to the composed scene; 5 = the real
+ * sterile-side treatment forced full-screen (was a flat placeholder in
+ * increments 1-2; now the genuine layered `sbSterileSide`).
  *
  * NO backticks anywhere in the GLSL strings below (template-literal
- * truncation trap, a2 lesson) — not even inside GLSL comments. All loops
+ * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
  * have compile-time constant bounds. Reserved-word identifiers (active,
  * input, output, filter) are avoided throughout.
  */
@@ -51,13 +74,13 @@ void main() {
 `;
 
 /**
- * Slot/quality budgets for the layers landing in increments 2-8 — baked
+ * Slot/quality budgets for the layers landing in increments 2-8 -- baked
  * into the shader source as compile-time `const int` so every later loop
  * bound is a literal, matching b2's builder pattern (buildCatalogueFragment
  * bakes reticleSlots/reach/glyphStrokes the same way). `lobes` and `fbmOct`
- * were unused placeholders in increment 1; this increment is the first real
+ * were unused placeholders in increment 1; increment 2 was their first real
  * consumer (LOBES drives sbClumpSd's per-clump lobe count, FBM_OCT drives
- * sbFbm's octave count) — they're dropped from `futureLayerBudget`'s
+ * sbFbm's octave count) -- they're dropped from `futureLayerBudget`'s
  * checksum below accordingly, since they now have real compiled uses.
  * strike/bloom/poke/rippleSlots remain unused until their own increments and
  * stay in the checksum.
@@ -98,6 +121,16 @@ uniform float uMotionPhase; // CPU-accumulated interior-speckle drift phase (NOT
 uniform float uHeat; // 0..1 hot/decayed palette lean (ActParams.heat)
 uniform float uPaleness; // 0..1 chalky pale remission mix (ActParams.paleness)
 
+// Sterility front + sterile-side reactivity (increment 3).
+uniform vec2 uPocket; // field-uv centre of the S-field — the LAST living place
+uniform vec2 uStretch; // per-axis elongation of the S-field's potential
+uniform vec2 uFrontDrift; // CPU-accumulated domain offset for the front's noise wobble (NOT raw time)
+uniform float uFrontNoise; // 0..1 turbulence/roughness of the front edge (ActParams.frontNoise)
+uniform float uScrubGlow; // scrub-line glow strength, bass-reactive (index.ts)
+uniform float uGlint; // droplet-glint amplitude on the scrub line, fast-highs-reactive (index.ts)
+uniform float uWatermark; // 0..1 residual stain/watermark opacity (ActParams.watermark)
+uniform float uSterileSpec; // 0..1 clinical specular sheen of the sterile surface (ActParams.sterileSpec)
+
 // Increment 2-8 layer budgets, baked as compile-time constants. LOBES/
 // FBM_OCT are real consumed constants now (sbClumpSd / sbFbm below); the
 // event-slot budgets below remain unused until their own increments, so
@@ -112,14 +145,53 @@ const int FBM_OCT = ${FBM_OCT};
 
 // Biomass field constants: CLUMP_FREQ cells across field-uv, SMIN_K the iq
 // smooth-min blend radius for fusing a clump's lobes into one mounded body.
-// CLUMP_FREQ raised 4.0 -> 7.0 (art-direction tuning round): the reset's
-// density-over-scale rule rejects a handful of large clumps filling the
-// frame in favour of many smaller cushions carpeting the field. baseR in
-// sbClumpSd stays proportional to 1.0 / CLUMP_FREQ, so raising this alone
-// shrinks every clump and packs more of them in without changing coverage
-// fraction.
 const float CLUMP_FREQ = 7.0;
 const float SMIN_K = 0.045;
+
+// FRONT_NOISE_AMP: baseline relative amplitude of the S-field's noise
+// wobble (see sbSterility below). Composition round: raised 0.35 -> 0.6 and
+// the wobble itself made TWO-SCALE (a coarse, low-frequency fbm term
+// weighted 2x a finer one) so the front reads as an advancing bleach stain
+// with whole fingers reaching ahead/behind, never a smooth shrinking
+// conic/circle (the "petri-dish" composition that collides with b1) — at
+// uFrontNoise=1 the combined wobble now swings roughly plus-or-minus 30%,
+// still never inverting the monotonic radial falloff (no disconnected
+// islands), just a much more irregular boundary.
+const float FRONT_NOISE_AMP = 0.6;
+
+// R_MAX derivation: calibrated so sterile stays invisible at t=0 (uSterile
+// =0, R=R_MAX) even for an unlucky per-play draw of uPocket/uStretch.
+// Composition round: uPocket's jitter widened to 0.5 ± (0.10 + rand*0.14)
+// per axis with an INDEPENDENT random sign (was ±0.08) and uStretch's
+// dominant-axis range widened to 1.0 + rand*0.55 (was 1.0 + rand*0.35) —
+// both deliberately push the pocket well off-centre so the front reads as
+// entering from one side/corner rather than enclosing a centred island.
+// That widened jitter pushes the worst-case farthest-corner phi much
+// higher than the previous 0.80 derivation covered (Monte Carlo over
+// realistic app-canvas aspect ~1.16-1.5, zoom=1.45: p50 ~0.87, p99 ~1.14,
+// p999 ~1.21 of 300k trials) — re-derived against a representative
+// near-worst-case corner instead of the true (much rarer) extremum: cover
+// ~= (1.3, 1.0), zoom = 1.45, pocket shifted to its MAX magnitude (0.24)
+// toward the opposite corner on both axes = (0.26, 0.26), that corner's
+// dominant (cover-major) axis stretched to its new max 1.55x, the other to
+// 0.65x. Farthest-corner field-uv (0.9483, 0.8448); delta from pocket =
+// (0.6883, 0.5848); stretched = (0.6883*1.55, 0.5848*0.65) =
+// (1.0669, 0.3801); phi = length(...) = 1.1326. R_MAX = 1.1326 / 0.98 =
+// 1.1557, rounded up for margin (sits around the simulated p99.5-p99.8).
+// Verified live at ?t=0 across several reseeded plays (no sterile) and
+// ?t=30/60/104/150/170 across 3+ reseeds (see index.ts / the increment-3
+// build notes for the walk).
+const float R_MAX = 1.20;
+
+// Watermark sampling constants (sbWatermarkSd / sbSterileSide): a FROZEN
+// snapshot of the clump lifecycle — constant life clock, full presence, no
+// breathing — so residue prints read as fixed ghosts rather than live
+// forms. WM_FALL shapes how quickly the print fades with depth into the
+// sterile field (near the front looks recently scrubbed, deep blank looks
+// clean).
+const float WM_LIFE_CLOCK = 0.35;
+const float WM_PRESENCE = 0.92;
+const float WM_FALL = 2.2;
 
 float futureLayerBudget() {
   float acc = 0.0;
@@ -168,14 +240,18 @@ vec2 sbHeroCell() { return floor(vec2(0.5 * CLUMP_FREQ)); }
 // ~1 fully present, briefly >1 on pop-in) and writes the epoch number so the
 // caller can re-roll the clump's lobe layout per epoch (a respawned clump
 // lands with a freshly hashed lobe arrangement). HERO OVERRIDE: sbHeroCell()
-// is pinned present at epoch 0 forever.
-float sbClumpLife(vec2 cc, out float epoch) {
+// is pinned present at epoch 0 forever. lifeClock/presence are taken as
+// EXPLICIT parameters (increment 3) rather than read from the uLifeClock/
+// uPresence uniforms directly, so the watermark pass (sbWatermarkSd) can
+// call this with a FROZEN snapshot instead of the live values — every other
+// caller (sbBiomass's search) just passes the real uniforms through.
+float sbClumpLife(vec2 cc, out float epoch, float lifeClock, float presence) {
   if (cc == sbHeroCell()) { epoch = 0.0; return 1.0; }
-  float cycle = uLifeClock + sbHash21(cc + vec2(17.9, 4.4));
+  float cycle = lifeClock + sbHash21(cc + vec2(17.9, 4.4));
   float e = floor(cycle);
   float k = fract(cycle);
-  float presentE = step(sbHash21(cc + vec2(e * 7.7, 2.9)), uPresence);
-  float presentE1 = step(sbHash21(cc + vec2((e + 1.0) * 7.7, 2.9)), uPresence);
+  float presentE = step(sbHash21(cc + vec2(e * 7.7, 2.9)), presence);
+  float presentE1 = step(sbHash21(cc + vec2((e + 1.0) * 7.7, 2.9)), presence);
   // Scale-out crossfade over the last 15% of the cycle toward next epoch's presence.
   float x = smoothstep(0.85, 1.0, k);
   float s = mix(presentE, presentE1, x);
@@ -202,18 +278,19 @@ vec3 sbClumpCrown(vec2 cc) {
 // Signed distance to clump cc's silhouette at field-uv point p: a smin union
 // of LOBES circular lobes hashed around the cell's anchor. Lobe centre
 // spread is kept SMALLER than the lobe radii (offsets within 0.55 x base
-// radius; radii 0.45-1.0 x base, widened from the increment-2 0.55-1.0 range
-// so smaller clumps at the higher CLUMP_FREQ still read as organic lumpy
-// mounds instead of near-circular blobs) so the union always reads as one
-// compact mounded cushion, never a chain or filament. Base clump radius is
+// radius; radii 0.45-1.0 x base) so the union always reads as one compact
+// mounded cushion, never a chain or filament. Base clump radius is
 // 0.55/CLUMP_FREQ scaled per clump by a hash in [0.55, 1.05]. Breathing
 // scales every lobe's radius together, with a per-clump hashed phase offset
 // so the whole field doesn't pump in unison. Absent clumps (sbClumpLife's
 // envelope near 0) return a large sentinel so they drop out of the search
-// entirely.
-float sbClumpSd(vec2 fieldUv, vec2 cc) {
+// entirely. lifeClock/presence/breath are explicit parameters
+// (increment 3, see sbClumpLife's doc) so sbWatermarkSd can pass a FROZEN
+// snapshot (constant life clock, full presence, zero breath) for the
+// residue prints, while sbBiomass's search passes the live uniforms.
+float sbClumpSd(vec2 fieldUv, vec2 cc, float lifeClock, float presence, float breath) {
   float epoch;
-  float scaleEnv = sbClumpLife(cc, epoch);
+  float scaleEnv = sbClumpLife(cc, epoch, lifeClock, presence);
   if (scaleEnv < 0.01) return 9.0;
 
   vec2 cellCenter = (cc + vec2(0.5)) / CLUMP_FREQ;
@@ -224,7 +301,7 @@ float sbClumpSd(vec2 fieldUv, vec2 cc) {
   float baseR = (0.55 / CLUMP_FREQ) * mix(0.55, 1.05, baseHash);
 
   float clumpPhaseHash = sbHash21(cc + vec2(6.6, 22.2));
-  float breathScale = 1.0 + 0.06 * uBreath * sin(6.2831853 * (uBreathPhase + clumpPhaseHash));
+  float breathScale = 1.0 + 0.06 * breath * sin(6.2831853 * (uBreathPhase + clumpPhaseHash));
 
   float sd = 9.0;
   for (int i = 0; i < LOBES; i++) {
@@ -241,15 +318,40 @@ float sbClumpSd(vec2 fieldUv, vec2 cc) {
   return sd;
 }
 
+// Watermark residue SDF (increment 3): the SAME clump union search as
+// sbBiomass, but sampled with a FROZEN lifecycle (WM_LIFE_CLOCK,
+// WM_PRESENCE, zero breath) — so the returned distance is a fixed snapshot
+// of "biomass that was recently here", never a live/breathing shape. No
+// crowd tracking, no nearest/second-nearest colour bookkeeping — the caller
+// only wants the union silhouette's interior mask.
+float sbWatermarkSd(vec2 fieldUv) {
+  vec2 n0 = floor(fieldUv * CLUMP_FREQ);
+  float sdUnion = 9.0;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 cc = n0 + vec2(float(i), float(j));
+      float sdC = sbClumpSd(fieldUv, cc, WM_LIFE_CLOCK, WM_PRESENCE, 0.0);
+      if (sdC > 5.0) continue;
+      sdUnion = sbSmin(sdUnion, sdC, SMIN_K);
+    }
+  }
+  return sdUnion;
+}
+
 // Full biomass field composited over ground at field-uv point fieldUv:
 // searches the 3x3 clump-cell neighbourhood, smin-unions every present
 // clump's SDF for the coverage field, tracks the two nearest clumps for a
 // soft colour blend across overlaps plus a crowding count for the valley-
 // darkening term, then shades interior->crown by height with a rim band and
-// interior speckle. Shared between the composed scene (ground = near-black)
-// and solo-mode 1 (ground = flat mid-gray) so the two paths can never drift
-// apart.
-vec3 sbBiomass(vec2 fieldUv, vec3 ground) {
+// interior speckle. Shared between the composed scene (ground = the
+// living/sterile field, see main()) and solo-mode 1 (ground = flat
+// mid-gray) so the two paths can never drift apart. livingMask (increment
+// 3, ActParams.uSterile-driven — 1.0 = fully living, 0.0 = fully sterile,
+// see main()'s S-field) truncates the biomass silhouette itself: multiplied
+// into edgeMask and rim so a clump half-overtaken by the sterilization front
+// shows its scrubbed half gone, revealing bare ground instead of biomass.
+// Solo mode 1 passes a constant 1.0 here to ignore S entirely, as before.
+vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask) {
   vec2 n0 = floor(fieldUv * CLUMP_FREQ);
 
   float sdUnion = 9.0;
@@ -262,7 +364,7 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground) {
   for (int j = -1; j <= 1; j++) {
     for (int i = -1; i <= 1; i++) {
       vec2 cc = n0 + vec2(float(i), float(j));
-      float sdC = sbClumpSd(fieldUv, cc);
+      float sdC = sbClumpSd(fieldUv, cc, uLifeClock, uPresence, uBreath);
       if (sdC > 5.0) continue;
       crowdCount++;
       sdUnion = sbSmin(sdUnion, sdC, SMIN_K);
@@ -276,27 +378,25 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground) {
   }
 
   // Silhouette edge: a CRISP, fwidth-derived pixel-scale coverage mask (~1.5
-  // screen pixels wide) — the ONLY term that decides ground vs biomass in
-  // the final composite below. Art-direction tuning round: this used to be
-  // a wide fixed 0.09 field-uv soft gradient, which read as out-of-focus/
-  // milky (drifting toward b1's petri look); fwidth ties the transition to
-  // actual screen pixels instead of a field-uv constant, so it stays crisp
-  // regardless of zoom/resolution.
+  // screen pixels wide) — the ONLY term (besides livingMask) that decides
+  // ground vs biomass in the final composite below. fwidth ties the
+  // transition to actual screen pixels instead of a field-uv constant, so
+  // it stays crisp regardless of zoom/resolution.
   float edgeAA = fwidth(sdUnion) * 0.75 + 0.0004;
   float edgeMask = clamp(1.0 - smoothstep(-edgeAA, edgeAA, sdUnion), 0.0, 1.0);
+  // Increment 3: the sterilization front truncates the biomass silhouette
+  // itself — a clump half-overtaken by the front shows its scrubbed half
+  // gone (ground shows through), never a lingering biomass tint past S=0.
+  edgeMask *= livingMask;
   // Interior height: a GENTLER gradient than the edge, used only for the
   // mounded crown/interior colour falloff WITHIN the silhouette (never for
-  // the ground/biomass boundary itself, which is edgeMask's job). Width
-  // scaled down from increment 2's fixed 0.09/0.01 field-uv values in
-  // proportion to CLUMP_FREQ's 4.0 -> 7.0 increase, so the gradient still
-  // covers the same FRACTION of a clump now that clumps are smaller.
+  // the ground/biomass boundary itself, which is edgeMask's job).
   float h = clamp(1.0 - smoothstep(-0.051, 0.006, sdUnion), 0.0, 1.0);
   // Thin rim: a narrow, fwidth-scaled |SDF| band hugging the silhouette — a
-  // bright line, not a halo. The old fixed 0.018 field-uv band read as a
-  // soft glow once clumps shrank at the new CLUMP_FREQ; fwidth keeps it a
-  // near-constant pixel width instead.
+  // bright line, not a halo. Also truncated by livingMask so the rim never
+  // ghosts past the front either.
   float rimAA = fwidth(sdUnion) * 1.5 + 0.0006;
-  float rim = 1.0 - smoothstep(0.0, rimAA, abs(sdUnion));
+  float rim = (1.0 - smoothstep(0.0, rimAA, abs(sdUnion))) * livingMask;
 
   vec3 interior = vec3(0.30, 0.06, 0.14);
   vec3 crownNearest = sbClumpCrown(ccNearest);
@@ -312,11 +412,7 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground) {
 
   // Interior speckle: 2(+)-octave value noise, domain drifting by the
   // CPU-accumulated uMotionPhase (not raw time) — interior only (gated by h,
-  // excluded from the rim band). Art-direction tuning round: frequency now
-  // scales WITH CLUMP_FREQ (so a clump interior always spans the same
-  // number of speckle cycles regardless of clump size) and amplitude is
-  // more than doubled (0.12 -> 0.28) — at the old fixed 26.0 frequency and
-  // 0.12 amplitude the granular texture was invisible.
+  // excluded from the rim band).
   vec2 noiseP = fieldUv * CLUMP_FREQ * 9.0 + vec2(uMotionPhase * 0.35, -uMotionPhase * 0.27);
   float speck = sbFbm(noiseP);
   biomassCol += (speck - 0.5) * 0.28 * h * (1.0 - rim);
@@ -347,34 +443,157 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground) {
   return col;
 }
 
+// The signed sterility field S(p): positive = sterile, negative = living,
+// the zero-crossing IS the scrub line. phi is a stretched, noise-wobbled
+// distance from the pocket (the LAST living place); R shrinks from R_MAX
+// toward 0 as uSterile climbs from 0 to 1, so the living island (phi < R)
+// shrinks from the whole visible field down to a single point. The wobble
+// is TWO-SCALE (composition round): a coarse, low-frequency fbm term (p *
+// 1.2, drifting at 0.6x the fine term's rate) weighted 2x a finer term (p *
+// 3.0, the original increment-3 frequency), averaged 2:1 so FRONT_NOISE_AMP
+// stays a comparable amplitude knob. The coarse term is what makes whole
+// LOBES of the front finger ahead of or lag behind the mean radius (an
+// advancing bleach stain, not a smoothly shrinking circle); the fine term
+// keeps the edge itself from reading as a bare polygon.
+// EXTENSION POINT (increments 4-5): strikes/pokes will smax/smin their own
+// local fields into the value returned here (a strike carves a temporary
+// living hole; a poke's regrowth bloom pushes the boundary back out) —
+// every caller below reads S through this one function, so future
+// composition only ever needs to touch this one spot.
+float sbSterility(vec2 p) {
+  vec2 d = (p - uPocket) * uStretch;
+  float fineN = sbFbm(p * 3.0 + uFrontDrift) - 0.5;
+  float coarseN = sbFbm(p * 1.2 + uFrontDrift * 0.6) - 0.5;
+  float wobbleN = (coarseN * 2.0 + fineN) / 3.0;
+  float wobble = 1.0 + FRONT_NOISE_AMP * uFrontNoise * wobbleN;
+  float phi = length(d) * wobble;
+  float R = R_MAX * (1.0 - uSterile);
+  return phi - R;
+}
+
+// The sterile side's layered appearance (increment 3): (1) a cold
+// blue-white base — this must stay clearly COLD, never warm bone/cream
+// (that's b2's ground); (2) a slow-drifting specular dot-product ramp
+// (strength x uSterileSpec) plus a broad darker corner falloff (SCREEN
+// space — a vignette on the viewport, not the world); (3) watermarks —
+// ultra-faint frozen prints of erased biomass (sbWatermarkSd), fading with
+// depth into the sterile field via WM_FALL. s is the caller's already-
+// computed sbSterility(fieldUv) value, reused here for the watermark's
+// near-front-vs-deep-blank falloff. The scrub line itself (layer 4) is
+// drawn separately, LAST, in main().
+vec3 sbSterileSide(vec2 fieldUv, float s) {
+  vec3 col = vec3(0.875, 0.914, 0.933);
+
+  // Slow-moving specular gradient: one dot-product ramp against a slowly
+  // drifting direction, brightening toward a near-white highlight.
+  vec2 specDir = normalize(vec2(sin(uTime * 0.05), cos(uTime * 0.037)));
+  float specRamp = clamp(dot(fieldUv - 0.5, specDir) * 1.6 + 0.5, 0.0, 1.0);
+  col = mix(col, vec3(0.957, 0.976, 0.988), specRamp * uSterileSpec);
+
+  // Broad darker corner fall (screen-space, always present at a fixed
+  // subtle weight — a structural vignette, not a specular effect).
+  float cornerDist = length((vUv - 0.5) * uCover);
+  float cornerFall = smoothstep(0.35, 0.95, cornerDist);
+  col = mix(col, vec3(0.788, 0.847, 0.886), cornerFall * 0.35);
+
+  // Watermarks: faint prints of erased biomass, sampled from the SAME clump
+  // union SDF with a FROZEN life clock / full presence / zero breath —
+  // frozen ghosts, not living forms (no rim, no speckle).
+  float wmSd = sbWatermarkSd(fieldUv);
+  float wmAA = fwidth(wmSd) * 0.75 + 0.0004;
+  float wmMask = clamp(1.0 - smoothstep(-wmAA, wmAA, wmSd), 0.0, 1.0);
+  float wmAlpha = clamp(uWatermark * 0.35 * exp(-max(s, 0.0) * WM_FALL) * wmMask, 0.0, 1.0);
+  col = mix(col, vec3(0.80, 0.86, 0.89), wmAlpha);
+
+  return col;
+}
+
 void main() {
   // Screen uv -> field uv (house formula, shared with the later pointer.ts).
   vec2 field = (vUv - 0.5) * uCover / uZoom + 0.5 + uPan;
 
-  // Near-black warm living ground; the biomass field composites onto it.
-  vec3 ground = vec3(0.045, 0.022, 0.04);
-  vec3 biomassOnGround = sbBiomass(field, ground);
+  // Signed sterility field, computed once and shared by every mode below
+  // (biomass truncation, the sterile-side ground colour, the diagnostic
+  // solo mode, and the scrub line) so they can never disagree about where
+  // the front actually is.
+  float S = sbSterility(field);
+  float sEdge = fwidth(S) * 0.75 + 0.0004; // tight fwidth-based S_EDGE
+  // 1.0 living (S<0), 0.0 sterile (S>0). Written as 1.0 - smoothstep(-sEdge,
+  // sEdge, S) rather than the mirrored smoothstep(sEdge, -sEdge, S) — both
+  // are mathematically the same inverted ramp, but the GLSL spec leaves
+  // edge0 > edge1 undefined, and this form keeps edge0 < edge1 always true.
+  float livingMask = 1.0 - smoothstep(-sEdge, sEdge, S);
 
-  // Cold pale blank: the sterile front's eventual destination colour.
-  vec3 blank = vec3(0.87, 0.91, 0.93);
+  // uSoloMode switch: each branch computes only what it needs (sbBiomass
+  // and sbWatermarkSd are both full 3x3 neighbourhood searches — cheap
+  // enough for one composed-scene pass, expensive enough that a debug-only
+  // solo mode must not force a second one every frame of normal playback).
+  vec3 color;
+  if (uSoloMode == 1) {
+    // Biomass field alone over a flat mid-gray background, across the
+    // WHOLE frame, ignoring S entirely (unchanged from increment 2).
+    color = sbBiomass(field, vec3(0.5), 1.0);
+  } else if (uSoloMode == 5) {
+    // The real sterile-side treatment, forced full-screen.
+    color = sbSterileSide(field, S);
+  } else if (uSoloMode == 2) {
+    // S-field diagnostic: living side dark gray, sterile side light gray,
+    // no biomass — the scrub line + glints (below) are forced to full
+    // strength on this branch.
+    color = mix(vec3(0.85), vec3(0.2), livingMask);
+  } else {
+    // Composed scene (mode 0, and 3/4's fallthrough): the ground itself
+    // transitions from the dark living ground to the cold sterile side at
+    // the same S boundary that truncates the biomass silhouette, so a
+    // scrubbed clump reveals sterile ground beneath it, not the old dark
+    // ground.
+    vec3 groundLiving = vec3(0.045, 0.022, 0.04);
+    vec3 sterileBase = sbSterileSide(field, S);
+    vec3 ground = mix(groundLiving, sterileBase, 1.0 - livingMask);
+    color = sbBiomass(field, ground, livingMask);
+  }
 
-  // Vertical split at field.x > 1.0 - uSterile — still the increment-1
-  // placeholder image (increment 3 replaces this with the real S-field): as
-  // uSterile rises (sterileAt(songTime), sections.ts), the pale blank eats
-  // the frame from the right, now revealing the real biomass on the living
-  // side instead of the old gradient.
-  float splitMask = step(1.0 - uSterile, field.x);
-  vec3 color = mix(biomassOnGround, blank, splitMask);
+  // --- Scrub line + droplet glints, drawn LAST so they pop over
+  // everything above. Skipped for the two solo modes that isolate a single
+  // layer's own colour (1 biomass-only, 5 sterile-only); the diagnostic
+  // mode 2 wants it forced to full strength regardless of the current
+  // act's glow/glint knobs, so debugging never depends on song position.
+  if (uSoloMode != 1 && uSoloMode != 5) {
+    bool diagFront = (uSoloMode == 2);
+    float glowStrength = diagFront ? 1.0 : (0.35 + uScrubGlow);
+    float glintStrength = diagFront ? 1.0 : uGlint;
 
-  // uSoloMode switch: mode 5 forces the cold blank full-screen; mode 1
-  // forces the biomass field alone over a flat mid-gray background across
-  // the WHOLE frame (ignores the sterile split) so screenshots isolate the
-  // geometry. Modes 2-4 (front / events / ghosts) have no dedicated layer
-  // yet, so they fall through to the composed scene.
-  if (uSoloMode == 5) {
-    color = blank;
-  } else if (uSoloMode == 1) {
-    color = sbBiomass(field, vec3(0.5));
+    // Narrow, fwidth-scaled band (~2-3 screen px) straddling the S=0
+    // zero-crossing.
+    float lineAA = fwidth(S) * 1.25 + 0.0004;
+    float lineMask = 1.0 - smoothstep(0.0, lineAA, abs(S));
+
+    // Droplet glints: sparse hash-driven bright points ON the line.
+    // Arc-position is approximated as angle * current radius (field-uv
+    // units), hashed at ~40 cells per unit so the cell pitch stays a
+    // consistent physical spacing as R shrinks over the piece. Each cell's
+    // twinkle re-hashes on a breath-phase epoch offset by its own base hash
+    // so glints never sync across the line.
+    vec2 sd0 = (field - uPocket) * uStretch;
+    float theta = atan(sd0.y, sd0.x);
+    float rNow = R_MAX * (1.0 - uSterile);
+    float arcPos = theta * rNow;
+    float glintCell = floor(arcPos * 40.0);
+    float glintBaseH = sbHash21(vec2(glintCell, 3.3));
+    float glintExists = step(glintBaseH, 0.3);
+    float glintEpoch = floor(uBreathPhase * 6.0 + glintBaseH);
+    float glintTwinkle = sbHash21(vec2(glintCell, glintEpoch + 11.1));
+    float glint = glintExists * glintTwinkle * glintStrength * lineMask;
+
+    vec3 lineColor = vec3(0.97, 1.0, 1.0);
+    color = mix(color, lineColor, lineMask * clamp(glowStrength, 0.0, 1.0));
+    color += lineColor * glint;
+
+    // Faint interior glow bleeding ~2x the line width into the LIVING side
+    // only — the front "heats" what it's about to consume.
+    float bleedWidth = lineAA * 2.0;
+    float livingBleed = (1.0 - smoothstep(0.0, bleedWidth, -S)) * step(S, 0.0);
+    color += lineColor * livingBleed * glowStrength * 0.18;
   }
 
   color += vec3(0.0) * futureLayerBudget();
