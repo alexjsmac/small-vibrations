@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Viz, VizContext, AudioFrame, VizModule, VizPointerEvent } from '../types';
 import { STERILE_VERT, buildSterileFragment, FRONT_NOISE_AMP } from './sterileShader';
-import { paramsAt, sterileAt, zoomAt, lifeClockAt, type ActParams } from './sections';
+import { paramsAt, sterileAt, zoomAt, arcAt, lifeClockAt, ACTS, type ActParams } from './sections';
 import { mulberry32 } from '../random';
 import { SlotPool, nextPoissonDelay } from './pools';
 
@@ -160,6 +160,77 @@ const PAN_CLAMP = 0.35;
 
 /** Act index (paramsAt's SectionState.actIndex) at which a poke births a condensation bloom instead of a poke-carve — 'last-breath' (ACTS[6] in sections.ts): the world is gone by then, only breath remains. */
 const BLOOM_ONLY_ACT_INDEX = 6;
+
+/**
+ * Ambient camera drift (increment 7): when the pointer is neither held nor
+ * still carrying release momentum, `this.pan` wanders slowly at up to
+ * `p.driftSpeed * DRIFT_SPEED_SCALE` field-uv/s, in a direction that itself
+ * slowly rotates (`this.driftAngle`, seeded once per play). driftSpeed=0
+ * acts (remission, sterile, last-breath — sections.ts's ACTS[3]/[5]/[6])
+ * go dead still for free: the formula scales by p.driftSpeed, so 0 is an
+ * exact no-op there — no special-casing, and user-thrown momentum (a
+ * SEPARATE branch below) still decays naturally regardless of the current
+ * act's driftSpeed.
+ */
+const DRIFT_SPEED_SCALE = 0.0035;
+const DRIFT_ANGLE_RATE = 0.05;
+
+/** Breathing zoom (increment 7): a subtle inhale/exhale scale layered on top of zoomAt's own envelope, `uZoom *= 1 - BREATH_ZOOM_AMOUNT * uBreath`. */
+const BREATH_ZOOM_AMOUNT = 0.012;
+
+/**
+ * Act-4 ('the-purge') camera shake (increment 7): `this.shake` is a NEW
+ * decay scalar (exp(-SHAKE_DECAY_RATE*dt) per frame), kicked on every
+ * strike fire (any channel — onset, ambient Poisson, or the 144s scripted
+ * peak strike) WHILE the current act is the purge only (see fireStrike's
+ * doc). Applied as a small pan JITTER on a SEPARATE uPan-bound Vector2
+ * (`this.panDisplay`) written fresh every frame — never mutated into
+ * `this.pan` itself, which stays the clean, un-jittered camera position
+ * pointer()/pickLivingPoint reason about.
+ */
+const SHAKE_DECAY_RATE = 6;
+const SHAKE_KICK_MULT = 0.8;
+const SHAKE_JITTER_AMP = 0.006;
+const SHAKE_ACT_INDEX = 4;
+
+/**
+ * Scripted hits (increment 7, edge-triggered on the boundary crossing — the
+ * b2 idiom: `lastSongTime < T && songTime >= T && songTime - lastSongTime <
+ * SCRIPTED_HIT_GUARD` rejects a `?t=` seek or a track loop as a false
+ * trigger, since either produces a jump far bigger than one real frame's
+ * dt could ever be).
+ */
+const PURGE_TIME = 140;
+const PEAK_STRIKE_TIME = 144;
+const STEP_TIMES: readonly number[] = [168, 174, 180];
+const LAST_POCKET_TIME = 184;
+const SCRIPTED_HIT_GUARD = 0.5;
+
+/** uFlash decay scalar (1/s, index.ts) and per-hit kick sizes (increment 7) — feeds sterileShader.ts's uFlash (scrub-line brightness lift + a faint whole-frame lift, both post-grade). Math.max'd at each kick (never overwritten) so a closely-following smaller kick can't dim an already-hot flash. */
+const FLASH_DECAY_RATE = 3.4;
+const FLASH_KICK_PURGE = 1.0;
+const FLASH_KICK_PEAK_STRIKE = 0.7;
+const FLASH_KICK_STEP = 0.45;
+const FLASH_KICK_LAST_POCKET = 0.6;
+
+/** The 144s scripted strike (increment 7): oversized vs. the act's own strikeSize and centre-biased (tighter than a bloom's own BLOOM_CENTER_BIAS) so it lands somewhere unmissable — see pickLivingPoint's numeric centerBias doc. */
+const PEAK_STRIKE_SIZE_MULT = 1.6;
+const PEAK_STRIKE_CENTER_BIAS = 0.5;
+
+/**
+ * Crackle (increment 7, the high-band event) — mirrors the bass onset
+ * detector's shape (BASS_FAST_RATE/BASS_ONSET_EMA_RATE/BASS_ONSET_THRESHOLD/
+ * BASS_ONSET_COOLDOWN above) but chases `this.highFast` (already EMA'd at
+ * HIGH_FAST_RATE for uGlint, so no second fast-highs EMA is needed) against
+ * its own slower EMA (`this.highOnsetEma`).
+ */
+const CRACKLE_ONSET_EMA_RATE = 1.5;
+const CRACKLE_ONSET_THRESHOLD = 0.07;
+const CRACKLE_ONSET_COOLDOWN = 0.15;
+/** `this.crackle`'s exponential decay rate (1/s) feeding uCrackle. */
+const CRACKLE_DECAY_RATE = 7;
+/** `?crackle=always` debug affordance: a plain repeating fixed-interval kick (not a Poisson rate override like `?strike=always` — crackle's ambient rate is already `p.crackleRate * (0.5 + energy)`, a formula rather than one constant, so mirroring that idiom doesn't fit as cleanly here). */
+const CRACKLE_DEBUG_INTERVAL = 0.5;
 
 /**
  * "Sterile Breath" — a living, breathing dark field is slowly, irreversibly
@@ -349,14 +420,18 @@ class SterileBreath implements Viz {
   private ripplePool!: SlotPool;
 
   /**
-   * Field-space pan offset — pointer-drag only (increment 5), the a1/a2/a3/
-   * b1/b2 momentum idiom. Bound BY REFERENCE as uPan's uniform value (init(),
-   * matching b2's `uPan: { value: this.pan }`) so mutating this Vector2 in
-   * place is all that's needed to update the GPU uniform — no separate
-   * per-frame assignment. Clamped per-axis to ±PAN_CLAMP (update()'s
-   * momentum block).
+   * Field-space pan offset — pointer-drag + ambient drift (increments 5/7),
+   * the a1/a2/a3/b1/b2 momentum idiom. Increment 7: no longer bound
+   * directly as uPan's uniform value — `this.panDisplay` (below) is, so
+   * act-4 camera shake can add a jitter on top without mutating this
+   * "true" pan (which pointer()/pickLivingPoint still reason about
+   * directly). Clamped per-axis to ±PAN_CLAMP (update()'s momentum block).
    */
   private pan = new THREE.Vector2(0, 0);
+  /** uPan's actual bound uniform value (increment 7) — `this.pan` plus the act-4 shake jitter, written fresh every frame in update() (never accumulated). See SHAKE_* constants' doc. */
+  private panDisplay = new THREE.Vector2(0, 0);
+  /** Ambient-drift direction phase (increment 7), seeded once per play in init() via this.rand; advances at DRIFT_ANGLE_RATE while the camera is idle (update()'s camera-choreography block). */
+  private driftAngle = 0;
   /** True while the primary pointer is down (pointer()'s 'down'/'up'/'cancel'). */
   private held = false;
   /** This frame's accumulated drag delta (uv), consumed + zeroed by update()'s velocity EMA every frame. */
@@ -365,6 +440,27 @@ class SterileBreath implements Viz {
   /** EMA'd drag velocity (uv/s) while held; integrates `pan` with exponential friction after release (update()'s momentum block). */
   private velX = 0;
   private velY = 0;
+
+  /** Act-4 camera-shake decay scalar (increment 7) — see SHAKE_* constants' doc; kicked in fireStrike, decayed + consumed (as a uPan jitter) in update(). */
+  private shake = 0;
+
+  /** uFlash decay scalar (increment 7, scripted hits) — see FLASH_* constants' doc. */
+  private flash = 0;
+
+  /** uCrackle decay scalar (increment 7, the high-band event) — kicked to 1 in fireCrackle, decays exp(-CRACKLE_DECAY_RATE*dt). */
+  private crackle = 0;
+  /** Plain incrementing counter (increment 7) feeding uCrackleSeed (cast to float) — bumped on every fireCrackle so the shader's spark-cell hash re-rolls a fresh pattern per event. */
+  private crackleSeed = 0;
+  /** Crackle's own slower EMA (increment 7, CRACKLE_ONSET_EMA_RATE) that this.highFast chases — the high-band onset detector's second EMA (house recipe, mirrors bassOnsetEma). */
+  private highOnsetEma = 0;
+  /** Seconds remaining before another onset-triggered crackle may fire (CRACKLE_ONSET_COOLDOWN idiom). */
+  private crackleCooldown = 0;
+  /** Seconds until the next Poisson-scheduled ambient crackle — independent of the onset channel's cooldown, same shape as strikeTimeToNext/bloomTimeToNext. */
+  private crackleTimeToNext = 0;
+  /** `?crackle=always` — forces a repeating synthetic crackle every CRACKLE_DEBUG_INTERVAL seconds regardless of act/audio. */
+  private forceCrackleAlways = false;
+  /** `?crackle=always` debug affordance timer (seconds to next forced crackle). */
+  private crackleDebugTimer = 0;
 
   init(ctx: VizContext) {
     const { renderer, seed, quality } = ctx;
@@ -397,6 +493,8 @@ class SterileBreath implements Viz {
     // same "deterministic for screenshots" idiom as forceStrikeAlways/
     // forceBloomAlways above.
     this.forceGhostAlways = params.get('ghost') === 'always';
+    // `?crackle=always` (increment 7) — see forceCrackleAlways's own doc.
+    this.forceCrackleAlways = params.get('crackle') === 'always';
     const healParam = params.get('heal');
     if (healParam === 'off') this.healOverride = 0;
     else if (healParam === 'on') this.healOverride = 0.22;
@@ -442,6 +540,10 @@ class SterileBreath implements Viz {
       : new THREE.Vector2(1.0 - stretchMagOther, 1.0 + stretchMagDominant);
     this.seedOff.set(this.rand() * 10, this.rand() * 10);
 
+    // Ambient drift's rotating direction phase (increment 7) — seeded once
+    // per play so different plays wander in different starting directions.
+    this.driftAngle = this.rand() * Math.PI * 2;
+
     // Swab-strike pool (increment 4): sized to match the SAME strikeSlots
     // budget passed to buildSterileFragment below (8 Full / 6 Lite) — the
     // array lengths must agree or the uStrikeA/uStrikeB uniform arrays
@@ -476,13 +578,18 @@ class SterileBreath implements Viz {
         rippleSlots,
         lobes: this.full ? 5 : 3,
         fbmOct: this.full ? 3 : 2,
+        // Full-only film grain (increment 7) — see SterileShaderConfig's own doc.
+        grain: this.full,
       }),
       depthTest: false,
       depthWrite: false,
       uniforms: {
         uCover: { value: new THREE.Vector2(1, 1) },
         uZoom: { value: 1 },
-        uPan: { value: this.pan },
+        // uPan is bound to panDisplay (increment 7), NOT this.pan directly —
+        // see panDisplay's own doc (act-4 shake jitter without mutating the
+        // "true" pan pointer()/pickLivingPoint reason about).
+        uPan: { value: this.panDisplay },
         uTime: { value: 0 },
         uSterile: { value: 0 },
         uSoloMode: { value: soloMode },
@@ -515,6 +622,15 @@ class SterileBreath implements Viz {
         // forceGhostAlways never changes after init()'s URL parse.
         uGhostAmp: { value: 0 },
         uGhostForce: { value: this.forceGhostAlways ? 1 : 0 },
+        // Increment 7: act discipline / camera / scripted hits / crackle /
+        // grade — see this class's own top doc addendum and each field's
+        // private-property doc for the full mechanism.
+        uEnergy: { value: 0 },
+        uGrade: { value: 0 },
+        uVignette: { value: 0 },
+        uFlash: { value: 0 },
+        uCrackle: { value: 0 },
+        uCrackleSeed: { value: 0 },
       },
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
@@ -537,8 +653,30 @@ class SterileBreath implements Viz {
       this.soloMode === 3 ? 0 : this.pinnedSterile !== null ? this.pinnedSterile : sterileAt(songTime);
     u.uZoom.value = zoomAt(songTime);
 
-    this.section = paramsAt(songTime);
-    const p = this.section.params;
+    // Act-hold discipline (increment 7, the b2 crossfade-leak fix): acts 3
+    // (remission) and 4 (purge) use the PURE act object so neither leaks
+    // into its neighbours through the 6s crossfade — remission's restraint
+    // must never be softened by losing-ground's still-elevated rates
+    // bleeding in early, and the purge's album-max intensity must land as a
+    // genuine discrete jump, not a fade (ARC.md's "discrete state changes,
+    // not crossfades" rule for the biggest hits). Every other act keeps the
+    // house 6s crossfade. this.section still holds the FULL SectionState
+    // (actIndex/localT/blend all correct either way, only .params differs)
+    // for pointer()'s act-6 check and fireStrike's act-4 shake check below.
+    const sec = paramsAt(songTime);
+    const p = sec.actIndex === 3 || sec.actIndex === 4 ? ACTS[sec.actIndex] : sec.params;
+    this.section = sec;
+
+    // uEnergy (increment 7): arcAt's continuous 0..1 energy envelope —
+    // exposure lift (sterileShader.ts main()) and the crackle Poisson
+    // channel's rate multiplier below both ride this SAME read-don't-hold
+    // local so they can never disagree about "now". uGrade/uVignette ride
+    // ActParams.grade/vignette straight through (act-held where applicable,
+    // via `p` above).
+    const energy = arcAt(songTime);
+    u.uEnergy.value = energy;
+    u.uGrade.value = p.grade;
+    u.uVignette.value = p.vignette;
 
     // Loop/seek reset: a large songTime jump (a `?t=` seek, or the track
     // looping back to 0) means every in-flight strike and the Poisson
@@ -561,6 +699,46 @@ class SterileBreath implements Viz {
       this.bloomTimeToNext = 0;
       this.pokePool.clearAll();
       this.ripplePool.clearAll();
+      // Increment 7: the crackle Poisson schedule is equally stale.
+      this.crackleTimeToNext = 0;
+    }
+
+    // Scripted hits (increment 7, edge-triggered on the boundary crossing —
+    // the b2 idiom: `lastSongTime < T && songTime >= T && songTime -
+    // lastSongTime < SCRIPTED_HIT_GUARD` rejects a `?t=` seek or a track
+    // loop as a false trigger, since either produces a jump far bigger than
+    // one real frame's dt could ever be). Checked against this.lastSongTime
+    // BEFORE it's overwritten below, same as the seek-jump reset just above.
+    if (
+      this.lastSongTime < PURGE_TIME &&
+      songTime >= PURGE_TIME &&
+      songTime - this.lastSongTime < SCRIPTED_HIT_GUARD
+    ) {
+      this.flash = Math.max(this.flash, FLASH_KICK_PURGE);
+    }
+    if (
+      this.lastSongTime < PEAK_STRIKE_TIME &&
+      songTime >= PEAK_STRIKE_TIME &&
+      songTime - this.lastSongTime < SCRIPTED_HIT_GUARD
+    ) {
+      // ONE scripted strike, oversized and centre-biased so it's
+      // unmistakably the album-max hit, healRate forced to 0 regardless of
+      // act (the purge's own rule anyway, but pinned explicitly so this one
+      // strike can never NOT scar even under `?heal=on`).
+      this.fireStrike(p, PEAK_STRIKE_SIZE_MULT, PEAK_STRIKE_CENTER_BIAS, true);
+      this.flash = Math.max(this.flash, FLASH_KICK_PEAK_STRIKE);
+    }
+    for (const stepTime of STEP_TIMES) {
+      if (this.lastSongTime < stepTime && songTime >= stepTime && songTime - this.lastSongTime < SCRIPTED_HIT_GUARD) {
+        this.flash = Math.max(this.flash, FLASH_KICK_STEP);
+      }
+    }
+    if (
+      this.lastSongTime < LAST_POCKET_TIME &&
+      songTime >= LAST_POCKET_TIME &&
+      songTime - this.lastSongTime < SCRIPTED_HIT_GUARD
+    ) {
+      this.flash = Math.max(this.flash, FLASH_KICK_LAST_POCKET);
     }
     this.lastSongTime = songTime;
 
@@ -580,6 +758,11 @@ class SterileBreath implements Viz {
     const prevBassSlow = this.bassSlow;
     this.bassSlow += (audio.bass - this.bassSlow) * Math.min(1, dt * BASS_SLOW_RATE);
     u.uBreath.value = this.pinnedBreath !== null ? this.pinnedBreath : this.bassSlow * p.breathAmp;
+    // Breathing zoom (increment 7): a subtle inhale/exhale scale layered on
+    // top of zoomAt's own envelope (already uploaded above, before uBreath
+    // was ready this frame) — verified the existing wiring had NO breath
+    // term; this multiply is the whole addition.
+    u.uZoom.value = (u.uZoom.value as number) * (1 - BREATH_ZOOM_AMOUNT * (u.uBreath.value as number));
 
     this.breathPhase += dt * BREATH_PHASE_RATE;
     u.uBreathPhase.value = this.breathPhase;
@@ -607,6 +790,44 @@ class SterileBreath implements Viz {
     this.highFast += (audio.high - this.highFast) * Math.min(1, dt * HIGH_FAST_RATE);
     u.uGlint.value = this.pinnedGlint !== null ? this.pinnedGlint : p.glintAmp * this.highFast;
 
+    // Crackle high-band onset detector (increment 7, mirrors the bass onset
+    // detector's shape below): this.highFast (already EMA'd above at
+    // HIGH_FAST_RATE for uGlint) chasing ITS OWN slower EMA
+    // (this.highOnsetEma) — the gap crossing CRACKLE_ONSET_THRESHOLD is the
+    // onset, cooldown-gated the same way bass onsets are.
+    this.highOnsetEma += (this.highFast - this.highOnsetEma) * Math.min(1, dt * CRACKLE_ONSET_EMA_RATE);
+    this.crackleCooldown = Math.max(0, this.crackleCooldown - dt);
+    if (this.crackleCooldown <= 0 && this.highFast - this.highOnsetEma > CRACKLE_ONSET_THRESHOLD) {
+      this.crackleCooldown = CRACKLE_ONSET_COOLDOWN;
+      this.fireCrackle();
+    }
+
+    // Poisson ambient crackle (independent channel, so the effect still
+    // fires without a mic): p.crackleRate/min scaled by (0.5 + energy) so
+    // the purge's peak energy visibly crackles more than the act's rate
+    // alone would. `?crackle=always` forces a fixed-interval synthetic
+    // stream instead of a Poisson rate override (see forceCrackleAlways's
+    // own doc for why the strike/bloom idiom doesn't fit as cleanly here).
+    if (this.forceCrackleAlways) {
+      this.crackleDebugTimer -= dt;
+      if (this.crackleDebugTimer <= 0) {
+        this.fireCrackle();
+        this.crackleDebugTimer = CRACKLE_DEBUG_INTERVAL;
+      }
+    } else {
+      const crackleRatePerMin = p.crackleRate * (0.5 + energy);
+      if (crackleRatePerMin > 0) {
+        this.crackleTimeToNext -= dt;
+        while (this.crackleTimeToNext <= 0) {
+          this.fireCrackle();
+          this.crackleTimeToNext += nextPoissonDelay(this.rand, crackleRatePerMin);
+        }
+      }
+    }
+    this.crackle *= Math.exp(-CRACKLE_DECAY_RATE * dt);
+    u.uCrackle.value = this.crackle;
+    u.uCrackleSeed.value = this.crackleSeed;
+
     u.uWatermark.value = p.watermark;
     u.uSterileSpec.value = p.sterileSpec;
 
@@ -626,6 +847,12 @@ class SterileBreath implements Viz {
     }
     this.tick *= Math.exp(-TICK_DECAY_RATE * dt);
     u.uTick.value = this.tick;
+
+    // uFlash decay (increment 7, scripted hits) — kicked above (this
+    // frame's scripted-hit block) or on prior frames; decayed every frame
+    // regardless of whether a kick just landed.
+    this.flash *= Math.exp(-FLASH_DECAY_RATE * dt);
+    u.uFlash.value = this.flash;
 
     // Poisson ambient strikes: an independent channel from the onset one
     // above, so the scene still punches without a mic. `?strike=always`
@@ -683,7 +910,10 @@ class SterileBreath implements Viz {
     // idiom): held — EMA the instantaneous velocity from this frame's
     // accumulated drag delta (pointer()'s 'move' already applied the 1:1
     // pan directly; this branch only tracks velocity for the release fling).
-    // Released — integrate `pan` by the decaying velocity. No ambient drift.
+    // Released with momentum still live — integrate `pan` by the decaying
+    // velocity. Released AND idle (increment 7) — ambient drift instead
+    // (see DRIFT_* constants' doc): the two are mutually exclusive per
+    // frame so a fling's momentum is never double-nudged by drift on top.
     const zoom = u.uZoom.value as number;
     if (this.held) {
       if (dt > 1e-5) {
@@ -703,6 +933,17 @@ class SterileBreath implements Viz {
       this.velY *= friction;
       if (Math.abs(this.velX) < MOMENTUM_STOP_SPEED) this.velX = 0;
       if (Math.abs(this.velY) < MOMENTUM_STOP_SPEED) this.velY = 0;
+    } else {
+      // Ambient drift (increment 7): pan wanders slowly at up to
+      // p.driftSpeed * DRIFT_SPEED_SCALE field-uv/s, direction slowly
+      // rotating. driftSpeed=0 acts (remission/sterile/last-breath) go dead
+      // still for free — the formula scales by p.driftSpeed, so 0 is an
+      // exact no-op, no special-casing needed.
+      this.driftAngle += dt * DRIFT_ANGLE_RATE;
+      const driftDirX = Math.cos(this.driftAngle);
+      const driftDirY = Math.sin(this.driftAngle);
+      this.pan.x += driftDirX * p.driftSpeed * DRIFT_SPEED_SCALE * dt;
+      this.pan.y += driftDirY * p.driftSpeed * DRIFT_SPEED_SCALE * dt;
     }
 
     // Per-axis clamp (not b2's circular MAX_PAN — see PAN_CLAMP's doc): zero
@@ -711,6 +952,20 @@ class SterileBreath implements Viz {
     else if (this.pan.x < -PAN_CLAMP) { this.pan.x = -PAN_CLAMP; this.velX = 0; }
     if (this.pan.y > PAN_CLAMP) { this.pan.y = PAN_CLAMP; this.velY = 0; }
     else if (this.pan.y < -PAN_CLAMP) { this.pan.y = -PAN_CLAMP; this.velY = 0; }
+
+    // Act-4 ('the-purge') camera shake (increment 7): this.shake decays
+    // exponentially every frame (kicked in fireStrike, see its own doc);
+    // consumed here as a small pan JITTER written into panDisplay — NOT
+    // mutated into this.pan itself, which stays the clean, un-jittered
+    // camera position pointer()/pickLivingPoint reason about. Two
+    // different-frequency sines of the CPU-accumulated uTime (NOT
+    // Math.random per frame) trace a lissajous-ish wobble rather than a
+    // straight back-and-forth jitter.
+    this.shake *= Math.exp(-SHAKE_DECAY_RATE * dt);
+    const shakeT = u.uTime.value as number;
+    const jitterX = Math.sin(shakeT * 41.0) * this.shake * SHAKE_JITTER_AMP;
+    const jitterY = Math.sin(shakeT * 53.0 + 1.3) * this.shake * SHAKE_JITTER_AMP;
+    this.panDisplay.set(this.pan.x + jitterX, this.pan.y + jitterY);
   }
 
   /**
@@ -729,17 +984,29 @@ class SterileBreath implements Viz {
    * fails — late acts are mostly sterile by then, so skipping the strike
    * entirely is the CORRECT behaviour, not a bug to work around.
    *
-   * `centerBias` (increment 5, consumed by fireBloom): when true, the random
-   * screen-uv sample's offset from centre is scaled by BLOOM_CENTER_BIAS
-   * before mapping to field-uv, biasing candidates toward the frame's centre
-   * third — condensation blooms read as THE subject when they fire, rather
-   * than appearing anywhere in the visible field the way a strike can.
+   * `centerBias` (increment 5, consumed by fireBloom; increment 7,
+   * consumed by the peak scripted strike) — a direct multiplier (1 = no
+   * bias, the default) on the random screen-uv sample's offset from centre,
+   * before mapping to field-uv: BLOOM_CENTER_BIAS (0.6) biases a
+   * condensation bloom toward the frame's centre third so it reads as THE
+   * subject when it fires; PEAK_STRIKE_CENTER_BIAS (0.5, tighter still)
+   * does the same for the 144s scripted strike, so the album-max hit lands
+   * somewhere unmissable rather than anywhere in the visible field the way
+   * an ordinary strike can. Was a boolean (increment 5); widened to a plain
+   * number (increment 7) once a SECOND, DIFFERENT bias strength was needed
+   * — `centerBias ? BLOOM_CENTER_BIAS : 1` would only ever have given two
+   * fixed values, and callers now just pass the exact multiplier they want.
+   *
+   * Reads `this.pan` directly (increment 7), NOT `u.uPan.value` (which is
+   * now `this.panDisplay`, `this.pan` plus the act-4 shake jitter — see its
+   * own doc): strike/bloom placement must never depend on a cosmetic camera
+   * wobble, only the real camera position.
    */
-  private pickLivingPoint(centerBias = false): { x: number; y: number } | null {
+  private pickLivingPoint(centerBias = 1): { x: number; y: number } | null {
     const u = this.material.uniforms;
     const cover = u.uCover.value as THREE.Vector2;
     const zoom = u.uZoom.value as number;
-    const pan = u.uPan.value as THREE.Vector2;
+    const pan = this.pan;
     const pocket = u.uPocket.value as THREE.Vector2;
     const stretch = u.uStretch.value as THREE.Vector2;
     const sterile = u.uSterile.value as number;
@@ -747,10 +1014,8 @@ class SterileBreath implements Viz {
     for (let i = 0; i < STRIKE_PICK_TRIES; i++) {
       let sx = this.rand();
       let sy = this.rand();
-      if (centerBias) {
-        sx = 0.5 + (sx - 0.5) * BLOOM_CENTER_BIAS;
-        sy = 0.5 + (sy - 0.5) * BLOOM_CENTER_BIAS;
-      }
+      sx = 0.5 + (sx - 0.5) * centerBias;
+      sy = 0.5 + (sy - 0.5) * centerBias;
       const fx = (sx - 0.5) * cover.x / zoom + 0.5 + pan.x;
       const fy = (sy - 0.5) * cover.y / zoom + 0.5 + pan.y;
       const dx = (fx - pocket.x) * stretch.x;
@@ -770,24 +1035,44 @@ class SterileBreath implements Viz {
    * even if the current act's own strikeHeal changes later (so the act-4
    * healing-fails rule only ever affects strikes struck FROM that point on,
    * never retroactively scars an already-healing wound).
+   *
+   * `sizeMult`/`centerBias`/`forceHealZero` (increment 7): the 144s scripted
+   * peak strike's three overrides — 1.6x rMax, a tight centre bias so it
+   * lands somewhere visible, and a hard-pinned healRate=0 regardless of act
+   * or `?heal=`. Every other caller (the bass-onset channel, the ambient
+   * Poisson channel) uses the defaults (1, 1, false), unchanged from
+   * increments 4-6.
+   *
+   * Act-4 ('the-purge') camera shake (increment 7): every strike fired
+   * while `this.section` is CURRENTLY the purge kicks `this.shake` to
+   * `p.shake * SHAKE_KICK_MULT` — regardless of which channel fired it
+   * (onset, ambient Poisson, or this method's own peak-strike caller above)
+   * — so the shake reads as the purge's own strikes landing, not a
+   * separate scripted camera cue. Uses `this.section` rather than a passed
+   * flag since every fireStrike call already happens after this frame's
+   * `this.section` assignment in update().
    */
-  private fireStrike(p: ActParams) {
-    const point = this.pickLivingPoint();
+  private fireStrike(p: ActParams, sizeMult = 1, centerBias = 1, forceHealZero = false) {
+    const point = this.pickLivingPoint(centerBias);
     if (!point) return;
     const idx = this.strikePool.fire();
     const a = this.strikePool.slots[idx];
     a.x = point.x;
     a.y = point.y;
-    const rMax = p.strikeSize * (0.8 + this.rand() * 0.5);
+    const rMax = p.strikeSize * sizeMult * (0.8 + this.rand() * 0.5);
     const aspect = 1.15 + this.rand() * 0.5;
     const angle = this.rand() * Math.PI * 2;
-    const healRate = this.healOverride !== null ? this.healOverride : p.strikeHeal;
+    const healRate = forceHealZero ? 0 : this.healOverride !== null ? this.healOverride : p.strikeHeal;
     this.strikeB[idx].set(rMax, aspect, angle, healRate);
+
+    if (this.section && this.section.actIndex === SHAKE_ACT_INDEX) {
+      this.shake = p.shake * SHAKE_KICK_MULT;
+    }
   }
 
   /**
    * Fires one condensation bloom (increment 5) at a RANDOM living point,
-   * centre-biased (pickLivingPoint(true), BLOOM_CENTER_BIAS) so it reads as
+   * centre-biased (pickLivingPoint(BLOOM_CENTER_BIAS)) so it reads as
    * the frame's subject — the slow-bass-onset and Poisson-ambient trigger
    * channels in update() both share this one entry point. Skips entirely on
    * a pickLivingPoint failure, same "late acts are mostly sterile" behaviour
@@ -796,7 +1081,7 @@ class SterileBreath implements Viz {
    * rest.
    */
   private fireBloom() {
-    const point = this.pickLivingPoint(true);
+    const point = this.pickLivingPoint(BLOOM_CENTER_BIAS);
     if (!point) return;
     const idx = this.bloomPool.fire();
     const a = this.bloomPool.slots[idx];
@@ -842,6 +1127,21 @@ class SterileBreath implements Viz {
     const a = this.ripplePool.slots[idx];
     a.x = fx;
     a.y = fy;
+  }
+
+  /**
+   * Fires one crackle event (increment 7, the high-band event): kicks
+   * `this.crackle` to 1 (decays exp(-CRACKLE_DECAY_RATE*dt) -> uCrackle)
+   * and bumps `this.crackleSeed` (-> uCrackleSeed) so the shader's
+   * spark-cell hash re-rolls a fresh pattern every time. Pure event
+   * bookkeeping, no CPU-side placement needed — the GPU already knows
+   * where the scrub line is (sterileShader.ts's crackle block reuses the
+   * glint's own arcPos/lineAA), so a crackle needs no field-uv coordinate
+   * the way a strike/bloom/poke does.
+   */
+  private fireCrackle() {
+    this.crackle = 1;
+    this.crackleSeed++;
   }
 
   /**

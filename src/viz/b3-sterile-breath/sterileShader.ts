@@ -117,6 +117,19 @@
  * treatment forced full-screen (was a flat placeholder in increments 1-2;
  * now the genuine layered `sbSterileSide`).
  *
+ * Increment 7 (act discipline, camera, scripted hits, crackle, grade) --
+ * the big wiring increment, mostly index.ts (act-hold, ambient drift,
+ * breathing zoom, act-4 shake, the five scripted hits, the crackle onset
+ * detector); this file's own new surface is the composed-scene-only
+ * exposure/grade/vignette/grain pass and the crackle sparks (both in
+ * main(), see their own inline docs) plus `sbAA()` (below, near sbSmin) --
+ * a defensive fwidth() wrapper landed as part of this increment's bug fix:
+ * a faint, screen-space-fixed 45-degree diagonal line (traced to an
+ * unclamped `fwidth(sdUnion)` spike in sbBiomass's edgeAA/rimAA, NOT the
+ * originally-suspected glint hash, which was already correctly band-gated
+ * -- see sbAA's own doc for the full diagnosis) that was visible in every
+ * mode calling sbBiomass (composed, `?solo=biomass`, `?solo=ghosts`).
+ *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
  * have compile-time constant bounds. Reserved-word identifiers (active,
@@ -160,6 +173,8 @@ export interface SterileShaderConfig {
   rippleSlots: number;
   lobes: number;
   fbmOct: number;
+  /** Full-only film grain (increment 7) — baked as compile-time PRESENT/ABSENT source text (not a runtime uniform gate) so Lite compiles zero grain code, the house "?q=lite drops a whole feature" idiom (matches lobes/fbmOct's own Full/Lite split above). */
+  grain: boolean;
 }
 
 export function buildSterileFragment(cfg: SterileShaderConfig): string {
@@ -169,6 +184,17 @@ export function buildSterileFragment(cfg: SterileShaderConfig): string {
   const RIPPLE_SLOTS = Math.max(1, Math.floor(cfg.rippleSlots));
   const LOBES = Math.max(1, Math.floor(cfg.lobes));
   const FBM_OCT = Math.max(1, Math.floor(cfg.fbmOct));
+  // Full-only film grain (increment 7): hash-based, tiny amplitude, added
+  // post-grade so it reads as texture on the graded image rather than
+  // visible banding. Baked as PRESENT/ABSENT GLSL text via cfg.grain (Full
+  // only) rather than a runtime `if` on a uniform, so Lite compiles zero
+  // grain code — the same "?q=lite drops a whole feature" idiom as
+  // lobes/fbmOct above, not just a cheaper branch.
+  const GRAIN_BLOCK = cfg.grain
+    ? `
+    float grainH = sbHash21(gl_FragCoord.xy + vec2(uTime * 37.13, uTime * 19.71));
+    color += (grainH - 0.5) * 0.016;`
+    : '';
   return `
 precision highp float;
 varying vec2 vUv;
@@ -214,6 +240,26 @@ uniform float uTick;
 // pinned-value uniforms) is a uniform too, not a template-baked literal.
 uniform float uGhostAmp;
 uniform float uGhostForce;
+
+// Increment 7: act discipline (act-held ActParams -- no shader change, all
+// index.ts), camera choreography (no shader change -- drift/breath/shake
+// all fold into the existing uPan/uZoom uniforms above), scripted hits,
+// crackle, and the final display grade. uEnergy rides arcAt(songTime)
+// (index.ts) -- exposure lift + (via index.ts's Poisson-rate multiplier)
+// crackle's ambient rate. uGrade/uVignette ride ActParams.grade/vignette.
+// uFlash is a NEW CPU decay scalar (index.ts, exp(-3.4*dt)) kicked by the
+// track's five scripted hits (140/144/168/174/180/184s) -- independent of
+// uTick, which stays the bass-onset/poke rim-pop channel. uCrackle is
+// another independent CPU decay scalar (exp(-7*dt)) for the high-band
+// crackle event; uCrackleSeed is a plain incrementing counter (cast to
+// float) that re-rolls the crackle hash cells on every fire so the spark
+// pattern never repeats.
+uniform float uEnergy;
+uniform float uGrade;
+uniform float uVignette;
+uniform float uFlash;
+uniform float uCrackle;
+uniform float uCrackleSeed;
 
 // Increment 2-8 layer budgets, baked as compile-time constants. Every
 // budget is now a real consumed constant (LOBES/FBM_OCT since increment 2,
@@ -316,6 +362,36 @@ float sbFbm(vec2 p) {
   for (int i = 0; i < FBM_OCT; i++) { s += a * sbVnoise(p); p *= 2.0; a *= 0.5; }
   return s;
 }
+
+// Antialiasing-width safety clamp (increment 7 bug fix -- see this file's
+// top doc addendum below). fwidth() can spike anomalously large at
+// specific screen locations tied to the fullscreen quad's own internal
+// triangle-split seam (a GPU derivative-estimation hazard, most
+// reproducible where fwidth() follows branchy, data-dependent code --
+// sbBiomass's 3x3 clump search with its early 'continue's is exactly that
+// shape). Confirmed by direct pixel inspection (a headless GPU-readback
+// harness, not a screenshot): a faint, PERFECTLY SCREEN-SPACE-FIXED
+// (invariant to uPan -- panning the world left the line exactly where it
+// was, proving it is not a world-space feature) diagonal band, running
+// corner-to-corner through the frame centre at ~45 degrees, was visible in
+// every mode that calls sbBiomass (composed, '?solo=biomass', '?solo=
+// ghosts') but never in '?solo=front' (which never touches sdUnion) or at
+// any song time before the front itself entered frame -- ruling out the
+// original suspect (the scrub-line glint hash, which IS correctly gated by
+// lineMask; confirmed clean by the same harness). Live-patching the
+// compiled fragment shader to clamp ONLY fwidth(sdUnion) (sbBiomass's
+// edgeAA/rimAA) reproduced the artifact at a loose 0.02 clamp, then
+// eliminated it completely at 0.003 -- pinning the true cause to an
+// unclamped derivative spike there making edgeMask/rim falsely nonzero far
+// from any real clump silhouette. SB_MAX_FWIDTH sits comfortably above any
+// legitimate single-pixel-scale AA width at any in-range zoom (zoomAt's
+// floor is 0.30, sections.ts) yet well below the observed spike. sbAA()
+// wraps every fwidth()-derived AA width in this file (not just the proven
+// two) so the same class of artifact can never resurface at a different
+// call site -- the ghost-motif SDFs and the S-field/watermark ones share
+// the identical "branchy code feeding fwidth()" shape.
+const float SB_MAX_FWIDTH = 0.003;
+float sbAA(float x) { return min(fwidth(x), SB_MAX_FWIDTH); }
 
 // iq's polynomial smooth-min: fuses two SDFs with a rounded blend of radius k.
 float sbSmin(float a, float b, float k) {
@@ -503,7 +579,7 @@ float sbCombMotif(vec2 rp, float stampR) {
   float apothem = stampR * 0.5;
   float lineW = stampR * 0.09;
   float d0 = abs(sbSdHexagon(rp, apothem)) - lineW;
-  float aa0 = fwidth(d0) * 1.25 + 0.0006;
+  float aa0 = sbAA(d0) * 1.25 + 0.0006;
   float m0 = 1.0 - smoothstep(0.0, aa0, d0);
 
   vec2 nOff = vec2(apothem * 1.85, 0.0);
@@ -511,7 +587,7 @@ float sbCombMotif(vec2 rp, float stampR) {
   float ang2 = atan(rp2.y, rp2.x);
   float arcGate = smoothstep(1.6, 2.2, abs(ang2));
   float d1 = abs(sbSdHexagon(rp2, apothem)) - lineW;
-  float aa1 = fwidth(d1) * 1.25 + 0.0006;
+  float aa1 = sbAA(d1) * 1.25 + 0.0006;
   float m1 = (1.0 - smoothstep(0.0, aa1, d1)) * arcGate;
 
   return max(m0, m1);
@@ -532,7 +608,7 @@ float sbVeinMotif(vec2 rp, float stampR) {
     sbSdSegment(rp, p0, p1) - mix(r0, r1, 0.5),
     min(sbSdSegment(rp, p1, p2) - mix(r1, r2, 0.5), sbSdSegment(rp, p2, p3) - r2)
   );
-  float aa = fwidth(d) * 1.25 + 0.0006;
+  float aa = sbAA(d) * 1.25 + 0.0006;
   return 1.0 - smoothstep(0.0, aa, d);
 }
 
@@ -544,11 +620,11 @@ float sbSpecimenMotif(vec2 rp, float stampR) {
   float dEllipse = length(rp / axes) - 1.0;
   float ringW = 0.16;
   float dRing = abs(dEllipse) - ringW;
-  float aaR = fwidth(dRing) * 1.25 + 0.0006;
+  float aaR = sbAA(dRing) * 1.25 + 0.0006;
   float ring = 1.0 - smoothstep(0.0, aaR, dRing);
 
   float bandHalf = stampR * 0.05;
-  float aaBY = fwidth(rp.y) * 1.25 + 0.0006;
+  float aaBY = sbAA(rp.y) * 1.25 + 0.0006;
   float bandY = 1.0 - smoothstep(bandHalf, bandHalf + aaBY, abs(rp.y));
   float bandX = 1.0 - smoothstep(axes.x * 0.75, axes.x * 0.75 + 0.01, abs(rp.x));
 
@@ -566,7 +642,7 @@ float sbChainMotif(vec2 rp, float stampR) {
   float r2 = stampR * 0.07;
 
   float d = min(length(rp - c0) - r0, min(length(rp - c1) - r1, length(rp - c2) - r2));
-  float aa = fwidth(d) * 1.25 + 0.0006;
+  float aa = sbAA(d) * 1.25 + 0.0006;
   return 1.0 - smoothstep(0.0, aa, d);
 }
 
@@ -630,7 +706,7 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, bool ghostDebug) {
   // ground vs biomass in the final composite below. fwidth ties the
   // transition to actual screen pixels instead of a field-uv constant, so
   // it stays crisp regardless of zoom/resolution.
-  float edgeAA = fwidth(sdUnion) * 0.75 + 0.0004;
+  float edgeAA = sbAA(sdUnion) * 0.75 + 0.0004;
   float edgeMask = clamp(1.0 - smoothstep(-edgeAA, edgeAA, sdUnion), 0.0, 1.0);
   // Increment 3: the sterilization front truncates the biomass silhouette
   // itself — a clump half-overtaken by the front shows its scrubbed half
@@ -643,7 +719,7 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, bool ghostDebug) {
   // Thin rim: a narrow, fwidth-scaled |SDF| band hugging the silhouette — a
   // bright line, not a halo. Also truncated by livingMask so the rim never
   // ghosts past the front either.
-  float rimAA = fwidth(sdUnion) * 1.5 + 0.0006;
+  float rimAA = sbAA(sdUnion) * 1.5 + 0.0006;
   float rim = (1.0 - smoothstep(0.0, rimAA, abs(sdUnion))) * livingMask;
 
   vec3 interior = vec3(0.30, 0.06, 0.14);
@@ -970,7 +1046,7 @@ vec3 sbSterileSide(vec2 fieldUv, float s) {
   // union SDF with a FROZEN life clock / full presence / zero breath —
   // frozen ghosts, not living forms (no rim, no speckle).
   float wmSd = sbWatermarkSd(fieldUv);
-  float wmAA = fwidth(wmSd) * 0.75 + 0.0004;
+  float wmAA = sbAA(wmSd) * 0.75 + 0.0004;
   float wmMask = clamp(1.0 - smoothstep(-wmAA, wmAA, wmSd), 0.0, 1.0);
   float wmAlpha = clamp(uWatermark * 0.35 * exp(-max(s, 0.0) * WM_FALL) * wmMask, 0.0, 1.0);
   col = mix(col, vec3(0.80, 0.86, 0.89), wmAlpha);
@@ -1008,7 +1084,7 @@ void main() {
   // the scrub line below.
   float eventRimD;
   float S = sbSterility(field, eventRimD);
-  float sEdge = fwidth(S) * 0.75 + 0.0004; // tight fwidth-based S_EDGE
+  float sEdge = sbAA(S) * 0.75 + 0.0004; // tight fwidth-based S_EDGE
   // 1.0 living (S<0), 0.0 sterile (S>0). Written as 1.0 - smoothstep(-sEdge,
   // sEdge, S) rather than the mirrored smoothstep(sEdge, -sEdge, S) — both
   // are mathematically the same inverted ramp, but the GLSL spec leaves
@@ -1063,6 +1139,43 @@ void main() {
     color = sbBiomass(field, ground, livingMask, false);
   }
 
+  // --- Energy / grade / vignette / film grain (increment 7) -- applied
+  // ONLY to the composed scene (mode 0), the same precedent b2's own
+  // grade/vignette pipeline sets: every numbered solo/diagnostic mode there
+  // bypasses the whole post pipeline and outputs its raw diagnostic colour
+  // directly, so debugging never depends on the current act's exposure/
+  // grade/vignette. Everything below this block -- scrub line, glints,
+  // crackle, blooms, ripples, strike/poke rim pops -- draws AFTER it (the
+  // b2 lesson: overlays that must pop draw post-grade, never pre-grade
+  // where they'd be crushed into the same graded/desaturated colour as
+  // everything else).
+  if (uSoloMode == 0) {
+    // Exposure lift: rides the energy envelope (arcAt, index.ts) so the
+    // purge's 1.0 peak reads brighter than the remission's restraint dip.
+    color *= (0.92 + 0.28 * uEnergy);
+
+    // Clinical cold grade (ActParams.grade): desaturate toward luminance,
+    // then lerp toward a cold blue-white tint -- both scaled by uGrade, so
+    // the piece reads progressively colder/more clinical as the front wins
+    // (0.05 at the opening breath, 0.8 by last-breath).
+    float gradeLuma = dot(color, vec3(0.299, 0.587, 0.114));
+    color = mix(color, vec3(gradeLuma), uGrade * 0.45);
+    color *= mix(vec3(1.0), vec3(0.94, 1.0, 1.06), uGrade);
+
+    // Vignette (ActParams.vignette): radial darkening from frame centre,
+    // screen-space (matching sbSterileSide's own corner-fall convention),
+    // maxing at 0.32 at the corners when uVignette == 1.
+    float vigDist = length((vUv - 0.5) * uCover);
+    float vigRamp = smoothstep(0.3, 1.0, vigDist);
+    color *= 1.0 - 0.32 * uVignette * vigRamp;
+
+    // uFlash (scripted hits, index.ts): a faint whole-frame lift, on top of
+    // the strong scrub-line brightening the block below applies via
+    // glowStrength.
+    color += vec3(0.08) * uFlash;
+${GRAIN_BLOCK}
+  }
+
   // --- Scrub line + droplet glints, drawn LAST so they pop over
   // everything above. Skipped for the three solo modes that isolate a
   // single layer's own colour and deliberately ignore S entirely (1
@@ -1075,12 +1188,17 @@ void main() {
   // glow/glint knobs, so debugging never depends on song position.
   if (uSoloMode != 1 && uSoloMode != 4 && uSoloMode != 5) {
     bool diagFront = (uSoloMode == 2 || uSoloMode == 3);
-    float glowStrength = diagFront ? 1.0 : (0.35 + uScrubGlow);
+    // uFlash (increment 7, scripted hits) lifts the scrub line's own
+    // brightness strongly -- excluded from the diagFront branch since that
+    // branch already forces full strength regardless of song position, the
+    // same "debugging never depends on song position" rule uScrubGlow/
+    // uGlint already follow just below.
+    float glowStrength = diagFront ? 1.0 : (0.35 + uScrubGlow + uFlash * 1.2);
     float glintStrength = diagFront ? 1.0 : uGlint;
 
     // Narrow, fwidth-scaled band (~2-3 screen px) straddling the S=0
     // zero-crossing.
-    float lineAA = fwidth(S) * 1.25 + 0.0004;
+    float lineAA = sbAA(S) * 1.25 + 0.0004;
     float lineMask = 1.0 - smoothstep(0.0, lineAA, abs(S));
 
     // Droplet glints: sparse hash-driven bright points ON the line.
@@ -1104,6 +1222,26 @@ void main() {
     color = mix(color, lineColor, lineMask * clamp(glowStrength, 0.0, 1.0));
     color += lineColor * glint;
 
+    // Crackle sparks (increment 7, the high-band event): 2-3 micro-flashes
+    // hugging the scrub line, gated to a band 3x the line's OWN AA width
+    // (lineAA) so they can never bleed past it -- the exact "fix so glints
+    // exist ONLY within the tight scrub-line band" discipline this
+    // increment's diagonal-line bug review called for, applied to the new
+    // event too. Reuses the glint hash idiom (arc-position cell hash) at a
+    // different frequency (70 cells/unit vs glint's 40) so the two never
+    // sync, re-rolled by uCrackleSeed (a plain incrementing counter,
+    // index.ts) every time a crackle fires so the spark pattern never
+    // repeats -- unlike glintEpoch's breath-phase cycle, which glints keep
+    // re-using because they ride the breath motif, not a discrete event.
+    float crackleBandW = lineAA * 3.0;
+    float crackleBand = 1.0 - smoothstep(0.0, crackleBandW, abs(S));
+    float crackleCell = floor(arcPos * 70.0);
+    float crackleBaseH = sbHash21(vec2(crackleCell, 71.7 + uCrackleSeed * 13.13));
+    float crackleExists = step(crackleBaseH, 0.22);
+    float crackleTwinkle = sbHash21(vec2(crackleCell, uCrackleSeed * 7.77 + 3.3));
+    float crackleSpeck = crackleExists * crackleTwinkle * crackleBand * uCrackle;
+    color += vec3(1.0, 0.97, 0.88) * crackleSpeck * 1.1;
+
     // Young-event rim pop (strikes since increment 4, pokes since
     // increment 5): an extra brightness kick, scaled by uTick (the CPU
     // bass-onset / poke-tap decay scalar), wherever the visible scrub line
@@ -1113,7 +1251,7 @@ void main() {
     // an event rim already swallowed by the front (deep in already-sterile
     // territory, no S=0 crossing left to trace) never shows a floating
     // ghost ring.
-    float rimBoostAA = fwidth(eventRimD) * 1.25 + 0.0004;
+    float rimBoostAA = sbAA(eventRimD) * 1.25 + 0.0004;
     float eventRimMask = 1.0 - smoothstep(0.0, rimBoostAA, eventRimD);
     color += lineColor * lineMask * eventRimMask * uTick * 0.85;
 
