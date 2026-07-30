@@ -11,9 +11,39 @@ import { TraceField } from './traceField';
 import { Bees } from './bees';
 import { paramsAt, arcAt } from './sections';
 import { mulberry32 } from '../random';
+import { OnsetDetector, rateGapSeconds } from '../lib/onset';
+import { PoissonSchedule } from '../lib/poisson';
 
-/** Bass-onset detector: excess over its own slow EMA that kicks a flash + an ambient knock. */
-const ONSET_THRESHOLD = 0.12;
+/**
+ * Bass-onset detector (album-audit fix, stage 2 — see `../lib/onset`'s own
+ * doc for the pre-fix defect this replaces: an absolute gap over a
+ * reference EMA only 5.3x slower than the fast one, which goes deaf once
+ * the reference catches up past the cold-start transient).
+ *
+ * `bassE` (rate 8, shared with the continuous uBass uniform, same shape as
+ * b2's/a1's bassE) measured against the verification harness's synthetic
+ * 120bpm kick the same way as a1: fast-EMA-over-reference peak ratio
+ * ceiling ~1.104x once the refRate-0.25 reference has fully converged.
+ * ONSET_REL_MARGIN (0.08) matches a1's/b2's own re-measured bass margin for
+ * the identical rate-8-vs-0.25 shape; ONSET_ABS_FLOOR (0.06) keeps no-mic
+ * noise from tripping it early.
+ *
+ * This raw detector ("a beat was felt") drives THREE downstream effects —
+ * kickFlash, an onset-coupled knock, and (only at the climax's lineRate>=8)
+ * an extra chalk line — same one-raw-signal/several-gated-effects shape as
+ * b2's bassOnset (beatCount always + gated scan/link). ONSET_COOLDOWN
+ * (1.5s) is the raw detector's own fixed debounce; flashOnsetCooldown/
+ * knockOnsetCooldown (below) separately throttle each of those two rated
+ * effects to the act's own flashRate/knockRate via `rateGapSeconds`, the b2
+ * onsetCooldownGap idiom, so a mic changes onset TIMING, not the flash/knock
+ * DENSITY relative to the ambient Poisson channels' own rate. The climax
+ * line coupling is left ungated beyond the raw cooldown (unchanged from
+ * pre-fix): it only ever fires in one act and was never part of the
+ * density complaint.
+ */
+const ONSET_EMA_RATE = 0.25;
+const ONSET_REL_MARGIN = 0.08;
+const ONSET_ABS_FLOOR = 0.06;
 const ONSET_COOLDOWN = 1.5;
 
 /** uFlash exponential decay rate (1/s) and the size of a single kick. */
@@ -36,8 +66,24 @@ const PULSE_DECAY = 6.0;
 const PULSE_KICK_ONSET = 0.6;
 const PULSE_KICK_AMBIENT = 0.5;
 const PULSE_CEILING = 1.2;
-/** Onset threshold/cooldown for the pulse channel's OWN bass-onset kick — reuses bassE/bassSlowE (no duplicate EMA pair), but tracks its own cooldown timer so it can fire at a different cadence than the flash onset detector. */
-const PULSE_ONSET_THRESHOLD = 0.06;
+/**
+ * Onset tuning for the pulse channel's OWN bass-onset kick — a second,
+ * independent `OnsetDetector` instance chasing the same `bassE` fast EMA as
+ * the flash detector above (no duplicate EMA pair, matching the pre-fix
+ * "reuses bassE/bassSlowE" shape), with its own lower margin/floor and much
+ * shorter fixed cooldown so the dense channel catches beats the flash
+ * channel's rate-gated cooldown deliberately skips. Same measured ceiling
+ * as ONSET_REL_MARGIN above (~1.104x) — PULSE_ONSET_REL_MARGIN sits lower
+ * (0.04) specifically so it fires more often than the flash detector,
+ * mirroring the pre-fix relationship between the two absolute thresholds
+ * (0.06 vs 0.12). Per the album-audit's own scope note: the pulse channel
+ * has no consumer with an act rate to follow (it drives ONLY the wall
+ * shader's beat-pulse cell block, itself already fed by the separate
+ * ambient schedulePulse below) — so unlike flash/knock, its cooldown stays
+ * a bare fixed floor, no `rateGapSeconds` gating.
+ */
+const PULSE_ONSET_REL_MARGIN = 0.04;
+const PULSE_ONSET_ABS_FLOOR = 0.04;
 const PULSE_ONSET_COOLDOWN = 0.3;
 /** Minimum gap (seconds) between scheduled ambient pulses, floor-clamped into the Poisson draw — at ~90/min a raw Poisson process occasionally clusters two draws back-to-back, which reads as a stutter rather than a pulse. */
 const PULSE_MIN_GAP = 0.12;
@@ -252,21 +298,36 @@ class HiveWall implements Viz {
   private bassE = 0;
   private midE = 0;
   private highE = 0;
-  private bassSlowE = 0;
-  private onsetCooldown = 0;
+  /** Bass onset detector (`../lib/onset`) — owns its own reference EMA + fixed ONSET_COOLDOWN, chasing `this.bassE`. Raw ("a beat was felt") detector — see ONSET_EMA_RATE's own doc for why it fans out to three separately-gated effects instead of taking a `ratePerMinute` of its own. */
+  private bassOnset = new OnsetDetector({
+    refRate: ONSET_EMA_RATE,
+    relMargin: ONSET_REL_MARGIN,
+    absFloor: ONSET_ABS_FLOOR,
+    cooldown: ONSET_COOLDOWN,
+  });
+  /** Per-effect onset cooldowns (density-vs-composition fix, see ONSET_EMA_RATE's doc): armed via `rateGapSeconds(ONSET_COOLDOWN, p.flashRate/p.knockRate)` on every raw bass-onset fire, decremented every frame regardless of whether the raw onset fired that frame. */
+  private flashOnsetCooldown = 0;
+  private knockOnsetCooldown = 0;
   private flash = 0;
   /** Beat/flash-event counter — incremented on every kickFlash() call (a1's "each kick = a beat event"), re-rolls the beat-pulse colour selection each time. */
   private flashCount = 0;
   private flashTimeToNext = 0;
-  private knockTimeToNext = 0;
-  private lineTimeToNext = 0;
+  /** Ambient Poisson knock/line schedules (stage-2 lib extraction, `../lib/poisson`) — album-audit Bug B fix: knockRate/lineRate both cross zero mid-track (lineRate 0->6 at the 54s boundary, knockRate 9->0 near 261-267s), the exact shape that latched the pre-fix bare countdown for the rest of the track. See scheduleKnocks/scheduleLines' own docs. */
+  private knockSchedule = new PoissonSchedule({ epsilonFloor: 1e-6 });
+  private lineSchedule = new PoissonSchedule({ epsilonFloor: 1e-6 });
   /** Previous frame's song time, for edge-triggered 54s/188s boundary detection (old a2-homemakers/index.ts idiom). */
   private lastSongTime = -1;
 
-  /** Dense beat-pulse channel — mirrors flash/flashCount/onsetCooldown above but decoupled: own decay rate, own onset cooldown timer (reusing bassE/bassSlowE, not a duplicate EMA pair), own Poisson schedule. Drives ONLY wallShader.ts's beat-pulse block. */
+  /** Dense beat-pulse channel — mirrors flash/flashCount above but decoupled: own decay rate, own onset detector instance (reusing bassE, not a duplicate EMA pair — see PULSE_ONSET_REL_MARGIN's doc), own Poisson schedule. Drives ONLY wallShader.ts's beat-pulse block. */
   private pulse = 0;
   private pulseCount = 0;
-  private pulseOnsetCooldown = 0;
+  /** Pulse-channel onset detector (`../lib/onset`) — independent instance from `bassOnset`, own reference EMA + fixed PULSE_ONSET_COOLDOWN, chasing the same `this.bassE`. No `rateGapSeconds` gating (see PULSE_ONSET_REL_MARGIN's doc: this channel has no act-rated consumer to follow). */
+  private pulseOnset = new OnsetDetector({
+    refRate: ONSET_EMA_RATE,
+    relMargin: PULSE_ONSET_REL_MARGIN,
+    absFloor: PULSE_ONSET_ABS_FLOOR,
+    cooldown: PULSE_ONSET_COOLDOWN,
+  });
   private pulseTimeToNext = 0;
 
   private knockSlotCount = KNOCK_SLOTS_FULL;
@@ -516,18 +577,24 @@ class HiveWall implements Viz {
     }
   }
 
+  /**
+   * Ambient knock schedule (stage-2 fix, `../lib/poisson`): knockRate fades
+   * 9 -> 0 near 261-267s and never turns back on before the track ends, so
+   * pre-fix the bare countdown's `if (rate <= 0) return` froze at whatever
+   * near-zero value the crossfade's blended rate baked in on the boundary's
+   * first frame — order-of-minutes, low-severity relative to lineRate below
+   * (this channel is already fading out for good), but the same defect and
+   * the same cure: `this.knockSchedule` rescales the pending countdown
+   * against the last effective rate every call, so the delay it bakes on
+   * arrival keeps shrinking in step with the crossfade instead of freezing.
+   */
   private scheduleKnocks(dt: number, ratePerMinute: number) {
-    const rate = Math.max(0, ratePerMinute) / 60;
-    if (rate <= 0) return;
-    this.knockTimeToNext -= dt;
-    while (this.knockTimeToNext <= 0) {
+    this.knockSchedule.update(dt, ratePerMinute, this.rand, () => {
       const wx = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_X;
       const wy = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_Y;
       this.activateKnockBoost(wx, wy, 0.6);
       this.activateKnockGlow(wx, wy, 0.6);
-      const u = Math.max(1e-6, this.rand());
-      this.knockTimeToNext += -Math.log(u) / rate;
-    }
+    });
   }
 
   /**
@@ -586,16 +653,20 @@ class HiveWall implements Viz {
     }
   }
 
+  /**
+   * Ambient chalk-line schedule (stage-2 fix, `../lib/poisson`) — the
+   * album-audit's severe case for this track: lineRate goes 0 -> 6 at the
+   * 54s act boundary, and pre-fix the bare countdown's `if (rate <= 0)
+   * return` froze at whatever near-zero blended rate the crossfade baked in
+   * on that boundary's first frame (order 1e5 seconds) — chalk lines then
+   * never appeared on ANY subsequent act, including two-homes-one-wall's
+   * lineRate:20 climax, the track's designated excitement knob for this
+   * channel. `this.lineSchedule` rescales the pending countdown against the
+   * last effective rate every call (the root fix), so the delay it bakes on
+   * arrival keeps shrinking in step with the crossfade instead of freezing.
+   */
   private scheduleLines(dt: number, ratePerMinute: number) {
-    // Poisson process, same idiom as scheduleKnocks/scheduleFlash.
-    const rate = Math.max(0, ratePerMinute) / 60;
-    if (rate <= 0) return;
-    this.lineTimeToNext -= dt;
-    while (this.lineTimeToNext <= 0) {
-      this.activateLine();
-      const u = Math.max(1e-6, this.rand());
-      this.lineTimeToNext += -Math.log(u) / rate;
-    }
+    this.lineSchedule.update(dt, ratePerMinute, this.rand, () => this.activateLine());
   }
 
   /**
@@ -836,36 +907,46 @@ class HiveWall implements Viz {
 
     // Smooth audio bands with EMAs (a1 idiom) so reactivity isn't jittery.
     const k = Math.min(1, dt * 8);
+    const prevBassE = this.bassE;
     this.bassE += (audio.bass - this.bassE) * k;
     this.midE += (audio.mid - this.midE) * k;
     this.highE += (audio.high - this.highE) * k;
-    this.bassSlowE += (audio.bass - this.bassSlowE) * Math.min(1, dt * 1.5);
 
-    // Bass-onset detector: excess over its own slow EMA kicks the flash
-    // and an ambient knock (a1's ONSET_THRESHOLD/ONSET_COOLDOWN pattern).
-    this.onsetCooldown -= dt;
-    if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
-      this.kickFlash(FLASH_KICK_ONSET);
-      const wx = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_X;
-      const wy = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_Y;
-      this.activateKnockBoost(wx, wy);
-      this.activateKnockGlow(wx, wy);
+    // Bass-onset detector (`../lib/onset`) — raw "a beat was felt" signal,
+    // called with no ratePerMinute (always enabled, debounced only by its
+    // own fixed ONSET_COOLDOWN). Fans out to three effects, each following
+    // its own act rate where it has one (see ONSET_EMA_RATE's doc).
+    this.flashOnsetCooldown -= dt;
+    this.knockOnsetCooldown -= dt;
+    if (this.bassOnset.update(dt, this.bassE, prevBassE)) {
+      if (this.flashOnsetCooldown <= 0) {
+        this.kickFlash(FLASH_KICK_ONSET);
+        this.flashOnsetCooldown = rateGapSeconds(ONSET_COOLDOWN, p.flashRate);
+      }
+      if (this.knockOnsetCooldown <= 0) {
+        const wx = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_X;
+        const wy = (this.rand() * 2 - 1) * AMBIENT_KNOCK_SPAN_Y;
+        this.activateKnockBoost(wx, wy);
+        this.activateKnockGlow(wx, wy);
+        this.knockOnsetCooldown = rateGapSeconds(ONSET_COOLDOWN, p.knockRate);
+      }
       // Climax coupling: once an act's baseline lineRate reaches the
-      // threshold (only two-homes-one-wall's 20 does), every bass onset
+      // threshold (only two-homes-one-wall's 20 does), every raw bass onset
       // also spawns an extra chalk line on top of the Poisson schedule.
+      // Unchanged from pre-fix — gated only by the raw cooldown above, not
+      // a separate rateGapSeconds floor (single climax act, never the
+      // density complaint this stage's fix targets).
       if (p.lineRate >= LINE_ONSET_RATE_THRESHOLD) this.activateLine();
-      this.onsetCooldown = ONSET_COOLDOWN;
     }
 
-    // Pulse-channel onset detector: reuses the same bassE/bassSlowE EMA pair
-    // as the flash detector above (a duplicate pair would just track the
-    // same signal), but with its own lower threshold and much shorter
-    // cooldown — the dense channel wants to catch beats the flash channel's
-    // 1.5s cooldown deliberately skips.
-    this.pulseOnsetCooldown -= dt;
-    if (this.pulseOnsetCooldown <= 0 && this.bassE - this.bassSlowE > PULSE_ONSET_THRESHOLD) {
+    // Pulse-channel onset detector (`../lib/onset`) — independent instance
+    // chasing the same bassE fast EMA as the detector above (a duplicate
+    // EMA pair would just track the same signal), own lower margin/floor
+    // and much shorter fixed cooldown so the dense channel catches beats
+    // the flash channel's rate-gated cooldown deliberately skips. No
+    // rateGapSeconds gating (see PULSE_ONSET_REL_MARGIN's doc).
+    if (this.pulseOnset.update(dt, this.bassE, prevBassE)) {
       this.kickPulse(PULSE_KICK_ONSET);
-      this.pulseOnsetCooldown = PULSE_ONSET_COOLDOWN;
     }
 
     this.scheduleFlash(dt, p.flashRate);

@@ -10,9 +10,26 @@ import {
 import { LATTICE_VERT, buildLatticeFragment } from './latticeShader';
 import { paramsAt, arcAt, ACTS, CUES, type ActParams } from './sections';
 import { mulberry32 } from '../random';
+import { OnsetDetector } from '../lib/onset';
 
-/** Bass-onset detector (a1/a2/b1 EMA + margin + cooldown recipe): excess over its own slow EMA fires an ignition + flash. */
-const ONSET_THRESHOLD = 0.12;
+/**
+ * Bass-onset detector (album-audit fix, stage 2, `../lib/onset`) — fires an
+ * ignition + flash. Ignitions are this track's beat channel, so the
+ * detector is called with `p.ignitionRate` (the b3 single-consumer fused
+ * shape: `ratePerMinute` both gates the detector and re-arms the cooldown
+ * to `rateGapSeconds(ONSET_COOLDOWN, p.ignitionRate)` on a fire) — ignite +
+ * kickFlash are one combined event, matching the ambient scheduleIgnitions
+ * path which also kicks a flash on every ambient ignition.
+ *
+ * `bassE` (rate 8, shared with the continuous field-drive uniform) measured
+ * the same way as a1/a2: fast-EMA-over-fully-converged-reference-EMA peak
+ * ratio ceiling ~1.104x against the verification harness's synthetic
+ * 120bpm kick. ONSET_REL_MARGIN (0.08) matches a1/a2/b2's own re-measured
+ * bass margin for the identical rate-8-vs-0.25 shape.
+ */
+const ONSET_EMA_RATE = 0.25;
+const ONSET_REL_MARGIN = 0.08;
+const ONSET_ABS_FLOOR = 0.06;
 const ONSET_COOLDOWN = 0.5;
 
 /** uFlash exponential decay rate (1/s) and per-event kick sizes. */
@@ -44,8 +61,19 @@ const RIPPLE_LIFETIME = 1.2;
  * kick+decay scalar (uSparkKick) separate from the slow uFlash channel: the
  * a2 lesson that one decaying scalar can't serve both few-per-minute scene
  * hits and per-beat sparkle without strobing everything it touches.
+ *
+ * Stage-2 fix (`../lib/onset`): `highE` (rate 8) measured against the same
+ * synthetic harness reaches a fast-over-converged-reference ceiling of
+ * ~1.089x — HIGH_ONSET_REL_MARGIN (0.06) matches b2's own re-measured high
+ * margin for the identical shape. Drives ONLY the spark scalar, with no
+ * act-rated consumer to follow (unlike the bass detector above), so it
+ * keeps its existing fixed cooldown — no `ratePerMinute` passed to
+ * `update()`, per the album-audit's own scope note for detectors with no
+ * act rate to gate against.
  */
-const HIGH_ONSET_THRESHOLD = 0.09;
+const HIGH_ONSET_EMA_RATE = 0.25;
+const HIGH_ONSET_REL_MARGIN = 0.06;
+const HIGH_ONSET_ABS_FLOOR = 0.05;
 const HIGH_ONSET_COOLDOWN = 0.22;
 const SPARK_KICK = 0.75;
 const SPARK_DECAY = 7;
@@ -129,10 +157,20 @@ class BiomeDominoes implements Viz {
   private bassE = 0;
   private midE = 0;
   private highE = 0;
-  private bassSlowE = 0;
-  private highSlowE = 0;
-  private onsetCooldown = 0;
-  private highOnsetCooldown = 0;
+  /** Bass onset detector (`../lib/onset`) — owns its own reference EMA + cooldown; chases `this.bassE`. Called with `p.ignitionRate` (see ONSET_EMA_RATE's doc). */
+  private bassOnset = new OnsetDetector({
+    refRate: ONSET_EMA_RATE,
+    relMargin: ONSET_REL_MARGIN,
+    absFloor: ONSET_ABS_FLOOR,
+    cooldown: ONSET_COOLDOWN,
+  });
+  /** High-band onset detector (`../lib/onset`) — owns its own reference EMA + fixed cooldown; chases `this.highE`. No act rate to follow (see HIGH_ONSET_EMA_RATE's doc), so called without `ratePerMinute`. */
+  private highOnset = new OnsetDetector({
+    refRate: HIGH_ONSET_EMA_RATE,
+    relMargin: HIGH_ONSET_REL_MARGIN,
+    absFloor: HIGH_ONSET_ABS_FLOOR,
+    cooldown: HIGH_ONSET_COOLDOWN,
+  });
   private flash = 0;
   /** Fast spark channel (high onsets): kick+decay scalar + per-event counter. */
   private spark = 0;
@@ -374,26 +412,27 @@ class BiomeDominoes implements Viz {
 
     // Smooth audio bands (a1/a2/b1 idiom) so reactivity isn't jittery.
     const k = Math.min(1, dt * 8);
+    const prevBassE = this.bassE;
+    const prevHighE = this.highE;
     this.bassE += (audio.bass - this.bassE) * k;
     this.midE += (audio.mid - this.midE) * k;
     this.highE += (audio.high - this.highE) * k;
-    this.bassSlowE += (audio.bass - this.bassSlowE) * Math.min(1, dt * 1.5);
-    this.highSlowE += (audio.high - this.highSlowE) * Math.min(1, dt * 1.5);
 
-    // Bass-onset detector: excess over its own slow EMA fires an ignition +
-    // flash — a new chain leaps on the beat.
-    this.onsetCooldown -= dt;
-    if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
+    // Bass-onset detector (`../lib/onset`) fires an ignition + flash — a new
+    // chain leaps on the beat. `p.ignitionRate` both gates the detector and
+    // re-arms the cooldown via rateGapSeconds on a fire, so onset TIMING
+    // snaps to real kicks while onset DENSITY still follows the act's own
+    // arc (see ONSET_EMA_RATE's doc).
+    if (this.bassOnset.update(dt, this.bassE, prevBassE, p.ignitionRate)) {
       this.ignite(this.rand(), this.rand(), IGNITE_RADIUS, IGNITE_STRENGTH_AMBIENT);
       this.kickFlash(FLASH_KICK_ONSET);
-      this.onsetCooldown = ONSET_COOLDOWN;
     }
 
-    // High-onset detector — the fast spark channel (high's other job).
-    this.highOnsetCooldown -= dt;
-    if (this.highOnsetCooldown <= 0 && this.highE - this.highSlowE > HIGH_ONSET_THRESHOLD) {
+    // High-onset detector (`../lib/onset`) — the fast spark channel (high's
+    // other job). No act rate to follow, so no ratePerMinute argument (see
+    // HIGH_ONSET_EMA_RATE's doc) — its own fixed cooldown is unchanged.
+    if (this.highOnset.update(dt, this.highE, prevHighE)) {
       this.kickSpark();
-      this.highOnsetCooldown = HIGH_ONSET_COOLDOWN;
     }
     if (this.forceSparkAlways) {
       this.sparkDebugTimer -= dt;
