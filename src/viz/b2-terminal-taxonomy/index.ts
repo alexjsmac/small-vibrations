@@ -11,12 +11,108 @@ import { CATALOGUE_VERT, buildCatalogueFragment } from './catalogueShader';
 import { paramsAt, arcAt, orderAt, ACTS, CUES, type ActParams } from './sections';
 import { mulberry32 } from '../random';
 
-/** Bass-onset detector (a1/a2/a3/b1 EMA + margin + cooldown recipe): excess over its own slow EMA fires a classification scan + flash. */
-const ONSET_THRESHOLD = 0.12;
+/**
+ * Poisson-delay clamp (album-audit Bug A, belt-and-braces guard — see
+ * scheduleScans/scheduleLinks/scheduleRunners' own docs for the actual fix):
+ * caps a single drawn inter-arrival delay so a pathological near-zero rate
+ * (a crossfade epsilon, or any other future bug) can never bake in an
+ * absurd multi-hour wait even before the schedule-rate rescale below has a
+ * chance to shrink it back down. ~3x the slowest channel's own mean gap at
+ * its lowest realistic nonzero rate (linkRate=2/min -> 30s mean), so it
+ * never clips a normal draw in practice.
+ */
+const MAX_POISSON_GAP_SECONDS = 90;
+
+/**
+ * Draws one Poisson inter-arrival delay (seconds) at `ratePerMinute`
+ * events/minute, clamped to MAX_POISSON_GAP_SECONDS (see its own doc).
+ * Shared by scheduleScans/scheduleLinks/scheduleRunners — the three Bug-A
+ * crossfade-epsilon channels (scheduleScans' scanRate 0->5 @56s,
+ * scheduleLinks' linkRate 0->2 @128s, scheduleRunners' runnerRate 0->4
+ * @128s — see each scheduler's own doc). scheduleWaves is NOT affected (its
+ * rate only ever steps discretely via the act-hold `p`, never crosses
+ * through an epsilon blend — see its own doc) so it keeps its original
+ * inline draw untouched, out of caution/scope discipline.
+ */
+function poissonDelay(rand: () => number, ratePerMinute: number): number {
+  const rate = Math.max(1e-9, ratePerMinute) / 60;
+  const u = Math.max(1e-6, rand());
+  return Math.min(MAX_POISSON_GAP_SECONDS, -Math.log(u) / rate);
+}
+
+/**
+ * Bass-onset detector (album-audit fix, transplanted from b3-sterile-breath's
+ * increment-11 cure — see that module's BASS_ONSET_* doc for the full
+ * postmortem): this.bassE (fast EMA, rate 8, tau ~0.125s, ALSO feeds the
+ * continuous vitality-mod/aura-pulse uniforms below — untouched) chases its
+ * own REFERENCE EMA (this.bassSlowE) at BASS_ONSET_EMA_RATE.
+ *
+ * Pre-fix defect: the reference ran at rate 1.5 (tau ~0.67s), only ~5.3x
+ * slower than the fast EMA, and the fire test was an ABSOLUTE gap
+ * (`bassE - bassSlowE > ONSET_THRESHOLD`). At musical tempos the reference
+ * tracked the beat envelope almost as closely as the fast EMA, so the gap
+ * collapsed and onsets only fired during the cold-start transient (both
+ * EMAs climbing from 0) — measured as 2 fires in the first 10s of a
+ * synthetic 120bpm bass line, then exactly 0 for the remaining ~80s+.
+ *
+ * Fix: slow the reference to BASS_ONSET_EMA_RATE (32x ratio) so per-beat
+ * peaks actually stand out against the passage average, replace the
+ * absolute gap with a RELATIVE threshold (`bassE > bassSlowE * (1 +
+ * BASS_ONSET_REL_MARGIN)`) so it works at any playback level, gated by a
+ * small absolute floor (BASS_ONSET_ABS_FLOOR) so silence/noise never
+ * triggers, and add a rising-edge requirement (`bassE > prevBassE`) so it
+ * fires on attacks, not anywhere on a sustained plateau.
+ *
+ * BASS_ONSET_REL_MARGIN measured down from b3's own 0.22 (started there per
+ * the fix's own instructions, then tuned by measurement, as directed):
+ * bassE's fast EMA (rate 8, tau ~0.125s, shared with the continuous
+ * vitality-mod/aura-pulse uniforms — can't be changed independently) only
+ * reaches ~1.106x its own converged steady-state average against the
+ * verification harness's synthetic 120bpm kick (`0.42 + 0.40 *
+ * exp(-((t*2)%1)*9)`, an effective ~56ms decay — much narrower than the
+ * fast EMA's own tau, so it undershoots the spike badly). b3's 0.22 margin
+ * (22%) sits well above that ~10.6% ceiling and never fires once the
+ * reference converges — measured directly (a standalone EMA simulation
+ * against the exact verification formula) rather than assumed.
+ *
+ * Round 2 (density-vs-composition fix): once each downstream EFFECT got its
+ * own cooldown derived from the act's own rate (scanOnsetCooldown/
+ * linkOnsetCooldown, see their doc), the RAW detection rate no longer sets
+ * visible event density — so it can afford to sit further from the noise
+ * floor for cleaner attack-only discrimination. Re-measured at 0.08 (vs the
+ * round-1 0.05): still comfortably below the ~10.6% ceiling (~25% safety
+ * margin) and confirmed to fire continuously across the full verification
+ * run, so raised back up.
+ */
+const BASS_ONSET_EMA_RATE = 0.25;
+const BASS_ONSET_REL_MARGIN = 0.08;
+const BASS_ONSET_ABS_FLOOR = 0.06;
 const ONSET_COOLDOWN = 0.5;
 
-/** High-band onset detector (glyph ticks — high's fast job). */
-const HIGH_ONSET_THRESHOLD = 0.09;
+/**
+ * High-band onset detector (glyph ticks + grid line-runners — high's fast
+ * job): same album-audit fix as the bass detector above, transplanted from
+ * b3's crackle detector (CRACKLE_ONSET_* there) — this.highE (fast EMA,
+ * rate 8, ALSO feeds uSparkle below — untouched) chases its own REFERENCE
+ * EMA (this.highSlowE) at HIGH_ONSET_EMA_RATE, relative margin + absolute
+ * floor + rising edge. Pre-fix: reference at rate 1.5, absolute-gap test —
+ * measured as 5 fires in the first 10s, then exactly 0 for the rest of the
+ * track. The high band sits at a lower absolute level than bass in
+ * practice, so its margin/floor started from b3's own crackle values, then
+ * measured down the same way as BASS_ONSET_REL_MARGIN above: against the
+ * verification harness's synthetic kick, highE's steady-state peak/average
+ * ratio is only ~1.09x (~9%) — b3's 0.16 margin never fires past warmup for
+ * the same reason bass's 0.22 didn't.
+ *
+ * Round 2 (density-vs-composition fix): same reasoning as
+ * BASS_ONSET_REL_MARGIN above — runnerOnsetCooldown now separately governs
+ * visible runner density, so the raw margin was re-measured and raised from
+ * the round-1 0.04 to 0.06 (still ~33% below the ~9% ceiling, confirmed to
+ * fire continuously across the full verification run).
+ */
+const HIGH_ONSET_EMA_RATE = 0.25;
+const HIGH_ONSET_REL_MARGIN = 0.06;
+const HIGH_ONSET_ABS_FLOOR = 0.05;
 const HIGH_ONSET_COOLDOWN = 0.22;
 
 /** uFlash exponential decay rate (1/s) and per-event kick sizes. */
@@ -349,6 +445,20 @@ class TerminalTaxonomy implements Viz {
   private highSlowE = 0;
   private onsetCooldown = 0;
   private highOnsetCooldown = 0;
+  /**
+   * Per-EFFECT onset cooldowns (density-vs-composition fix, see the
+   * BASS_ONSET_ and HIGH_ONSET_ constants' doc): the raw bass/high onset
+   * detection above is debounced only by onsetCooldown/highOnsetCooldown
+   * (a fixed floor, matching real kick timing), but each downstream effect
+   * — scan, link, runner — additionally needs its OWN cooldown so its
+   * FIRE RATE follows the act's own scanRate/linkRate/runnerRate rather
+   * than firing on every recognized beat. Set to `max(floor, 60/actRate)`
+   * on every fire (the b3 onsetCooldownGap idiom), decremented every frame
+   * regardless of whether the raw onset condition triggered that frame.
+   */
+  private scanOnsetCooldown = 0;
+  private linkOnsetCooldown = 0;
+  private runnerOnsetCooldown = 0;
   private flash = 0;
   /** Beat pulse (bass onsets -> uLifeClock accelerant): kick+decay scalar, tripled weight while hot. */
   private beatPulse = 0;
@@ -368,6 +478,8 @@ class TerminalTaxonomy implements Viz {
   private scanA: THREE.Vector4[] = [];
   private scanB: THREE.Vector4[] = [];
   private scanTimeToNext = 0;
+  /** The scanRate (events/min) the CURRENT scanTimeToNext was scheduled/rescaled against, 0 when unarmed — album-audit Bug A fix, see scheduleScans' own doc. */
+  private scanScheduleRate = 0;
   private scanDebugTimer = 0;
 
   /** Scripted mass-scan burst (t=168): a queued release, one scan per 0.18s. */
@@ -392,6 +504,8 @@ class TerminalTaxonomy implements Viz {
   private linkA: THREE.Vector4[] = [];
   private linkB: THREE.Vector4[] = [];
   private linkTimeToNext = 0;
+  /** The linkRate (events/min) the CURRENT linkTimeToNext was scheduled/rescaled against, 0 when unarmed — album-audit Bug A fix, see scheduleLinks' own doc. */
+  private linkScheduleRate = 0;
   private linkDebugTimer = 0;
   /** Alternates the bass-onset branch between the wave start and a link fire (even -> wave, odd -> link). */
   private onsetCount = 0;
@@ -400,6 +514,8 @@ class TerminalTaxonomy implements Viz {
   private runnerSlots: AgeSlot[] = [];
   private runnerValues: THREE.Vector4[] = [];
   private runnerTimeToNext = 0;
+  /** The runnerRate (events/min) the CURRENT runnerTimeToNext was scheduled/rescaled against, 0 when unarmed — album-audit Bug A fix, see scheduleRunners' own doc. */
+  private runnerScheduleRate = 0;
   private runDebugTimer = 0;
 
   /** Kill-zone pool: parallel CPU age/state + preallocated display Vector4s (bound as uKill) — an instant-death strike location, fired from ageLinks. */
@@ -710,18 +826,71 @@ class TerminalTaxonomy implements Viz {
     this.startScan(x - Math.floor(x), y - Math.floor(y), p);
   }
 
-  /** Poisson ambient scans (a3's scheduleIgnitions shape): each one also nudges the ambient flash channel — a scene that's quietly cataloguing itself even between onsets — and ticks beatCount (the living grid background's clock), so no-mic playback still moves. */
+  /**
+   * Poisson ambient scans (a3's scheduleIgnitions shape): each one also
+   * nudges the ambient flash channel — a scene that's quietly cataloguing
+   * itself even between onsets — and ticks beatCount (the living grid
+   * background's clock), so no-mic playback still moves.
+   *
+   * Album-audit Bug A fix (transplanted from b3-sterile-breath's
+   * increment-11 fix — see its strikeScheduleRate doc for the full
+   * postmortem): ratePerMinute comes from the crossfaded act params
+   * (paramsAt's 6s blend), so at the 56s boundary (scanRate 0 -> 5) the
+   * blended rate passes through ~2.3e-5 on the first frame. The OLD `if
+   * (rate <= 0) return;` early-return froze scanTimeToNext at exactly 0
+   * (its init value) while rate was 0, so the first frame with rate > 0
+   * fired immediately (correct) and then baked its NEXT delay
+   * (-log(u)/rate) against that near-zero rate — order 1e5 seconds,
+   * effectively never. Measured: 0 scans after ~50s for the rest of the
+   * 337s track, killing beatCount/beatFlash (the living-grid background's
+   * clock) along with the scan channel itself.
+   *
+   * Fix: track the rate the CURRENT scanTimeToNext was baked against
+   * (scanScheduleRate) and rescale the countdown every time the effective
+   * rate changes (`timeToNext *= oldRate/newRate`, the quantile-preserving
+   * rescale for an Exponential under a rate change) — the "due now" fire on
+   * arrival still happens, but the delay it schedules keeps shrinking in
+   * step with the crossfade instead of freezing. scanScheduleRate resets to
+   * 0 whenever rate turns off.
+   *
+   * Round-2 gap (found via the density-fix harness on the link/runner
+   * channels, which — unlike scan — cycle on/off/on more than once across
+   * the act table): reactivating from a genuine OFF period
+   * (scanScheduleRate already 0, not merely a crossfade epsilon) skipped
+   * the rescale branch entirely, so a stale timeToNext left over from
+   * BEFORE the channel went quiet — occasionally a large one, up to the
+   * MAX_POISSON_GAP_SECONDS clamp itself, from an unlucky exponential tail
+   * draw — got reused verbatim instead of firing due-now. Measured on
+   * linkRate's 0(act3)->14(act4) re-arm: a ~90s stale countdown survived
+   * the entire 60s OFF span and then ate a big chunk of the NEXT on-period
+   * too, silencing the Poisson channel through most of the album-max act.
+   * Fixed below: reactivating from scheduleRate<=0 forces timeToNext to 0
+   * (the same "due now" a genuine first-ever activation gets), never
+   * resumes a leftover value.
+   */
   private scheduleScans(dt: number, ratePerMinute: number, p: ActParams) {
-    const rate = Math.max(0, ratePerMinute) / 60;
-    if (rate <= 0) return;
+    const rate = Math.max(0, ratePerMinute);
+    if (rate <= 0) {
+      this.scanScheduleRate = 0;
+      return;
+    }
+    if (this.scanScheduleRate > 0 && this.scanTimeToNext > 0) {
+      this.scanTimeToNext = Math.min(
+        MAX_POISSON_GAP_SECONDS,
+        this.scanTimeToNext * (this.scanScheduleRate / rate),
+      );
+    } else if (this.scanScheduleRate <= 0) {
+      this.scanTimeToNext = 0;
+    }
+    this.scanScheduleRate = rate;
     this.scanTimeToNext -= dt;
     while (this.scanTimeToNext <= 0) {
       this.fireScan(p);
       this.kickFlash(FLASH_KICK_AMBIENT);
       this.beatCount++;
       this.beatFlash = 1;
-      const u = Math.max(1e-6, this.rand());
-      this.scanTimeToNext += -Math.log(u) / rate;
+      this.scanTimeToNext += poissonDelay(this.rand, rate);
+      this.scanScheduleRate = rate;
     }
   }
 
@@ -792,15 +961,46 @@ class TerminalTaxonomy implements Viz {
     this.linkB[idx].set(b.x, b.y, this.rand(), 0);
   }
 
-  /** Poisson-scheduled link-strike events (act 5 mainly — other acts pass 0). */
+  /**
+   * Poisson-scheduled link-strike events (act 5 mainly — other acts pass 0).
+   *
+   * Album-audit Bug A fix (same defect, same cure as scheduleScans above —
+   * see its doc for the full postmortem): linkRate crosses 0 -> 2 at the
+   * 128s boundary through the crossfade blend, so the pre-fix code baked a
+   * ~9.0e5s delay against the near-zero first-frame rate and killed the
+   * link-strike channel for the rest of the track, including the act-4
+   * climax (linkRate: 14). Fixed by rescaling linkTimeToNext against
+   * linkScheduleRate whenever the effective rate changes.
+   *
+   * Round-2 gap (see scheduleScans' own doc for the full writeup): linkRate
+   * is 0 in act3 (last-unclassified) between its two nonzero spans — act2's
+   * 2/min and act4's 14/min — so it cycles on/off/on, unlike scan's single
+   * on-period. Reactivating from a genuine OFF period (linkScheduleRate
+   * already 0) now forces timeToNext to 0 instead of resuming a stale,
+   * occasionally clamp-sized leftover from the PREVIOUS on-period — this is
+   * what silenced the Poisson link channel through most of act 4 even after
+   * the round-1 rescale fix.
+   */
   private scheduleLinks(dt: number, ratePerMinute: number, p: ActParams) {
-    const rate = Math.max(0, ratePerMinute) / 60;
-    if (rate <= 0) return;
+    const rate = Math.max(0, ratePerMinute);
+    if (rate <= 0) {
+      this.linkScheduleRate = 0;
+      return;
+    }
+    if (this.linkScheduleRate > 0 && this.linkTimeToNext > 0) {
+      this.linkTimeToNext = Math.min(
+        MAX_POISSON_GAP_SECONDS,
+        this.linkTimeToNext * (this.linkScheduleRate / rate),
+      );
+    } else if (this.linkScheduleRate <= 0) {
+      this.linkTimeToNext = 0;
+    }
+    this.linkScheduleRate = rate;
     this.linkTimeToNext -= dt;
     while (this.linkTimeToNext <= 0) {
       this.fireLink(p);
-      const u = Math.max(1e-6, this.rand());
-      this.linkTimeToNext += -Math.log(u) / rate;
+      this.linkTimeToNext += poissonDelay(this.rand, rate);
+      this.linkScheduleRate = rate;
     }
   }
 
@@ -912,15 +1112,43 @@ class TerminalTaxonomy implements Viz {
     }
   }
 
-  /** Poisson-scheduled grid line-runners (act 5 mainly — other acts pass 0). */
+  /**
+   * Poisson-scheduled grid line-runners (act 5 mainly — other acts pass 0).
+   *
+   * Album-audit Bug A fix (same defect, same cure as scheduleScans above —
+   * see its doc for the full postmortem): runnerRate crosses 0 -> 4 at the
+   * 128s boundary through the crossfade blend, so the pre-fix code baked a
+   * ~4.5e5s delay against the near-zero first-frame rate and killed the
+   * Poisson grid-runner channel for the rest of the track. Fixed by
+   * rescaling runnerTimeToNext against runnerScheduleRate whenever the
+   * effective rate changes.
+   *
+   * Round-2 gap (see scheduleScans' own doc for the full writeup):
+   * runnerRate is 0 in act1 and act3, nonzero in act2 (4/min) and act4
+   * (22/min) — on/off/on, same as linkRate. Reactivating from a genuine OFF
+   * period (runnerScheduleRate already 0) now forces timeToNext to 0
+   * instead of resuming a stale leftover from the PREVIOUS on-period.
+   */
   private scheduleRunners(dt: number, ratePerMinute: number) {
-    const rate = Math.max(0, ratePerMinute) / 60;
-    if (rate <= 0) return;
+    const rate = Math.max(0, ratePerMinute);
+    if (rate <= 0) {
+      this.runnerScheduleRate = 0;
+      return;
+    }
+    if (this.runnerScheduleRate > 0 && this.runnerTimeToNext > 0) {
+      this.runnerTimeToNext = Math.min(
+        MAX_POISSON_GAP_SECONDS,
+        this.runnerTimeToNext * (this.runnerScheduleRate / rate),
+      );
+    } else if (this.runnerScheduleRate <= 0) {
+      this.runnerTimeToNext = 0;
+    }
+    this.runnerScheduleRate = rate;
     this.runnerTimeToNext -= dt;
     while (this.runnerTimeToNext <= 0) {
       this.fireRunner();
-      const u = Math.max(1e-6, this.rand());
-      this.runnerTimeToNext += -Math.log(u) / rate;
+      this.runnerTimeToNext += poissonDelay(this.rand, rate);
+      this.runnerScheduleRate = rate;
     }
   }
 
@@ -1060,46 +1288,91 @@ class TerminalTaxonomy implements Viz {
     this.lastSongTime = audio.time;
 
     // Smooth audio bands (a1/a2/a3/b1 idiom) so reactivity isn't jittery.
+    // prevBassE/prevHighE captured BEFORE this frame's EMA update — the
+    // onset detectors below need the pre-update fast-EMA value for their
+    // rising-edge test.
+    const prevBassE = this.bassE;
+    const prevHighE = this.highE;
     const k = Math.min(1, dt * 8);
     this.bassE += (audio.bass - this.bassE) * k;
     this.midE += (audio.mid - this.midE) * k;
     this.highE += (audio.high - this.highE) * k;
-    const kSlow = Math.min(1, dt * 1.5);
-    this.bassSlowE += (audio.bass - this.bassSlowE) * kSlow;
-    this.highSlowE += (audio.high - this.highSlowE) * kSlow;
+    // Onset reference EMAs (album-audit fix — see BASS_ONSET_*/HIGH_ONSET_*
+    // constants' doc for the postmortem): each chases its own FAST EMA
+    // (bassE/highE, already updated above), not the raw audio band — the
+    // b3-transplanted recipe — at the much slower BASS_ONSET_EMA_RATE /
+    // HIGH_ONSET_EMA_RATE (was the shared, too-fast rate 1.5).
+    this.bassSlowE += (this.bassE - this.bassSlowE) * Math.min(1, dt * BASS_ONSET_EMA_RATE);
+    this.highSlowE += (this.highE - this.highSlowE) * Math.min(1, dt * HIGH_ONSET_EMA_RATE);
 
-    // Bass-onset detector: excess over its own slow EMA fires a scan + flash;
-    // in act 4 (total-classification) it alternates between starting a wave
-    // and firing a link-strike (onsetCount even -> wave, odd -> link) so the
-    // climax's two big event systems trade off instead of doubling up on the
-    // same beat.
+    // Bass-onset detector (album-audit fix — see BASS_ONSET_* constants' doc
+    // for the postmortem): fires on a RISING edge (bassE > prevBassE) once
+    // bassE clears both a relative margin over its reference EMA and an
+    // absolute floor. onsetCooldown debounces the RAW detection only (so
+    // "a beat was felt" — beatCount/beatFlash/beatPulse/grid-mode-advance —
+    // still tracks real kick timing at up to 1/ONSET_COOLDOWN); each
+    // downstream EFFECT (scan, then the act-4 wave/link alternation) is
+    // separately gated by its own cooldown derived from the act's own
+    // scanRate/linkRate (scanOnsetCooldown/linkOnsetCooldown, the b3
+    // onsetCooldownGap idiom — see their own doc) so FIRE RATE follows the
+    // composition even though every beat is still detected. Without this
+    // split, mic-path scan/link counts ran ~6x the no-mic Poisson totals
+    // (every felt beat fired a scan wherever scanRate was merely nonzero) —
+    // measured on the album audit's own harness.
     this.onsetCooldown -= dt;
-    if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
-      if (p.scanRate > 0.5) this.fireScan(p);
-      this.kickFlash(FLASH_KICK_ONSET);
+    this.scanOnsetCooldown -= dt;
+    this.linkOnsetCooldown -= dt;
+    if (
+      this.onsetCooldown <= 0 &&
+      this.bassE > prevBassE &&
+      this.bassE > BASS_ONSET_ABS_FLOOR &&
+      this.bassE > this.bassSlowE * (1 + BASS_ONSET_REL_MARGIN)
+    ) {
+      this.onsetCooldown = ONSET_COOLDOWN;
+      if (this.scanOnsetCooldown <= 0 && p.scanRate > 0.5) {
+        this.fireScan(p);
+        this.kickFlash(FLASH_KICK_ONSET);
+        this.scanOnsetCooldown = Math.max(ONSET_COOLDOWN, 60 / p.scanRate);
+      }
       this.beatCount++;
       this.beatFlash = 1;
       this.onsetCount++;
       if (this.onsetCount % 2 === 0) {
         if (section.actIndex === 4 && !this.waveActive) this.startWave();
-      } else if (p.linkRate > 0.5) {
+      } else if (this.linkOnsetCooldown <= 0 && p.linkRate > 0.5) {
         this.fireLink(p);
+        this.linkOnsetCooldown = Math.max(ONSET_COOLDOWN, 60 / p.linkRate);
       }
       this.beatPulse = Math.min(BEAT_PULSE_CEILING, this.beatPulse + BEAT_PULSE_KICK);
       // A pending grid-mode switch lands on this beat (rule changes land at
       // phrase boundaries, not mid-phrase) — see GRID_MODE_PENDING_FALLBACK's
       // doc for the no-mic fallback that covers the case no onset arrives.
       if (this.gridModePending) this.advanceGridMode();
-      this.onsetCooldown = ONSET_COOLDOWN;
     }
 
-    // High-onset detector — the fast spark channel (glyph ticks) + one grid
-    // line-runner when the act calls for them (high's fast job).
+    // High-onset detector (album-audit fix — see HIGH_ONSET_* constants' doc
+    // for the postmortem): fires on a RISING edge (highE > prevHighE) once
+    // highE clears both a relative margin over its reference EMA and an
+    // absolute floor. Drives the fast spark channel (glyph ticks, ungated —
+    // a decay scalar, not a rate-limited pool, so no density concern) + one
+    // grid line-runner when the act calls for them (high's fast job).
+    // Same split as the bass detector above: highOnsetCooldown debounces the
+    // raw detection, runnerOnsetCooldown (derived from p.runnerRate)
+    // separately throttles the runner fire rate to the composition.
     this.highOnsetCooldown -= dt;
-    if (this.highOnsetCooldown <= 0 && this.highE - this.highSlowE > HIGH_ONSET_THRESHOLD) {
-      this.kickSpark();
-      if (p.runnerRate > 0.5) this.fireRunner();
+    this.runnerOnsetCooldown -= dt;
+    if (
+      this.highOnsetCooldown <= 0 &&
+      this.highE > prevHighE &&
+      this.highE > HIGH_ONSET_ABS_FLOOR &&
+      this.highE > this.highSlowE * (1 + HIGH_ONSET_REL_MARGIN)
+    ) {
       this.highOnsetCooldown = HIGH_ONSET_COOLDOWN;
+      this.kickSpark();
+      if (this.runnerOnsetCooldown <= 0 && p.runnerRate > 0.5) {
+        this.fireRunner();
+        this.runnerOnsetCooldown = Math.max(HIGH_ONSET_COOLDOWN, 60 / p.runnerRate);
+      }
     }
     if (this.forceSparkAlways) {
       this.sparkDebugTimer -= dt;
