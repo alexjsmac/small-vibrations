@@ -378,7 +378,10 @@ function finalEnvAt(songTime: number): { phase: number; t: number; seedFade: num
  * regardless of act, `?ghost=always` (NEW this increment) forces every
  * winner clump to host a ghost stamp every epoch (sterileShader.ts's
  * uGhostForce) and uGhostAmp to 1.0 regardless of act — all for
- * deterministic screenshots — plus the standard `?t=`, `?q=`, `?debug=1`
+ * deterministic screenshots — `?crack=<mult>` (increment 10) multiplies
+ * every NEWLY-fired strike's size (clamped [0.25, 6], stacking with the
+ * 144s scripted peak strike's own 1.6x override) so a single fracture can
+ * be inspected up close — plus the standard `?t=`, `?q=`, `?debug=1`
  * handled outside this module (VizHost / QualityManager).
  */
 class SterileBreath implements Viz {
@@ -529,6 +532,9 @@ class SterileBreath implements Viz {
   /** `?seedpt=always` (increment 8) — forces the final condensation sequence's SEED phase (uFinalPhase=3, t=0, uSeedFade=1) regardless of songTime, so the closing seed-point image is screenshot-able from any deep link without waiting for the real 194s+ window. */
   private forceSeedPointAlways = false;
 
+  /** `?crack=<mult>` (increment 10) — a multiplier (clamped [0.25, 6]) on every NEWLY-fired strike's rMax (applied in fireStrike via sizeMult), so a single big fracture can be inspected up close. Default 1 (no override); existing strikes keep whatever size they were baked with. */
+  private crackMult = 1;
+
   init(ctx: VizContext) {
     const { renderer, seed, quality } = ctx;
     this.renderer = renderer;
@@ -581,6 +587,12 @@ class SterileBreath implements Viz {
     if (glintParam !== null) {
       const v = parseFloat(glintParam);
       if (!Number.isNaN(v)) this.pinnedGlint = Math.min(1, Math.max(0, v));
+    }
+    // `?crack=<mult>` (increment 10) — see crackMult's own doc.
+    const crackParam = params.get('crack');
+    if (crackParam !== null) {
+      const v = parseFloat(crackParam);
+      if (!Number.isNaN(v)) this.crackMult = Math.min(6, Math.max(0.25, v));
     }
 
     // uPocket: the S-field's centre (the LAST living place). Composition
@@ -659,6 +671,8 @@ class SterileBreath implements Viz {
         fbmOct: this.full ? 3 : 2,
         // Full-only film grain (increment 7) — see SterileShaderConfig's own doc.
         grain: this.full,
+        // Fracture splinter count (increment 10) — same Full/Lite split idiom as lobes/fbmOct above.
+        fissures: this.full ? 4 : 3,
       }),
       depthTest: false,
       depthWrite: false,
@@ -1182,6 +1196,9 @@ class SterileBreath implements Viz {
     const a = this.strikePool.slots[idx];
     a.x = point.x;
     a.y = point.y;
+    // `?crack=<mult>` (increment 10) — multiplies into sizeMult so it stacks
+    // with the 144s scripted peak strike's own 1.6x override too.
+    sizeMult *= this.crackMult;
     const rMax = p.strikeSize * sizeMult * (0.8 + this.rand() * 0.5);
     const aspect = 1.15 + this.rand() * 0.5;
     const angle = this.rand() * Math.PI * 2;

@@ -248,6 +248,8 @@ export interface SterileShaderConfig {
   fbmOct: number;
   /** Full-only film grain (increment 7) — baked as compile-time PRESENT/ABSENT source text (not a runtime uniform gate) so Lite compiles zero grain code, the house "?q=lite drops a whole feature" idiom (matches lobes/fbmOct's own Full/Lite split above). */
   grain: boolean;
+  /** Radiating splinter count per fracture (increment 10, sbFractureSd) — quality-baked exactly like lobes/fbmOct above (Full gets a visibly busier shatter, Lite a cheaper one). */
+  fissures: number;
 }
 
 export function buildSterileFragment(cfg: SterileShaderConfig): string {
@@ -257,6 +259,7 @@ export function buildSterileFragment(cfg: SterileShaderConfig): string {
   const RIPPLE_SLOTS = Math.max(1, Math.floor(cfg.rippleSlots));
   const LOBES = Math.max(1, Math.floor(cfg.lobes));
   const FBM_OCT = Math.max(1, Math.floor(cfg.fbmOct));
+  const SPLINTERS = Math.max(1, Math.floor(cfg.fissures));
   // Full-only film grain (increment 7): hash-based, tiny amplitude, added
   // post-grade so it reads as texture on the graded image rather than
   // visible banding. Baked as PRESENT/ABSENT GLSL text via cfg.grain (Full
@@ -354,10 +357,11 @@ uniform float uFinalT;
 uniform float uSeedFade;
 uniform vec2 uFinalPos;
 
-// Increment 2-8 layer budgets, baked as compile-time constants. Every
+// Increment 2-10 layer budgets, baked as compile-time constants. Every
 // budget is now a real consumed constant (LOBES/FBM_OCT since increment 2,
-// STRIKE_SLOTS since increment 4, BLOOM_SLOTS/POKE_SLOTS/RIPPLE_SLOTS as of
-// this increment -- see uBloom/uPoke/uRipple below and sbSterility's poke
+// STRIKE_SLOTS since increment 4, BLOOM_SLOTS/POKE_SLOTS/RIPPLE_SLOTS since
+// increment 5, SPLINTERS since increment 10 (sbFractureSd's radiating
+// splinter count) -- see uBloom/uPoke/uRipple below and sbSterility's poke
 // loop) -- no more inert placeholders left to guard with a checksum.
 const int STRIKE_SLOTS = ${STRIKE_SLOTS};
 const int BLOOM_SLOTS = ${BLOOM_SLOTS};
@@ -365,6 +369,7 @@ const int POKE_SLOTS = ${POKE_SLOTS};
 const int RIPPLE_SLOTS = ${RIPPLE_SLOTS};
 const int LOBES = ${LOBES};
 const int FBM_OCT = ${FBM_OCT};
+const int SPLINTERS = ${SPLINTERS};
 
 // Swab-strike display arrays (increment 4), index-parallel with index.ts's
 // SlotPool(STRIKE_SLOTS) (uStrikeA IS that pool's own Vector4 slots, bound by
@@ -985,21 +990,53 @@ vec3 sbBiomass(vec2 fieldUv, vec3 ground, float livingMask, float sGate, bool gh
   return col;
 }
 
-// Strike geometry & envelope constants (increment 4). K_BLEND is THE smax
-// blend radius shared by every strike merge below (front<->strike AND, since
-// strikes accumulate into S one at a time, strike<->strike where two
-// overlap) -- one constant so every rim reads as the same material seaming
-// into itself, never a per-strike-tuned blend. STRIKE_GROW/STRIKE_SETTLE
-// shape the age->radius envelope: 0->1.08x rMax over [0, STRIKE_GROW]
-// (punch-in overshoot), eased back 1.08x->1.0x over [STRIKE_GROW,
-// STRIKE_SETTLE] (settle), holding at 1.0x from then on -- healRate (if > 0)
-// then shrinks from that settled 1.0x, exactly matching the CPU's own
-// healed-radius-reaches-zero bookkeeping (index.ts's ageStrikes) so a slot
-// frees the instant its GPU radius would hit 0.
+// Strike geometry & envelope constants (increment 4, fracture shape landed
+// increment 10). K_BLEND is now POKE-ONLY (sbSterility's poke loop below) --
+// a rebloom stays soft and organic, unlike a fracture's own tight K_STRIKE
+// blend (see its own doc just below): the two merges read as genuinely
+// different materials meeting S, which is the point -- a poke pushes the
+// boundary back out with a rounded, living-tissue seam, while a fracture
+// carves in with a hairline crack seam. STRIKE_GROW/STRIKE_SETTLE shape the
+// age->radius envelope: 0->1.08x rMax over [0, STRIKE_GROW] (punch-in
+// overshoot), eased back 1.08x->1.0x over [STRIKE_GROW, STRIKE_SETTLE]
+// (settle), holding at 1.0x from then on -- healRate (if > 0) then shrinks
+// from that settled 1.0x, exactly matching the CPU's own healed-radius-
+// reaches-zero bookkeeping (index.ts's ageStrikes) so a slot frees the
+// instant its GPU radius would hit 0.
 const float K_BLEND = 0.05;
 const float STRIKE_GROW = 0.18;
 const float STRIKE_SETTLE = 0.3;
 const float STRIKE_RIM_YOUNG = 0.5; // seconds -- the young-strike rim-pop window
+
+// Fracture shape constants (increment 10, "shattered chip" revision of the
+// old smooth rotated-ellipse wound -- artist note: the white ovals should
+// read as cracks in the scene, not clean wounds; revised a second time
+// after a first-cut review found neither half of the shape actually read as
+// a fracture -- see sbFractureSd's own doc for both fixes' reasoning).
+// FACET_SECTORS (an int, since it now bounds a loop -- see sbFractureSd)
+// is the count of hashed half-planes whose intersection forms the faceted
+// core; FACET_MIN/MAX bound each half-plane's offset (apothem) as a
+// fraction of r. SPLINT_LEN_MIN/MAX bound each radiating splinter's total
+// length (x r), split 55/45 across its two kinked legs. SPLINT_W is a
+// splinter's half-width (x r) at its base, tapering to 0 at its tip;
+// SPLINT_SMIN is the tight blend fusing each splinter into the core (small,
+// so splinters read as distinct shards, not a fused starburst). K_STRIKE is
+// the fracture<->S merge blend -- deliberately far tighter than K_BLEND
+// (5-10x a fissure's own width would smooth the splinters out of existence
+// or bloat them into a blob; see sbFractureSd's own doc for the exact width
+// comparison). STRIKE_CREEP_RATE is the failed-crack widening rate
+// (sbSterility's strike loop, else branch) -- ~25% wider over a failed
+// strike's STRIKE_FAIL_HOLD-second hold (index.ts), the artist's "creep
+// wider over their life" note.
+const int FACET_SECTORS = 7;
+const float FACET_MIN = 0.55;
+const float FACET_MAX = 0.95;
+const float SPLINT_LEN_MIN = 1.35;
+const float SPLINT_LEN_MAX = 2.15;
+const float SPLINT_W = 0.11;
+const float SPLINT_SMIN = 0.004;
+const float K_STRIKE = 0.008;
+const float STRIKE_CREEP_RATE = 0.018;
 
 // Age -> radius fraction of rMax (0..~1.08), the punch-in/overshoot/settle
 // curve described above. Healing (age past STRIKE_SETTLE, healRate > 0) is
@@ -1020,19 +1057,95 @@ float sbStrikeRadiusNorm(float age) {
   return 1.0;
 }
 
-// Rotated-ellipse SDF: rotate (p - center) by angle, scale the rotated y by
-// aspect, then a plain circle SDF -- exactly the construction the increment
-// spec calls for (aspect > 1 narrows the ellipse along its LOCAL y-axis
-// relative to x, since scaling a coordinate UP shrinks that axis's
-// semi-length at a fixed radius r). Standard SDF sign convention: negative
-// inside, positive outside.
-float sbStrikeSd(vec2 p, vec2 center, float r, float aspect, float angle) {
+// Shattered-chip SDF (increment 10, second revision -- a first cut missed
+// the "crack" read on BOTH halves, per direct review of a ?crack=4
+// screenshot; each fix documented at its own site below). Built in the SAME
+// local frame as the old ellipse (rotate (p - center) by angle, then scale
+// the rotated y by aspect) so the call site barely changes. fseed (a
+// per-strike hash derived by the caller from values already baked at fire
+// time -- center/angle/rMax -- so it is STABLE for a strike's whole life
+// and distinct per strike, with no new uniform needed) reseeds the facet
+// planes and the splinter layout so no two strikes look identical. Standard
+// SDF sign convention: negative inside, positive outside.
+float sbFractureSd(vec2 p, vec2 center, float r, float aspect, float angle, float fseed) {
   vec2 d = p - center;
   float ca = cos(angle);
   float sa = sin(angle);
   vec2 rp = vec2(ca * d.x + sa * d.y, -sa * d.x + ca * d.y);
   rp.y *= aspect;
-  return length(rp) - r;
+
+  // Faceted core: the intersection of FACET_SECTORS hashed half-planes
+  // (sd = max over all i of dot(rp,nrm_i) - h_i), NOT the first cut's
+  // radius-linear-in-theta interpolation. That first cut WAS linear (not
+  // smoothstep, as the spec demanded) but still produced a smooth ARC
+  // between sample angles, not a straight chord: interpolating a RADIUS is
+  // interpolating a point that stays on a circle of that radius, i.e.
+  // parameterizing an arc, regardless of how the interpolation weight
+  // itself is computed -- at 4x scale (?crack=4) it read as a plain egg. A
+  // half-plane's boundary is by definition a straight LINE, so intersecting
+  // several of them (each constraining rp to stay on one side) yields
+  // genuinely flat facet edges meeting at sharp corners -- the actual
+  // geometric primitive "faceted" requires. Each half-plane's outward
+  // normal angle is jittered within its own 1/FACET_SECTORS wedge of the
+  // circle (0.5 * hh.x keeps the jitter inside the first half of that
+  // wedge, so adjacent normals can never cross past each other or coincide
+  // -- the minimum angular gap between neighbours is a full half-wedge,
+  // pi/FACET_SECTORS, which keeps every vertex distance close to its
+  // apothem, never blowing up), and its offset (apothem) hashed within
+  // [FACET_MIN, FACET_MAX] * r. Bonus: each half-plane's gradient is
+  // exactly unit-length (grad of dot(rp,nrm) is nrm, |nrm|=1), so this is
+  // cheaper than the old atan/mix chain too.
+  float sd = -9.0;
+  for (int i = 0; i < FACET_SECTORS; i++) {
+    float fi = float(i);
+    vec2 hh = sbHash22(vec2(fi * 7.7 + 2.0, fseed * 31.7));
+    float a = (fi + 0.5 * hh.x) / float(FACET_SECTORS) * 6.28318531;
+    vec2 nrm = vec2(cos(a), sin(a));
+    float h = r * mix(FACET_MIN, FACET_MAX, hh.y);
+    sd = max(sd, dot(rp, nrm) - h);
+  }
+
+  // Radiating splinters: SPLINTERS (quality-baked, see SterileShaderConfig)
+  // two-segment KINKED tapered capsules from the centre, angles spread
+  // evenly (with per-shard jitter) so they never bunch on one side. A
+  // single straight tapered capsule (the first cut) reads as a drawn
+  // needle/antenna, not a crack; a kink partway along -- direction changes
+  // once, by a hashed +/-~25.8 degree turn (0.9 rad half-range) at 55% of
+  // the shard's length -- reads as a crack that PROPAGATED, tearing off in
+  // a new direction, which is what actually sells "fracture" over "spike."
+  // Both segments' t (and therefore taper) are computed inline, same
+  // reasoning as the first cut for not using sbSdSegment.
+  for (int i = 0; i < SPLINTERS; i++) {
+    float fi = float(i);
+    vec2 hs = sbHash22(vec2(fi * 13.3 + 1.0, fseed * 57.1));
+    float sAng = (fi + hs.x) / float(SPLINTERS) * 6.28318531;
+    float sLen = r * mix(SPLINT_LEN_MIN, SPLINT_LEN_MAX, hs.y);
+
+    vec2 dir = vec2(cos(sAng), sin(sAng));
+    float kink = (sbHash21(vec2(fi * 3.1 + 5.5, fseed * 71.3)) - 0.5) * 0.9;
+    vec2 mid = dir * (sLen * 0.55);
+    float ck = cos(kink);
+    float sk = sin(kink);
+    vec2 dir2 = vec2(ck * dir.x - sk * dir.y, sk * dir.x + ck * dir.y);
+    vec2 tip = mid + dir2 * (sLen * 0.45);
+
+    float wBase = r * SPLINT_W;
+    float wMid = wBase * 0.45;
+
+    // Leg 1: base (rp local origin) -> mid, taper wBase -> wMid.
+    float t1 = clamp(dot(rp, mid) / dot(mid, mid), 0.0, 1.0);
+    float wid1 = mix(wBase, wMid, t1);
+    float dSeg1 = length(rp - mid * t1) - wid1;
+    sd = sbSmin(sd, dSeg1, SPLINT_SMIN);
+
+    // Leg 2: mid -> tip, taper wMid -> 0.
+    vec2 leg2 = tip - mid;
+    float t2 = clamp(dot(rp - mid, leg2) / dot(leg2, leg2), 0.0, 1.0);
+    float wid2 = mix(wMid, 0.0, t2);
+    float dSeg2 = length(rp - (mid + leg2 * t2)) - wid2;
+    sd = sbSmin(sd, dSeg2, SPLINT_SMIN);
+  }
+  return sd;
 }
 
 // Poke (rebloom) geometry & envelope constants (increment 5). Unlike a
@@ -1085,21 +1198,31 @@ float sbPokeRadius(float age) {
 // 3 doc promised -- every caller below (biomass truncation, the diagnostic
 // solo modes, the scrub line) reads S through this one function, so a
 // strike carving into it is automatically visible everywhere at once. Each
-// active strike is a rotated-ellipse "wound": its OWN sdf (sbStrikeSd,
-// negative inside) is negated (positive inside, i.e. sterile) and smax'd
-// into the running S with sbSmax/K_BLEND, exactly the SDF-subtraction
-// identity max(a, -b) = a MINUS shape-b's interior -- so a strike always
-// pushes its interior toward sterile regardless of what the front alone
-// would say there, and its rim reads as a genuine (smax-rounded) S=0
-// boundary, which is why the scrub line automatically traces it with no
-// separate drawing pass. w (index.ts's fade-on-expiry for failed,
-// unhealed strikes) blends the WHOLE smax'd result back toward the
-// pre-strike S rather than scaling the raw sdf contribution directly --
-// scaling the raw contribution would drag S toward 0 everywhere (not just
-// near the strike) as w shrinks, since an unbounded sdf value far from the
-// strike shrinks right along with it; blending the final scalar has no such
-// footgun and still satisfies "scale the strike's effect by w" (w=0 is an
-// exact no-op, w=1 is the full smax). Increment 5's pokes then fold in with
+// active strike is now (increment 10, the "shattered chip" artist revision)
+// a fracture: its OWN sdf (sbFractureSd, negative inside) is negated
+// (positive inside, i.e. sterile) and smax'd into the running S with
+// sbSmax/K_STRIKE -- a much TIGHTER blend than a poke's K_BLEND (see
+// K_STRIKE's own doc for why: a fracture's splinters are only a fraction of
+// K_BLEND wide and would smooth away entirely at that radius) -- exactly
+// the SDF-subtraction identity max(a, -b) = a MINUS shape-b's interior --
+// so a strike always pushes its interior toward sterile regardless of what
+// the front alone would say there, and its rim reads as a genuine
+// (smax-rounded) S=0 boundary, which is why the scrub line automatically
+// traces it (facets, splinters and all) with no separate drawing pass. w
+// (index.ts's fade-on-expiry for failed, unhealed strikes) blends the WHOLE
+// smax'd result back toward the pre-strike S rather than scaling the raw
+// sdf contribution directly -- scaling the raw contribution would drag S
+// toward 0 everywhere (not just near the strike) as w shrinks, since an
+// unbounded sdf value far from the strike shrinks right along with it;
+// blending the final scalar has no such footgun and still satisfies "scale
+// the strike's effect by w" (w=0 is an exact no-op, w=1 is the full smax).
+// A failed (healRate == 0) strike's radius CREEPS wider over its hold
+// instead of holding fixed (STRIKE_CREEP_RATE, the strike loop's else
+// branch below) -- the artist's "creep wider" note; this is purely a GPU
+// radius-envelope change and does not touch index.ts's ageStrikes free
+// timing, which for a failed strike already frees on a fixed
+// STRIKE_FAIL_HOLD-second timer regardless of radius (see ageStrikes' own
+// doc). Increment 5's pokes then fold in with
 // the OPPOSITE operator: sbSmin (not smax) pulls S toward whichever is
 // SMALLER (more living), so a poke's circle always pushes its interior
 // toward living regardless of what the front/strikes alone would say there
@@ -1123,6 +1246,25 @@ float sbSterility(vec2 p, out float eventRimD) {
   float R = uRMax * (1.0 - uSterile);
   float s = phi - R;
 
+  // Front crazing (increment 10, artist note: give the front's own leading
+  // edge a slight fracture/crazing so it's family-resemblant to the
+  // strikes' cracks). Hashed on ARC POSITION (theta * R, the same idiom as
+  // main()'s scrub-line glint/crackle hash just below) rather than a radial
+  // wedge count, so the chatter cells stay a roughly CONSTANT physical size
+  // along the boundary regardless of how far out it currently sits. Mean-
+  // zero (hash - 0.5) and tiny (~0.4% of R), confined to within ~0.05 sdf
+  // units of the boundary by the exp() falloff -- so the front's overall
+  // silhouette, pacing, and the CPU's rMaxEff calibration (which reasons
+  // about the noise-free front) are all unaffected; only the edge itself
+  // reads slightly crazed.
+  const float FRONT_CRAZE_CELLS = 90.0;
+  const float FRONT_CRAZE_AMP = 0.004;
+  const float FRONT_CRAZE_FALL = 60.0;
+  float crazeTheta = atan(d.y, d.x);
+  float crazeCell = floor(crazeTheta * R * FRONT_CRAZE_CELLS);
+  float craze = sbHash21(vec2(crazeCell, 5.5)) - 0.5;
+  s += craze * FRONT_CRAZE_AMP * uFrontNoise * exp(-abs(s) * FRONT_CRAZE_FALL);
+
   eventRimD = 9.0;
   for (int i = 0; i < STRIKE_SLOTS; i++) {
     float w = uStrikeA[i].w;
@@ -1137,15 +1279,67 @@ float sbSterility(vec2 p, out float eventRimD) {
     float r = rMax * sbStrikeRadiusNorm(age);
     if (healRate > 0.0) {
       r *= max(0.0, 1.0 - healRate * max(0.0, age - STRIKE_SETTLE));
+    } else {
+      // Failed (permanently unhealed) crack: creeps ~25% wider over its
+      // STRIKE_FAIL_HOLD-second hold rather than sitting static -- the
+      // artist's "creep wider" note. Safe for index.ts's ageStrikes free
+      // timing: that closed-form calc only applies to the healRate > 0
+      // branch above; a failed strike frees on ageStrikes' own fixed
+      // STRIKE_FAIL_HOLD timer regardless of this radius.
+      r *= 1.0 + STRIKE_CREEP_RATE * max(0.0, age - STRIKE_SETTLE);
     }
     if (r <= 0.0001) continue; // fully healed -- no wound left to merge
 
-    float strikeSd = sbStrikeSd(p, center, r, aspect, angle);
-    float sWithStrike = sbSmax(s, -strikeSd, K_BLEND);
+    // Perf cull (increment 10, recomputed for the kinked two-segment
+    // splinters): skip strikes whose fracture SDF cannot possibly reach
+    // this fragment. aspect >= 1.15 only ever SHRINKS the shape along local
+    // y, so bound the max world extent from center in the UNSCALED local
+    // frame (a conservative superset of the actual aspect-shrunk shape).
+    // SPLINTER REACH: a splinter's tip is base + mid-leg (length 0.55*sLen)
+    // + rotated tip-leg (length 0.45*sLen); by the triangle inequality
+    // |tip| <= 0.55*sLen + 0.45*sLen = sLen regardless of the kink angle
+    // (rotating the second leg can only shorten the straight-line reach
+    // versus the unkinked case, never lengthen it -- equality only at zero
+    // kink), and sLen <= SPLINT_LEN_MAX * r. Every point on either leg's
+    // capsule is within one leg's own half-width of that leg's segment, and
+    // a segment's own farthest point from the origin is always one of its
+    // two endpoints (squared distance along a straight segment is a convex
+    // function of the segment parameter), so no interior point of either
+    // capsule can exceed endpoint-reach + width-there. Adding the single
+    // largest width anywhere on the shard (SPLINT_W * r, at the base, even
+    // though that point's own reach is ~0) is a deliberately loose
+    // over-count that keeps this a one-line bound without a tighter
+    // per-leg case split: max reach <= (SPLINT_LEN_MAX + SPLINT_W) * r =
+    // (2.15 + 0.11) * r = 2.26 * r. FACET REACH: the faceted core's
+    // vertices (where two adjacent half-planes cross) sit at apothem /
+    // cos(half the angular gap between their normals); the construction's
+    // minimum angular gap is pi/FACET_SECTORS = pi/7 (~25.7 deg, see
+    // sbFractureSd's own doc), giving a worst-case vertex distance of
+    // FACET_MAX * r / cos(pi/14) = 0.95r / 0.975 ~= 0.974 * r -- well under
+    // the splinter bound above, so splinters alone drive the cull. The 2.4
+    // multiplier below sits comfortably above the derived 2.26 (a little
+    // extra headroom for the informal, non-tight per-leg width argument
+    // above); +0.04 covers K_STRIKE's own blend radius plus slop. This
+    // cannot cause a visible discontinuity: at that distance sbFractureSd
+    // is provably >= 0.04, sbSmax with k = K_STRIKE (0.008) has negligible
+    // influence far beyond k, and a fragment's S is only visibly perturbed
+    // where strikeSd is within ~K_STRIKE of -s (i.e. right at the
+    // boundary) -- a culled, deep-living shift in S is invisible because
+    // every consumer (livingMask, sbSearchGate) only ever reads S near
+    // zero.
+    if (length(p - center) > r * 2.4 + 0.04) continue;
+
+    // Per-strike shape seed (increment 10): derived from values already
+    // baked at fire time (center/angle/rMax), stable for the strike's whole
+    // life and distinct per strike -- no new uniform needed since
+    // uStrikeA/uStrikeB are already fully packed (8/8 components).
+    float fseed = sbHash21(center * 41.7 + vec2(angle * 3.3, rMax * 97.1));
+    float fractureSd = sbFractureSd(p, center, r, aspect, angle, fseed);
+    float sWithStrike = sbSmax(s, -fractureSd, K_STRIKE);
     s = mix(s, sWithStrike, w);
 
     if (age < STRIKE_RIM_YOUNG) {
-      eventRimD = min(eventRimD, abs(strikeSd));
+      eventRimD = min(eventRimD, abs(fractureSd));
     }
   }
 
