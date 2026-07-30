@@ -34,16 +34,37 @@ const FRONT_DRIFT_RATE = 0.008;
 const HIGH_FAST_RATE = 8;
 
 /**
- * Bass onset detector (increment 4, house recipe — a fast EMA of the bass
- * band chasing a slower EMA of itself; the fast-minus-slow gap crossing
- * BASS_ONSET_THRESHOLD is the onset, BASS_ONSET_COOLDOWN keeps a sustained
- * loud passage from re-triggering every frame). Fires a swab strike AND
- * kicks `this.tick` (see its own doc) — two independent effects of the same
- * onset, not the same scalar.
+ * Bass onset detector (increment 4, house recipe; increment 11 fix below —
+ * see the postmortem): a fast EMA of the bass band (BASS_FAST_RATE, tau
+ * ~0.125s) versus a MUCH slower reference EMA of itself (BASS_ONSET_EMA_RATE,
+ * tau ~4s) that tracks the passage average rather than the beat envelope.
+ *
+ * Increment-11 postmortem: the original reference EMA ran at rate 1.5 (tau
+ * ~0.67s), only ~5x slower than the fast one, and used an ABSOLUTE gap
+ * threshold. At musical tempos the reference tracked the beat envelope
+ * almost as closely as the fast EMA, so the gap collapsed and onsets only
+ * fired during the cold-start transient (both EMAs climbing from 0) —
+ * reproduced as 7 strikes in the first 10s of a synthetic 120bpm bass line,
+ * then exactly 0 for the remaining 80s. Fixed by (a) slowing the reference
+ * so per-beat peaks actually stand out against the passage average, (b) a
+ * RELATIVE threshold (`fast > ref * (1 + BASS_ONSET_REL_MARGIN)`) so it
+ * works at any playback level, gated by a small absolute floor
+ * (BASS_ONSET_ABS_FLOOR) so silence/noise never triggers, and (c) a
+ * rising-edge requirement (this frame's bassFast > last frame's) so it
+ * fires on attacks, not anywhere on a sustained plateau.
+ *
+ * Fires a swab strike AND kicks `this.tick` (see its own doc) — two
+ * independent effects of the same onset, not the same scalar. The cooldown
+ * floor (BASS_ONSET_COOLDOWN) is combined in update() with a per-act
+ * minimum gap derived from p.strikeRate (`onsetCooldownGap`), so onset
+ * TIMING snaps to real kicks while onset DENSITY still follows the act's
+ * own arc — an act with strikeRate===0 (acts 0 and 6) fires no onset
+ * strikes at all.
  */
 const BASS_FAST_RATE = 8;
-const BASS_ONSET_EMA_RATE = 1.5;
-const BASS_ONSET_THRESHOLD = 0.09;
+const BASS_ONSET_EMA_RATE = 0.25;
+const BASS_ONSET_REL_MARGIN = 0.22;
+const BASS_ONSET_ABS_FLOOR = 0.06;
 const BASS_ONSET_COOLDOWN = 0.28;
 
 /** `this.tick`'s exponential decay rate (1/s) — see its own doc. */
@@ -231,14 +252,22 @@ const PEAK_STRIKE_SIZE_MULT = 1.6;
 const PEAK_STRIKE_CENTER_BIAS = 0.5;
 
 /**
- * Crackle (increment 7, the high-band event) — mirrors the bass onset
- * detector's shape (BASS_FAST_RATE/BASS_ONSET_EMA_RATE/BASS_ONSET_THRESHOLD/
- * BASS_ONSET_COOLDOWN above) but chases `this.highFast` (already EMA'd at
- * HIGH_FAST_RATE for uGlint, so no second fast-highs EMA is needed) against
- * its own slower EMA (`this.highOnsetEma`).
+ * Crackle (increment 7, the high-band event; increment 11 fix, same defect
+ * and same cure as the bass onset detector above — see its doc for the
+ * postmortem) — mirrors its shape (BASS_FAST_RATE/BASS_ONSET_EMA_RATE/
+ * BASS_ONSET_REL_MARGIN/BASS_ONSET_ABS_FLOOR/BASS_ONSET_COOLDOWN above: slow
+ * reference EMA, relative threshold + absolute floor, rising-edge gate) but
+ * chases `this.highFast` (already EMA'd at HIGH_FAST_RATE for uGlint, so no
+ * second fast-highs EMA is needed) against its own slower reference EMA
+ * (`this.highOnsetEma`). The high band sits at a lower absolute level than
+ * bass in practice, so its margin/floor are tuned separately below. The
+ * cooldown floor (CRACKLE_ONSET_COOLDOWN) is combined in update() with a
+ * per-act minimum gap derived from p.crackleRate (`crackleCooldownGap`),
+ * the same onsetCooldownGap idiom as the bass detector.
  */
-const CRACKLE_ONSET_EMA_RATE = 1.5;
-const CRACKLE_ONSET_THRESHOLD = 0.07;
+const CRACKLE_ONSET_EMA_RATE = 0.25;
+const CRACKLE_ONSET_REL_MARGIN = 0.16;
+const CRACKLE_ONSET_ABS_FLOOR = 0.05;
 const CRACKLE_ONSET_COOLDOWN = 0.15;
 /** `this.crackle`'s exponential decay rate (1/s) feeding uCrackle. */
 const CRACKLE_DECAY_RATE = 7;
@@ -471,16 +500,18 @@ class SterileBreath implements Viz {
   /** `?ghost=always` (increment 6) — forces sterileShader.ts's uGhostForce uniform true (every winner clump hosts a stamp every epoch) AND uGhostAmp to 1.0 in update(), regardless of the current act's ghostAmp. */
   private forceGhostAlways = false;
 
-  /** Fast-smoothed bass (BASS_FAST_RATE) chasing a slower EMA of itself (BASS_ONSET_EMA_RATE) — the bass onset detector's two EMAs (house recipe, see update()'s doc). */
+  /** Fast-smoothed bass (BASS_FAST_RATE) chasing a slower REFERENCE EMA of itself (BASS_ONSET_EMA_RATE, tau ~4s) — the bass onset detector's two EMAs (house recipe, see the BASS_ONSET_* constants' doc for the increment-11 fix). */
   private bassFast = 0;
   private bassOnsetEma = 0;
-  /** Seconds remaining before another onset-triggered strike may fire (BASS_ONSET_COOLDOWN idiom). */
+  /** Seconds remaining before another onset-triggered strike may fire — set to `onsetCooldownGap` (max of BASS_ONSET_COOLDOWN and the current act's own 60/strikeRate minimum gap) on every fire, see update()'s doc. */
   private onsetCooldown = 0;
   /** Bass-onset decay scalar (tick *= exp(-TICK_DECAY_RATE*dt) per frame, kicked to 1 on every onset) feeding uTick — independent of beatBonus, see its own doc above. */
   private tick = 0;
 
   /** Seconds until the next Poisson-scheduled ambient strike (nextPoissonDelay, pools.ts) — independent of the onset channel's cooldown. */
   private strikeTimeToNext = 0;
+  /** The strikeRatePerMin the CURRENT strikeTimeToNext was scheduled/rescaled against, 0 when unarmed (increment 11 fix — see update()'s doc for why this exists). */
+  private strikeScheduleRate = 0;
 
   /** Last frame's song time, used only to detect a `?t=` seek or a track loop (see update()'s doc) — NOT the fallback clock itself, VizHost owns that. */
   private lastSongTime = 0;
@@ -535,12 +566,14 @@ class SterileBreath implements Viz {
   private crackle = 0;
   /** Plain incrementing counter (increment 7) feeding uCrackleSeed (cast to float) — bumped on every fireCrackle so the shader's spark-cell hash re-rolls a fresh pattern per event. */
   private crackleSeed = 0;
-  /** Crackle's own slower EMA (increment 7, CRACKLE_ONSET_EMA_RATE) that this.highFast chases — the high-band onset detector's second EMA (house recipe, mirrors bassOnsetEma). */
+  /** Crackle's own slower REFERENCE EMA (increment 7, CRACKLE_ONSET_EMA_RATE, tau ~4s) that this.highFast chases — the high-band onset detector's second EMA (house recipe, mirrors bassOnsetEma; see the CRACKLE_ONSET_* constants' doc for the increment-11 fix). */
   private highOnsetEma = 0;
-  /** Seconds remaining before another onset-triggered crackle may fire (CRACKLE_ONSET_COOLDOWN idiom). */
+  /** Seconds remaining before another onset-triggered crackle may fire — set to `crackleCooldownGap` (max of CRACKLE_ONSET_COOLDOWN and the current act's own 60/crackleRate minimum gap) on every fire, see update()'s doc. */
   private crackleCooldown = 0;
   /** Seconds until the next Poisson-scheduled ambient crackle — independent of the onset channel's cooldown, same shape as strikeTimeToNext/bloomTimeToNext. */
   private crackleTimeToNext = 0;
+  /** The crackleRatePerMin the CURRENT crackleTimeToNext was scheduled/rescaled against, 0 when unarmed — same increment-11 fix as strikeScheduleRate, see update()'s doc. */
+  private crackleScheduleRate = 0;
   /** `?crackle=always` — forces a repeating synthetic crackle every CRACKLE_DEBUG_INTERVAL seconds regardless of act/audio. */
   private forceCrackleAlways = false;
   /** `?crackle=always` debug affordance timer (seconds to next forced crackle). */
@@ -820,6 +853,10 @@ class SterileBreath implements Viz {
     if (Math.abs(songTime - this.lastSongTime) > SEEK_JUMP_SECONDS) {
       this.strikePool.clearAll();
       this.strikeTimeToNext = 0;
+      // Increment 11: also clear strikeScheduleRate so the post-jump "due
+      // now" fire doesn't get rescaled against a stale pre-jump rate on its
+      // very first frame (see strikeScheduleRate's rescale block below).
+      this.strikeScheduleRate = 0;
       // Increment 5: the bloom/poke/ripple pools and the bloom Poisson
       // schedule are equally stale across a seek/loop — same "due now" reset
       // idiom as the strike pool above.
@@ -829,6 +866,8 @@ class SterileBreath implements Viz {
       this.ripplePool.clearAll();
       // Increment 7: the crackle Poisson schedule is equally stale.
       this.crackleTimeToNext = 0;
+      // Increment 11: same crackleScheduleRate reset as strikeScheduleRate above.
+      this.crackleScheduleRate = 0;
     }
 
     // Scripted hits (increment 7, edge-triggered on the boundary crossing —
@@ -952,18 +991,33 @@ class SterileBreath implements Viz {
     u.uFrontNoise.value = p.frontNoise;
     u.uScrubGlow.value = p.scrubGlow * (0.6 + 0.8 * this.bassSlow);
 
+    const prevHighFast = this.highFast;
     this.highFast += (audio.high - this.highFast) * Math.min(1, dt * HIGH_FAST_RATE);
     u.uGlint.value = this.pinnedGlint !== null ? this.pinnedGlint : p.glintAmp * this.highFast;
 
-    // Crackle high-band onset detector (increment 7, mirrors the bass onset
-    // detector's shape below): this.highFast (already EMA'd above at
-    // HIGH_FAST_RATE for uGlint) chasing ITS OWN slower EMA
-    // (this.highOnsetEma) — the gap crossing CRACKLE_ONSET_THRESHOLD is the
-    // onset, cooldown-gated the same way bass onsets are.
+    // Crackle high-band onset detector (increment 7; increment 11 fix,
+    // mirrors the bass onset detector's shape below — see the
+    // CRACKLE_ONSET_* constants' doc for the postmortem): this.highFast
+    // (already EMA'd above at HIGH_FAST_RATE for uGlint) chasing its own
+    // much slower REFERENCE EMA (this.highOnsetEma, tau ~4s). Fires on a
+    // RISING edge (highFast > prevHighFast) once highFast clears both a
+    // relative margin over the reference AND an absolute floor — never on
+    // a sustained plateau, and never on quiet noise. Cooldown is the act's
+    // own crackleRate-derived minimum gap (crackleCooldownGap), floored at
+    // CRACKLE_ONSET_COOLDOWN, so onset density follows the composition;
+    // crackleRate===0 acts (0 and 6) fire no onset crackles at all.
     this.highOnsetEma += (this.highFast - this.highOnsetEma) * Math.min(1, dt * CRACKLE_ONSET_EMA_RATE);
     this.crackleCooldown = Math.max(0, this.crackleCooldown - dt);
-    if (this.crackleCooldown <= 0 && this.highFast - this.highOnsetEma > CRACKLE_ONSET_THRESHOLD) {
-      this.crackleCooldown = CRACKLE_ONSET_COOLDOWN;
+    const crackleMinGap = p.crackleRate > 0 ? 60 / p.crackleRate : Infinity;
+    const crackleCooldownGap = Math.max(CRACKLE_ONSET_COOLDOWN, crackleMinGap);
+    if (
+      p.crackleRate > 0 &&
+      this.crackleCooldown <= 0 &&
+      this.highFast > prevHighFast &&
+      this.highFast > CRACKLE_ONSET_ABS_FLOOR &&
+      this.highFast > this.highOnsetEma * (1 + CRACKLE_ONSET_REL_MARGIN)
+    ) {
+      this.crackleCooldown = crackleCooldownGap;
       this.fireCrackle();
     }
 
@@ -973,6 +1027,13 @@ class SterileBreath implements Viz {
     // alone would. `?crackle=always` forces a fixed-interval synthetic
     // stream instead of a Poisson rate override (see forceCrackleAlways's
     // own doc for why the strike/bloom idiom doesn't fit as cleanly here).
+    //
+    // Increment-11 fix: crackleTimeToNext rescales against crackleScheduleRate
+    // whenever the effective rate changes (same fix, same reasoning as
+    // strikeTimeToNext below — see its doc for the postmortem) — otherwise a
+    // schedule made mid-crossfade, while crackleRatePerMin is still a tiny
+    // blended fraction of the next act's rate, bakes in a multi-minute delay
+    // that the channel then never recovers from for the rest of the song.
     if (this.forceCrackleAlways) {
       this.crackleDebugTimer -= dt;
       if (this.crackleDebugTimer <= 0) {
@@ -982,11 +1043,18 @@ class SterileBreath implements Viz {
     } else {
       const crackleRatePerMin = p.crackleRate * (0.5 + energy);
       if (crackleRatePerMin > 0) {
+        if (this.crackleScheduleRate > 0 && this.crackleTimeToNext > 0) {
+          this.crackleTimeToNext *= this.crackleScheduleRate / crackleRatePerMin;
+        }
+        this.crackleScheduleRate = crackleRatePerMin;
         this.crackleTimeToNext -= dt;
         while (this.crackleTimeToNext <= 0) {
           this.fireCrackle();
           this.crackleTimeToNext += nextPoissonDelay(this.rand, crackleRatePerMin);
+          this.crackleScheduleRate = crackleRatePerMin;
         }
+      } else {
+        this.crackleScheduleRate = 0;
       }
     }
     this.crackle *= Math.exp(-CRACKLE_DECAY_RATE * dt);
@@ -996,17 +1064,32 @@ class SterileBreath implements Viz {
     u.uWatermark.value = p.watermark;
     u.uSterileSpec.value = p.sterileSpec;
 
-    // Bass onset detector (house recipe): a fast EMA of the bass band
-    // chasing a slower EMA of itself — the gap crossing BASS_ONSET_THRESHOLD
-    // is the onset. Cooldown-gated so a sustained loud passage fires once,
-    // not every frame. Each onset both fires a strike AND kicks `this.tick`
-    // (independent effects — see tick's own doc, it does not reuse
-    // beatBonus).
+    // Bass onset detector (house recipe; increment 11 fix — see the
+    // BASS_ONSET_* constants' doc for the postmortem): a fast EMA of the
+    // bass band chasing its own much slower REFERENCE EMA (tau ~4s), firing
+    // on a RISING edge (this.bassFast > prevBassFast) once bassFast clears
+    // both a relative margin over the reference AND an absolute floor —
+    // never on a sustained plateau, never on quiet noise. Cooldown is the
+    // act's own strikeRate-derived minimum gap (onsetCooldownGap), floored
+    // at BASS_ONSET_COOLDOWN, so onset TIMING snaps to real kicks while
+    // onset DENSITY still follows the act's own arc; strikeRate===0 acts
+    // (0 and 6) fire no onset strikes at all. Each onset both fires a
+    // strike AND kicks `this.tick` (independent effects — see tick's own
+    // doc, it does not reuse beatBonus).
+    const prevBassFast = this.bassFast;
     this.bassFast += (audio.bass - this.bassFast) * Math.min(1, dt * BASS_FAST_RATE);
     this.bassOnsetEma += (this.bassFast - this.bassOnsetEma) * Math.min(1, dt * BASS_ONSET_EMA_RATE);
     this.onsetCooldown = Math.max(0, this.onsetCooldown - dt);
-    if (this.onsetCooldown <= 0 && this.bassFast - this.bassOnsetEma > BASS_ONSET_THRESHOLD) {
-      this.onsetCooldown = BASS_ONSET_COOLDOWN;
+    const onsetMinGap = p.strikeRate > 0 ? 60 / p.strikeRate : Infinity;
+    const onsetCooldownGap = Math.max(BASS_ONSET_COOLDOWN, onsetMinGap);
+    if (
+      p.strikeRate > 0 &&
+      this.onsetCooldown <= 0 &&
+      this.bassFast > prevBassFast &&
+      this.bassFast > BASS_ONSET_ABS_FLOOR &&
+      this.bassFast > this.bassOnsetEma * (1 + BASS_ONSET_REL_MARGIN)
+    ) {
+      this.onsetCooldown = onsetCooldownGap;
       this.tick = 1;
       this.fireStrike(p);
     }
@@ -1022,13 +1105,36 @@ class SterileBreath implements Viz {
     // Poisson ambient strikes: an independent channel from the onset one
     // above, so the scene still punches without a mic. `?strike=always`
     // overrides the act's own strikeRate for debugging.
+    //
+    // Increment-11 fix: the crossfade-leak/"due now" idiom above (see the
+    // seek-jump reset's doc) assumed a rate turning on from 0 always meant
+    // the NEW act's full rate was immediately in effect. That's false during
+    // a 6s crossfade — strikeRatePerMin ramps from ~0 up to the next act's
+    // rate, so the FIRST scheduled delay after the "due now" fire was baked
+    // in against a near-zero rate (nextPoissonDelay(rate~0) ~ tens of
+    // thousands of seconds) and the channel then silently never fired again
+    // for the rest of the song — exactly the artist's "a few, then none"
+    // symptom, and entirely independent of the onset-detector defect above.
+    // Fixed by rescaling the remaining countdown every time the effective
+    // rate changes (`strikeTimeToNext *= oldRate/newRate`, the standard
+    // quantile-preserving rescale for an Exponential under a rate change):
+    // the "due now" single bonus strike on arrival still happens, but the
+    // absurd delay it schedules gets continuously shrunk back down in step
+    // with the crossfade over the next few frames instead of freezing.
     const strikeRatePerMin = this.forceStrikeAlways ? 60 : p.strikeRate;
     if (strikeRatePerMin > 0) {
+      if (this.strikeScheduleRate > 0 && this.strikeTimeToNext > 0) {
+        this.strikeTimeToNext *= this.strikeScheduleRate / strikeRatePerMin;
+      }
+      this.strikeScheduleRate = strikeRatePerMin;
       this.strikeTimeToNext -= dt;
       while (this.strikeTimeToNext <= 0) {
         this.fireStrike(p);
         this.strikeTimeToNext += nextPoissonDelay(this.rand, strikeRatePerMin);
+        this.strikeScheduleRate = strikeRatePerMin;
       }
+    } else {
+      this.strikeScheduleRate = 0;
     }
 
     this.ageStrikes(dt);

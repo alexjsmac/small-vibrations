@@ -142,7 +142,7 @@ export const ACTS: ActParams[] = [
     lifeRate: 0.10, motionSpeed: 0.7,
     heat: 0.8, paleness: 0, ghostAmp: 0.35,
     frontNoise: 0.5, scrubGlow: 0.5, glintAmp: 0.4,
-    crackleRate: 4, strikeRate: 5, strikeHeal: 0.20, strikeSize: 0.07,
+    crackleRate: 4, strikeRate: 9, strikeHeal: 0.20, strikeSize: 0.07,
     // bloomRate held at 0 here (not the table's raw 2): bloomRate is
     // strictly max in act 0 and, by design, nonzero ONLY in acts 0, 3, 6 —
     // regrowth bursts are an opening/remission/last-breath signature, not
@@ -158,7 +158,7 @@ export const ACTS: ActParams[] = [
     lifeRate: 0.14, motionSpeed: 0.9,
     heat: 1.0, paleness: 0.05, ghostAmp: 0.3,
     frontNoise: 0.65, scrubGlow: 0.65, glintAmp: 0.55,
-    crackleRate: 8, strikeRate: 10, strikeHeal: 0.12, strikeSize: 0.08,
+    crackleRate: 8, strikeRate: 14, strikeHeal: 0.12, strikeSize: 0.08,
     bloomRate: 0, bloomAmp: 0.3,
     watermark: 0.35, sterileSpec: 0.4, grade: 0.15, vignette: 0.25,
     driftSpeed: 0.6, shake: 0,
