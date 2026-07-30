@@ -558,6 +558,79 @@ something that happens *now*, at a moment, and is gone.
   control flow) — which also permanently retired a triangle-seam
   derivative artifact that had previously only been clamped.
 
+## Lessons from the album-wide audio-reactivity fix (ratchet, July 2026)
+
+The two bug classes in the b3 ratchet above turned out to affect EVERY
+track on the record. Fixing all six produced its own lessons — mostly
+about how to verify this kind of work, and how it hides.
+
+- **The whole thing started from one artist observation.** "I see a few
+  cracks emerge, but then after that, none at all." That sentence was the
+  only signal anything was wrong; it turned out to be two systemic bugs
+  that had been silently killing every onset-driven event on every track
+  since launch. Nothing in code review, no screenshot, and no test we
+  had would have found them. **When someone says an element "stops
+  happening," treat it as a measurement request, not a taste note.**
+- **Detector tuning does NOT transplant between modules — measure it per
+  call site.** b3's cure used relative margin 0.22; applying that literal
+  value to b2 produced a detector that STILL only fired during warmup,
+  because b2's fast EMA is shared with continuous uniforms and swings
+  less. Measured ceilings: b2/a1/a2/a3/b1's rate-8 bass EMA peaks at only
+  ~1.104x its reference against a real kick, and a high-band EMA at
+  ~1.089x — so the workable bass margin is ~0.08 and the high ~0.06, far
+  below b3's. A "transplant the fix" instruction, followed literally,
+  would have shipped four more deaf detectors that LOOKED fixed. Measure
+  the actual swing ceiling of each fast EMA, then pick a margin under it.
+- **Gate every event-channel change on counts per window across the FULL
+  runtime, before and after, against the unfixed baseline.** A single
+  count, or a count from only the fixed build, proves nothing: the
+  failure signature here is specifically "correct for the first ~10s,
+  then zero forever," which any short test or any single screenshot
+  passes cleanly. Both the b2 fix and the four-track fix had a round
+  where the first attempt looked identical to the bug under this harness
+  and would otherwise have shipped as a confident false fix.
+- **`VizHost.doLoad()` no-ops on a same-track reload — harnesses that
+  re-load the same track silently reuse a stale, already-mutated
+  instance.** This produced a completely convincing phantom during
+  verification: a Poisson countdown ballooning to ~2.25e14 seconds, which
+  looks exactly like the latch bug being fixed but was actually RNG-stream
+  divergence across reused state. Null `host.currentTrackId` before each
+  harness load. Generally: when a measurement produces an absurd number,
+  suspect the harness before the product.
+- **This project's audio path fails quietly in BOTH directions, and
+  neither is visible without instrumentation.** The visuals can go deaf
+  while audio flows fine (these bugs), and the capture path can go deaf
+  while the visuals dance (the stereo/sample-rate capture bug fixed in
+  the same week, whose `MicInput.level` readout exists precisely so a
+  level pinned at 0 is visible in the `?debug=1` HUD). Any new
+  audio-driven feature should ship with a way to see that its input is
+  alive — a HUD readout, a counter, or a force switch that exercises the
+  REAL path.
+- **Shared code is the actual fix for a class of bug, not just tidiness.**
+  Nine hand-copied onset detectors meant one bad recipe reached every
+  track and each fix had to be applied nine times. `lib/onset.ts` and
+  `lib/poisson.ts` now hold both mechanisms with unit tests that pin the
+  regressions in CI — the first time either could be tested at all,
+  because neither needed three.js or a browser once extracted. Prefer
+  extracting the MECHANISM that broke over whatever is merely duplicated.
+- **Prove a refactor is behaviour-neutral with identical numbers, not
+  with reasoning.** The extraction migrated b2 and b3 first precisely
+  because both were already fixed and measured, so identity could be
+  demonstrated (every 20s window matched exactly) before four unfixed
+  tracks were touched. Two modules' near-identical RNG epsilon formulas
+  (`Math.max(1e-6, rand())` vs `1 - rand()`) had to be preserved rather
+  than unified: statistically equivalent, numerically different for the
+  same input, and unifying them turned exact identity into "close."
+- **Density must follow the composition, not the beat rate.** Once a
+  detector works, an ungated one fires on ~80% of beats, which is a
+  different kind of broken — b2's first fixed cut was ~6x denser than its
+  own act table asks for. Gate each effect's cooldown with
+  `rateGapSeconds(floor, actRate)` so turning a mic on changes the TIMING
+  of events, not their quantity; verify mic-vs-ambient totals land within
+  ~2x per channel. Keep fixed cooldowns only for effects with no act rate
+  of their own, and never rate-gate a raw beat signal that other systems
+  clock off (b2's `beatCount`/`beatFlash` drive the living grid's re-roll).
+
 ## Workflow: from master WAV to shipped visuals
 
 1. Profile the track's master (2s RMS + low/high bands) → section table.
@@ -678,17 +751,12 @@ Starting sketches only — concept per track is decided with the user:
   open register for a2+.
 - Phone verification of the full experience is still pending as of the a1
   ship — check with the user before assuming mobile is proven.
-- **OPEN: the two album-wide audio-reactivity bugs (see the b3 ratchet)
-  are fixed in b3 only.** An audit confirmed all nine onset detectors in
-  a1/a2/a3/b1/b2 are the deaf pre-fix recipe, and that a2 (chalk lines,
-  and a ~5%/play knock case) plus b2 (scans at ~50s, links and runners at
-  ~122s) also latch their Poisson schedules. b2 is the severe one: scans
-  are its primary content AND carry the `beatCount`/`beatFlash` clock the
-  living grid rides on, so it is effectively inert from ~50s. a1/a3/b1
-  need only the detector fix. Fix branch: `claude/onset-detector-album-fix`.
-- **`src/viz/lib/` still does not exist.** Five modules now copy-and-adapt
-  the same `paramsAt`/`lerpParams`/`CROSSFADE_SECONDS` machinery, the same
-  momentum block, the same onset recipe — which is exactly why one bad
-  onset recipe propagated to every track on the album. The slot pool
-  (`b3/pools.ts`) is on its second use and is the obvious first extraction;
+- ~~OPEN: the two album-wide audio-reactivity bugs are fixed in b3 only~~ —
+  **DONE.** All six tracks are fixed and now run on `src/viz/lib/onset.ts`
+  and `src/viz/lib/poisson.ts`. See the album-wide ratchet section above.
+- **`src/viz/lib/` now exists** — `onset.ts` and `poisson.ts`, both pure
+  TS and unit-tested. Still copy-and-adapted across modules: the
+  `paramsAt`/`lerpParams`/`CROSSFADE_SECONDS` machinery, the momentum
+  block, and the ping-pong sim class. The slot pool
+  (`b3/pools.ts`) is on its second use and is the obvious next extraction;
   the onset detector should follow it, so the next fix happens once.
