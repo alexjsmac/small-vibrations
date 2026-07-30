@@ -276,6 +276,33 @@ export class StreamResampler {
   }
 }
 
+/**
+ * Undo a playback-speed error. `ratio` is how fast the source was running
+ * relative to nominal — 1.034 means "playing 3.4% fast" — and the returned
+ * audio is stretched back to nominal (length scales by `ratio`).
+ *
+ * Turntables are not precise. A deck a few percent off pushes every landmark
+ * into the wrong frequency bin and the match collapses to chance, so the
+ * matcher searches over candidate ratios rather than assuming 1.0; see
+ * `matchAtSpeeds`. Linear interpolation is plenty here — the signal is already
+ * band-limited to 6 kHz at this point, and a real 3.4%-fast capture still
+ * scored 512 votes against 14 for the runner-up after correction.
+ */
+export function correctSpeed(samples: Float32Array, ratio: number): Float32Array {
+  if (ratio === 1) return samples;
+  const n = Math.floor(samples.length * ratio);
+  const out = new Float32Array(n);
+  const last = samples.length - 1;
+  for (let i = 0; i < n; i++) {
+    const p = i / ratio;
+    const j = Math.floor(p);
+    if (j >= last) { out[i] = samples[last] ?? 0; continue; }
+    const f = p - j;
+    out[i] = samples[j] * (1 - f) + samples[j + 1] * f;
+  }
+  return out;
+}
+
 /** One-shot resample for offline use. */
 export function resampleTo12k(samples: Float32Array, inputRate: number): Float32Array {
   if (inputRate === DSP.sampleRate) return samples;
@@ -376,3 +403,54 @@ export function queryDB(db: FingerprintDB, landmarks: Landmark[]): MatchResult[]
   }
   return [...bestPerTrack.values()].sort((a, b) => b.votes - a.votes);
 }
+
+export interface SpeedMatch {
+  /** Playback ratio that produced this result (1.03 = source running 3% fast). */
+  ratio: number;
+  top: MatchResult | null;
+  /** Votes of the best bin belonging to a *different* track. */
+  runnerUpVotes: number;
+  /** Length of the speed-corrected window, in samples at DSP.sampleRate. */
+  correctedSamples: number;
+}
+
+/**
+ * Fingerprint `samples` once per candidate playback ratio and return whichever
+ * scored most votes. Costs one full fingerprint+query per ratio (~80 ms for a
+ * 12 s window on a laptop), so callers should pass a small batch per cycle
+ * rather than a whole sweep — see the rotation in match-worker.
+ */
+export function matchAtSpeeds(
+  db: FingerprintDB,
+  samples: Float32Array,
+  fft: FFT,
+  window: Float32Array,
+  ratios: readonly number[],
+): SpeedMatch {
+  let best: SpeedMatch | null = null;
+  for (const ratio of ratios) {
+    const corrected = correctSpeed(samples, ratio);
+    const results = queryDB(db, fingerprint(corrected, fft, window));
+    const top = results[0] ?? null;
+    const runnerUp = top ? results.find((r) => r.trackIndex !== top.trackIndex) : null;
+    const candidate: SpeedMatch = {
+      ratio,
+      top,
+      runnerUpVotes: runnerUp?.votes ?? 0,
+      correctedSamples: corrected.length,
+    };
+    if (!best || (top?.votes ?? 0) > (best.top?.votes ?? 0)) best = candidate;
+  }
+  // ratios is never empty in practice, but keep the return type honest.
+  return best ?? { ratio: 1, top: null, runnerUpVotes: 0, correctedSamples: samples.length };
+}
+
+/**
+ * Candidate playback ratios, ordered by how far they stray from nominal so the
+ * likeliest land in the earliest batches. ±6% covers ordinary deck error and a
+ * DJ pitch fader left off zero; 1% steps keep the worst-case residual at 0.5%,
+ * comfortably inside the ~±1% the hashes tolerate.
+ */
+export const SPEED_RATIOS: readonly number[] = [
+  1, 1.01, 0.99, 1.02, 0.98, 1.03, 0.97, 1.04, 0.96, 1.05, 0.95, 1.06, 0.94,
+];

@@ -37,7 +37,13 @@ export class AudioEngine extends EventTarget {
    * or mic dead), cycles with a silent input (`inputLevel` ~0), or cycles with
    * real audio that just don't clear the vote gate.
    */
-  lastCycle: { votes: number; runnerUpVotes: number; windowSeconds: number } | null = null;
+  lastCycle: { votes: number; runnerUpVotes: number; windowSeconds: number; ratio: number } | null = null;
+  /**
+   * Playback ratio of the confirmed match — 1.03 means the record is running
+   * 3% fast. Turntables drift, and a few percent is enough to break matching
+   * outright, so the worker searches ratios and we lock to the winner.
+   */
+  playbackRatio = 1;
 
   readonly frame: AudioFrame = {
     frequency: new Float32Array(64),
@@ -112,6 +118,7 @@ export class AudioEngine extends EventTarget {
     this.current = null;
     this.candidateTrack = null;
     this.lastCycle = null;
+    this.playbackRatio = 1;
     this.hits = 0; this.misses = 0;
     this.setState('off');
   }
@@ -122,7 +129,10 @@ export class AudioEngine extends EventTarget {
     const f = this.frame;
     f.matched = this.state === 'matched';
     if (f.matched && this.current) {
-      f.time = this.current.position + (performance.now() - this.positionAnchorMs) / 1000;
+      // Scale by the playback ratio: on a deck running fast, the track's own
+      // clock advances faster than wall time between cycle re-anchors.
+      f.time = this.current.position
+        + ((performance.now() - this.positionAnchorMs) / 1000) * this.playbackRatio;
     }
     if (!mic) {
       f.frequency.fill(0);
@@ -156,6 +166,7 @@ export class AudioEngine extends EventTarget {
       votes: c.top?.votes ?? 0,
       runnerUpVotes: c.runnerUpVotes,
       windowSeconds: c.windowSeconds,
+      ratio: c.ratio,
     };
     const hit =
       c.top !== null &&
@@ -174,6 +185,10 @@ export class AudioEngine extends EventTarget {
           votes: c.top!.votes,
         };
         this.positionAnchorMs = performance.now();
+        // Stop searching speeds: every later cycle costs one fingerprint
+        // instead of RATIOS_PER_CYCLE of them.
+        this.playbackRatio = c.ratio;
+        this.worker?.postMessage({ type: 'lockSpeed', ratio: c.ratio });
         this.setState('matched');
         this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: this.current }));
       } else if (this.current?.trackId === trackIdOf(t)) {
@@ -187,6 +202,8 @@ export class AudioEngine extends EventTarget {
       if (this.current && this.misses >= DROP_CYCLES) {
         this.current = null;
         this.candidateTrack = null;
+        this.playbackRatio = 1;
+        this.worker?.postMessage({ type: 'unlockSpeed' });
         this.setState('listening');
         this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: null }));
       }

@@ -349,7 +349,9 @@ if (new URLSearchParams(location.search).has('debug')) {
     if (engine.state !== 'off') {
       const c = engine.lastCycle;
       line += ` · in ${(engine.inputLevel * 100).toFixed(1)}%`;
-      line += c ? ` · votes ${c.votes}/${c.runnerUpVotes}` : ' · no cycle yet';
+      line += c
+        ? ` · votes ${c.votes}/${c.runnerUpVotes} · speed ${((c.ratio - 1) * 100).toFixed(1)}%`
+        : ' · no cycle yet';
     }
     hud.textContent = line;
   }, 500);

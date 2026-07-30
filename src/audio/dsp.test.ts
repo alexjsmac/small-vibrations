@@ -11,6 +11,9 @@ import {
   serializeDB,
   deserializeDB,
   queryDB,
+  correctSpeed,
+  matchAtSpeeds,
+  SPEED_RATIOS,
   VALUE_FRAME_BITS,
   type FingerprintDB,
 } from './dsp';
@@ -33,6 +36,31 @@ function synthSignal(seed: number, seconds: number, partials: number[]): Float32
     out[i] = (v / partials.length) * 0.8;
   }
   return out;
+}
+
+/** Build a queryable DB from one landmark list per track, sorted by hash the
+ * way the offline build script and `deserializeDB` both guarantee. */
+function dbFrom(perTrack: Array<Array<{ hash: number; t: number }>>): FingerprintDB {
+  const total = perTrack.reduce((n, l) => n + l.length, 0);
+  const hashes = new Uint32Array(total);
+  const values = new Uint32Array(total);
+  let i = 0;
+  perTrack.forEach((landmarks, trackIndex) => {
+    for (const lm of landmarks) {
+      hashes[i] = lm.hash;
+      values[i] = (trackIndex << VALUE_FRAME_BITS) | lm.t;
+      i++;
+    }
+  });
+  const order = Array.from(hashes.keys()).sort((a, b) => hashes[a] - hashes[b]);
+  const sh = new Uint32Array(total), sv = new Uint32Array(total);
+  order.forEach((src, dst) => { sh[dst] = hashes[src]; sv[dst] = values[src]; });
+  return {
+    version: DSP.version,
+    tracks: perTrack.map((_, k) => ({ id: `t${k}`, frames: 1 << 16 })),
+    hashes: sh,
+    values: sv,
+  };
 }
 
 describe('hannWindow', () => {
@@ -196,6 +224,92 @@ describe('StreamResampler / resampleTo12k', () => {
     }
     const oneShot = resampleTo12k(samples, inputRate);
     expect(Math.abs(total - oneShot.length)).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('correctSpeed', () => {
+  it('returns the input untouched at ratio 1', () => {
+    const x = new Float32Array([0.1, 0.2, 0.3]);
+    expect(correctSpeed(x, 1)).toBe(x);
+  });
+
+  it('scales length by the ratio and produces no NaNs', () => {
+    const x = synthSignal(0x11, 1, [220, 440, 880]);
+    for (const ratio of [0.94, 0.97, 1.03, 1.06]) {
+      const out = correctSpeed(x, ratio);
+      expect(Math.abs(out.length - x.length * ratio)).toBeLessThanOrEqual(1);
+      for (let i = 0; i < out.length; i++) expect(Number.isNaN(out[i])).toBe(false);
+    }
+  });
+
+  it('undoes a speed error: a sped-up signal fingerprints back to the original', () => {
+    const original = synthSignal(0x22, 6, [180, 300, 520, 900, 1500, 2400]);
+    const fft = new FFT(DSP.fftSize);
+    const win = hannWindow(DSP.fftSize);
+
+    // Simulate a deck running 3% fast, then correct it back.
+    const fast = correctSpeed(original, 1 / 1.03);
+    const restored = correctSpeed(fast, 1.03);
+
+    const db = dbFrom([fingerprint(original, fft, win)]);
+    const before = queryDB(db, fingerprint(fast, fft, win))[0];
+    const after = queryDB(db, fingerprint(restored, fft, win))[0];
+
+    // 3% off is well outside the ~1% the hashes tolerate; correction recovers it.
+    expect(after.votes).toBeGreaterThan((before?.votes ?? 0) * 5);
+  });
+});
+
+describe('matchAtSpeeds', () => {
+  const fft = new FFT(DSP.fftSize);
+  const win = hannWindow(DSP.fftSize);
+
+  it('finds the ratio a sped-up query needs, and the right track', () => {
+    const trackA = synthSignal(0x33, 8, [150, 260, 430, 700, 1200, 2100]);
+    const trackB = synthSignal(0x44, 8, [190, 320, 510, 830, 1400, 2600]);
+    const db = dbFrom([fingerprint(trackA, fft, win), fingerprint(trackB, fft, win)]);
+
+    // trackA as heard from a deck running 3% fast.
+    const heard = correctSpeed(trackA, 1 / 1.03);
+    const best = matchAtSpeeds(db, heard, fft, win, SPEED_RATIOS);
+
+    expect(best.top?.trackIndex).toBe(0);
+    expect(best.ratio).toBeCloseTo(1.03, 2);
+    expect(best.top!.votes).toBeGreaterThan(best.runnerUpVotes * 2);
+    expect(best.correctedSamples).toBe(correctSpeed(heard, best.ratio).length);
+  });
+
+  it('picks ratio 1 for an unshifted query', () => {
+    const track = synthSignal(0x55, 8, [170, 290, 460, 780, 1300, 2200]);
+    const db = dbFrom([fingerprint(track, fft, win)]);
+    const best = matchAtSpeeds(db, track, fft, win, SPEED_RATIOS);
+    expect(best.ratio).toBe(1);
+  });
+
+  it('is honest about an empty ratio list rather than throwing', () => {
+    const track = synthSignal(0x66, 2, [200, 400]);
+    const db = dbFrom([fingerprint(track, fft, win)]);
+    const best = matchAtSpeeds(db, track, fft, win, []);
+    expect(best.top).toBeNull();
+    expect(best.ratio).toBe(1);
+  });
+});
+
+describe('SPEED_RATIOS', () => {
+  it('starts at nominal and stays within ±6% on a 1% grid', () => {
+    expect(SPEED_RATIOS[0]).toBe(1);
+    for (const r of SPEED_RATIOS) {
+      expect(Math.abs(r - 1)).toBeLessThanOrEqual(0.0601);
+      expect(Math.abs(Math.round((r - 1) * 1000) % 10)).toBe(0); // whole-percent steps
+    }
+    expect(new Set(SPEED_RATIOS).size).toBe(SPEED_RATIOS.length);
+  });
+
+  it('leaves no gap wider than the ~1% the hashes tolerate', () => {
+    const sorted = [...SPEED_RATIOS].sort((a, b) => a - b);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i] - sorted[i - 1]).toBeLessThanOrEqual(0.0101);
+    }
   });
 });
 
