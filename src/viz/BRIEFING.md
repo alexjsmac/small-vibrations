@@ -358,8 +358,9 @@ something that happens *now*, at a moment, and is gone.
   cross-track check to every contact sheet: put the new act stills next
   to each shipped track's and ask what geometry family each reads as
   (a1 fluid fields, a2 dual lattice, a3 Voronoi cell tissue, b1 vein
-  networks, b2 discrete silhouettes on ground). Each track must own its
-  geometry, not just its palette. The fix that worked: replace territory
+  networks, b2 discrete silhouettes on ground, b3 an advancing boundary
+  between two media). Each track must own its geometry, not just its
+  palette — and per the b3 ratchet, its GROUND treatment too. The fix that worked: replace territory
   tiling with a nearest-SDF search over discrete silhouettes — blobs
   drawn whole on visible ground, layering like leaves instead of
   clipping at bisectors.
@@ -456,6 +457,107 @@ something that happens *now*, at a moment, and is gone.
   (axis-aligned ticks/dots, raster row pulse) reads unmistakably as
   machine code against it.
 
+## Lessons from b3 "Sterile Breath" (the scrub — ratchet, July 2026)
+
+- **Album-wide audio-reactivity bug #1: an EMA-vs-EMA onset detector goes
+  DEAF after warmup unless its reference is DRASTICALLY slower.** The
+  house recipe (fast EMA rate 8, reference 1.5, absolute gap threshold)
+  has only a 5.3x ratio, so at musical tempos the reference tracks the
+  beat envelope almost as closely as the fast EMA and the gap collapses.
+  It fires only during the cold-start transient while both climb from 0.
+  Measured on b3 with a continuous 120bpm kick: 7 strikes in the first
+  10s, then ZERO for the next 80s (steady-state gap −0.038 against a
+  required +0.09). An audit found **all nine detectors in all five
+  previously-shipped tracks had the identical defect** — a1/a2/b1 fire
+  exactly ONCE per play. The cure: reference rate 1.5 → **0.25** (32x
+  ratio, tau ~4s), a **relative** threshold (`fast > ref * (1 + margin)`)
+  so it works at any playback level, a small absolute floor so silence
+  never triggers, and a **rising-edge** gate (`fast > prevFast`) so it
+  fires on attacks not plateaus. b3 landed margin 0.22 / floor 0.06
+  (bass), 0.16 / 0.05 (high).
+- **Album-wide audio-reactivity bug #2: a Poisson schedule LATCHES when a
+  crossfaded rate passes through zero.** The house idiom bakes the next
+  delay from the CURRENT blended rate. Because `paramsAt` lerps every
+  numeric key across a 6s crossfade, an act with rate 0 blending into a
+  nonzero act passes through ~2.3e-5 on the first frame — and since the
+  countdown is initialised to 0 and the `rate <= 0` early-return FREEZES
+  it there, that first epsilon frame fires immediately and bakes a delay
+  of order 1e5 seconds. That channel is then dead for the rest of the
+  track, every play. Affects any module where an act rate sits at 0
+  adjacent to a nonzero one. Cure: **rescale the pending countdown when
+  the effective rate changes** (`timeToNext *= oldRate / newRate` — the
+  quantile-preserving rescale for an Exponential), plus clamp the baked
+  delay as a backstop.
+- **Debug switches that BYPASS the real code path hide bugs in the real
+  code path.** Both bugs above survived every review, every test, and
+  every taste pass because `?strike=always`, `?scan=always`, `?lines=always`
+  and friends feed a constant rate or a separate fixed-interval timer —
+  so the Poisson path and the onset path were never once exercised under
+  any debug flag. Force switches should ACCELERATE the real mechanism
+  (raise its rate, lower its threshold), not replace it. If a switch
+  replaces the path, add a second check that runs the real one.
+- **Verify event CHANNELS by counting over the full runtime, not by
+  screenshotting a moment.** Both bugs are invisible in code review and
+  invisible in any single still. What found them: wrap the fire method in
+  a counter, drive `viz.update()` across the whole track with synthetic
+  audio, and print events per 10-20s window. A healthy channel shows
+  counts that track the act table; a latched one shows a burst then
+  zeros. Make this part of the contact-sheet step for any track with
+  scheduled or onset-driven events.
+- **Angular radius interpolation does NOT make facets.** Modulating an
+  SDF radius as a function of angle (interpolating hashed per-sector
+  radii) traces spiral ARCS, not straight chords — a "faceted" shape
+  built that way renders as a smooth blob no matter the interpolation
+  law. For real facets, sharp corners and an exactly unit gradient,
+  intersect hashed half-planes instead: `sd = max_i(dot(p, n_i) - h_i)`.
+  Cheaper, too.
+- **Size a smooth-min/max blend radius against the THINNEST feature it
+  will merge, not against the scene.** b3's strikes initially shared the
+  front's `K_BLEND = 0.05` while a fissure is ~0.005-0.011 wide — the
+  shared blend would have silently rounded every crack out of existence.
+  Events whose geometry is thin need their own tighter constant; organic
+  events keep the soft one.
+- **Warm dark colours read far darker than their numbers suggest —
+  specify brightness as MEASURED TARGETS, not constants.** Bit twice on
+  this track. Red contributes only ~21% of perceived luminance, so an
+  "oxblood" at luma 0.026 (≈7/255) is functionally black; the first
+  atmosphere cut needed 18x gain to see at all, and an earlier
+  light-on-light ending fog measured a 2-6/255 delta. If a subagent's
+  evidence requires brightness boosting, the thing is not there. Brief
+  colour work as outcomes to hit and report — "crests 80-100/255 in the
+  red channel, trough-to-crest ratio >= 3x, peak luma <= cap" — verified
+  on an UNBOOSTED framebuffer.
+- **Add a force-SCALE switch for any small shape whose silhouette is the
+  point.** `?crack=<mult>` made a geometry error obvious in one
+  screenshot that was completely invisible at shipping size. Same role
+  `?ghost=always` played for the motif stamps. Add it the moment the
+  shape lands, not after a taste round bounces.
+- **The cross-track check must cover GROUNDS, not just geometry
+  families.** a1 already owns a dark indigo fbm nebula and b1 a dark plum
+  dish ground; b3's flat near-black was already sitting close to b1's, so
+  "add fbm to the black" would have landed straight on a shipped track.
+  Differentiate a new atmosphere on hue, MOTION (b3's masses rise and
+  bubble; a1's cloud drifts; b1's mottle is near-static), and ideally a
+  spatial coupling only that track can have (b3's murk cools toward ash
+  as it nears its own advancing front).
+- **Per-seed envelope normalization beats a global worst-case constant.**
+  b3's front radius was first calibrated to the worst-case seed, which
+  left most seeds with a huge unused margin and made `sterileAt` mean
+  something different on screen for every play. Computing the seed's own
+  max-visible extent at init (`rMaxEff`) and normalizing against it makes
+  a staged envelope land at the SAME visual moment for every seed, and
+  makes "nothing visible at t=0" true by construction rather than by
+  safety margin.
+- **Side-gate expensive per-fragment searches on a scalar you already
+  have.** b3 ran its biomass clump search AND a near-identical watermark
+  search unconditionally on every fragment regardless of which side of
+  the front it sat on — together ~75% of the Lite frame (17ms → 4ms with
+  both ablated). Gating each on the S field cut Lite to 2.6ms. This
+  required replacing every `fwidth()` with an analytic per-frame
+  pixel-scale uniform first (derivatives are undefined in non-uniform
+  control flow) — which also permanently retired a triangle-seam
+  derivative artifact that had previously only been clamped.
+
 ## Workflow: from master WAV to shipped visuals
 
 1. Profile the track's master (2s RMS + low/high bands) → section table.
@@ -542,8 +644,28 @@ Starting sketches only — concept per track is decided with the user:
   collapsing to one fixed machine code. Poke = resistance (un-classifies).
   The long-orphaned `skinPattern` idea landed here as the stateless
   per-community fbm banding.
-- **b3 Sterile Breath** — the emptied world: barely anything left; the a1
-  void revisited, but hollow instead of expectant. Almost no events.
+- **b3 Sterile Breath** ✅ — life scrubbed away (Alex's premise: "the
+  album's ecosystems end here: a world sterilized, cleanliness as loss,
+  the biosphere wiped to a clinical blank"). NOTE the shipped track
+  deliberately inverts the sketch below: the piece is about the
+  SCRUBBING, not the emptiness, so it stays dense and vibrant for ~87% of
+  its runtime and the blank is the earned ending. Cushion-clump biomass
+  (hot magenta/amber/rust-green on a bubbling warm-oxblood murk) is eaten
+  by an advancing sterilization front; bass onsets fracture the tissue
+  into shattered chips whose interiors show the surrounding colours
+  warped out of alignment; healing fails discretely at 2:20 and failed
+  cracks creep wider. Signature: the advancing boundary between two media.
+  Closes on a1's lone-point seed image, value-inverted for the pale
+  ground. Poke = re-bloom scrubbed ground (in the last act, only breath).
+  - *Superseded sketch (kept as a warning): "the emptied world: barely
+    anything left; the a1 void revisited, but hollow instead of
+    expectant. Almost no events." That sketch, and TECHNIQUES.md §11's
+    matching sparse/minimal recommendation, both PREDATE the July 2026
+    art-direction reset and directly contradict its rules 1-3 (vibrancy
+    required, density over scale, never still >15-20s). Building it
+    literally would have shipped a screensaver. When an old per-track
+    sketch conflicts with the reset, the reset wins — and say so out loud
+    at concept time rather than quietly splitting the difference.*
 
 ## Known gaps / next opportunities
 
@@ -556,3 +678,17 @@ Starting sketches only — concept per track is decided with the user:
   open register for a2+.
 - Phone verification of the full experience is still pending as of the a1
   ship — check with the user before assuming mobile is proven.
+- **OPEN: the two album-wide audio-reactivity bugs (see the b3 ratchet)
+  are fixed in b3 only.** An audit confirmed all nine onset detectors in
+  a1/a2/a3/b1/b2 are the deaf pre-fix recipe, and that a2 (chalk lines,
+  and a ~5%/play knock case) plus b2 (scans at ~50s, links and runners at
+  ~122s) also latch their Poisson schedules. b2 is the severe one: scans
+  are its primary content AND carry the `beatCount`/`beatFlash` clock the
+  living grid rides on, so it is effectively inert from ~50s. a1/a3/b1
+  need only the detector fix. Fix branch: `claude/onset-detector-album-fix`.
+- **`src/viz/lib/` still does not exist.** Five modules now copy-and-adapt
+  the same `paramsAt`/`lerpParams`/`CROSSFADE_SECONDS` machinery, the same
+  momentum block, the same onset recipe — which is exactly why one bad
+  onset recipe propagated to every track on the album. The slot pool
+  (`b3/pools.ts`) is on its second use and is the obvious first extraction;
+  the onset detector should follow it, so the next fix happens once.
