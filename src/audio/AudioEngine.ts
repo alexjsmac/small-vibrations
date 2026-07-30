@@ -30,6 +30,14 @@ const DROP_CYCLES = 4;
 export class AudioEngine extends EventTarget {
   state: MicState = 'off';
   current: TrackMatch | null = null;
+  /**
+   * Last match cycle's raw numbers, for the `?debug=1` HUD — null until the
+   * worker has analysed its first window. Together with `inputLevel` this
+   * distinguishes the three ways detection can fail: no cycles at all (worker
+   * or mic dead), cycles with a silent input (`inputLevel` ~0), or cycles with
+   * real audio that just don't clear the vote gate.
+   */
+  lastCycle: { votes: number; runnerUpVotes: number; windowSeconds: number } | null = null;
 
   readonly frame: AudioFrame = {
     frequency: new Float32Array(64),
@@ -103,6 +111,7 @@ export class AudioEngine extends EventTarget {
     this.worker = null;
     this.current = null;
     this.candidateTrack = null;
+    this.lastCycle = null;
     this.hits = 0; this.misses = 0;
     this.setState('off');
   }
@@ -137,7 +146,17 @@ export class AudioEngine extends EventTarget {
     f.high = bandAvg(this.bytes, 2000, 6000, hzPerBin);
   }
 
+  /** RMS of the audio reaching the matcher; 0 while the mic is off. */
+  get inputLevel(): number {
+    return this.mic?.level ?? 0;
+  }
+
   private onCycle(c: CycleMessage) {
+    this.lastCycle = {
+      votes: c.top?.votes ?? 0,
+      runnerUpVotes: c.runnerUpVotes,
+      windowSeconds: c.windowSeconds,
+    };
     const hit =
       c.top !== null &&
       c.top.votes >= MIN_VOTES &&

@@ -335,12 +335,22 @@ void (async () => {
   match(i = 0) { mode = 'listening'; visual = 'matched'; setMicStatus('matched'); void go(i); },
 };
 
-// ?debug=1 → tiny FPS/quality readout in the stage corner.
+// ?debug=1 → tiny FPS/quality readout in the stage corner, plus mic/matcher
+// telemetry. The mic line is the first thing to look at when a track isn't
+// being detected: `in` is the level of the audio actually reaching the
+// matcher (0 with lively visuals means the capture path is deaf, not the
+// room), and `votes` is the last cycle against the gate in AudioEngine.
 if (new URLSearchParams(location.search).has('debug')) {
   const hud = document.createElement('div');
   hud.className = 'debug-hud';
   refs.stage.appendChild(hud);
   setInterval(() => {
-    hud.textContent = `${quality.avgFps().toFixed(0)} fps · ${quality.state.level}`;
+    let line = `${quality.avgFps().toFixed(0)} fps · ${quality.state.level} · mic ${engine.state}`;
+    if (engine.state !== 'off') {
+      const c = engine.lastCycle;
+      line += ` · in ${(engine.inputLevel * 100).toFixed(1)}%`;
+      line += c ? ` · votes ${c.votes}/${c.runnerUpVotes}` : ' · no cycle yet';
+    }
+    hud.textContent = line;
   }, 500);
 }
