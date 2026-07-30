@@ -1,0 +1,2 @@
+function h(i,o){return Math.max(i,o>0?60/o:1/0)}class c{constructor(o){this.tuning=o}refEma=0;cooldown=0;update(o,n,s,t){return this.refEma+=(n-this.refEma)*Math.min(1,o*this.tuning.refRate),this.cooldown=Math.max(0,this.cooldown-o),(t===void 0||t>0)&&this.cooldown<=0&&n>s&&n>this.tuning.absFloor&&n>this.refEma*(1+this.tuning.relMargin)?(this.cooldown=t===void 0?this.tuning.cooldown:h(this.tuning.cooldown,t),!0):!1}}export{c as O,h as r};
+//# sourceMappingURL=onset-DHl140yf.js.map
