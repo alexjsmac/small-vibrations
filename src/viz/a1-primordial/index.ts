@@ -3,6 +3,7 @@ import type { Viz, VizContext, AudioFrame, VizModule, VizPointerEvent } from '..
 import { RDSim } from './rd';
 import { ACTS, paramsAt, type ActParams } from './sections';
 import { mulberry32 } from '../random';
+import { OnsetDetector } from '../lib/onset';
 
 const VERT = `
 varying vec2 vUv;
@@ -104,8 +105,26 @@ const SEED_SLOTS = 4;
 /** Seed lifetime (seconds) — strength ramps 0.5 → 0 over this window. */
 const SEED_LIFETIME = 0.4;
 const SEED_STRENGTH = 0.5;
-/** Bass-onset detector: excess over its own slow EMA that triggers a seed. */
-const ONSET_THRESHOLD = 0.12;
+/**
+ * Bass-onset detector (album-audit fix, stage 2; see `../lib/onset`'s own
+ * doc for the full postmortem of the pre-fix defect this replaces — an
+ * absolute gap over a reference EMA only 5.3x slower than the fast one,
+ * which goes deaf once the reference catches up past the cold-start
+ * transient).
+ *
+ * `bassE` (rate 8, tau ~0.125s) is shared with the continuous uBass
+ * uniform, same shape as b2's bassE — measured against the verification
+ * harness's synthetic 120bpm kick (dt=1/60, 120s run, 60s warmup so the
+ * refRate-0.25 reference EMA is fully converged before sampling): the fast
+ * EMA's peak-over-reference ratio ceiling is ~1.104x (ONSET_REL_MARGIN
+ * below chose 0.08, comfortably under that ceiling, matching b2's
+ * independently-measured bass margin for the identical rate-8-vs-0.25
+ * shape). ONSET_ABS_FLOOR (0.06) keeps silence/no-mic noise from tripping
+ * it before the reference has caught up.
+ */
+const ONSET_EMA_RATE = 0.25;
+const ONSET_REL_MARGIN = 0.08;
+const ONSET_ABS_FLOOR = 0.06;
 const ONSET_COOLDOWN = 1.5;
 
 /** Poke (pointer down) seed: bigger + hotter than ambient seeds so a tap reads clearly. */
@@ -160,9 +179,14 @@ class Primordial implements Viz {
   private rdOverride: { feed: number; kill: number } | null = null;
 
   private bassE = 0;
-  private bassSlowE = 0;
   private highE = 0;
-  private onsetCooldown = 0;
+  /** Bass onset detector (`../lib/onset`) — owns the reference EMA + cooldown; chases `this.bassE`. Gated by `st.seedRate` (the effect it drives, activateSeed, also has an ambient Poisson rate, so onset DENSITY follows the act's own arc — see ONSET_EMA_RATE's doc). */
+  private bassOnset = new OnsetDetector({
+    refRate: ONSET_EMA_RATE,
+    relMargin: ONSET_REL_MARGIN,
+    absFloor: ONSET_ABS_FLOOR,
+    cooldown: ONSET_COOLDOWN,
+  });
 
   private seeds: SeedSlot[] = [];
   private seedUniformValues!: THREE.Vector4[];
@@ -383,16 +407,19 @@ class Primordial implements Viz {
     this.sim.uniforms.uNoiseTime.value += dt * 0.15;
 
     // Smooth audio bands with EMAs so seed/pulse reactivity isn't jittery.
+    const prevBassE = this.bassE;
     this.bassE += (audio.bass - this.bassE) * Math.min(1, dt * 8);
     this.highE += (audio.high - this.highE) * Math.min(1, dt * 8);
-    this.bassSlowE += (audio.bass - this.bassSlowE) * Math.min(1, dt * 1.5);
 
     this.scheduleSeeds(dt, st.seedRate);
 
-    this.onsetCooldown -= dt;
-    if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
+    // Bass-onset detector (`../lib/onset`) — ratePerMinute=st.seedRate both
+    // gates the detector (a seedRate===0 act, if any existed, would fire no
+    // onset seeds at all) and re-arms the cooldown to
+    // rateGapSeconds(ONSET_COOLDOWN, st.seedRate) on a fire, so onset seed
+    // DENSITY follows the same act arc as the ambient Poisson seeds above.
+    if (this.bassOnset.update(dt, this.bassE, prevBassE, st.seedRate)) {
       this.activateSeed(this.rand(), this.rand());
-      this.onsetCooldown = ONSET_COOLDOWN;
     }
 
     this.updateSeedAges(dt);

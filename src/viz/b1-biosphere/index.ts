@@ -10,9 +10,27 @@ import { DISH_VERT, buildDishFragmentShader } from './dishShader';
 import { Spores } from './spores';
 import { paramsAt, arcAt, ACTS, CUES, type ActParams } from './sections';
 import { mulberry32 } from '../random';
+import { OnsetDetector, rateGapSeconds } from '../lib/onset';
 
-/** Bass-onset detector (a1/a2's EMA + margin + cooldown recipe): excess over its own slow EMA triggers a small spore burst + flash. */
-const ONSET_THRESHOLD = 0.12;
+/**
+ * Bass-onset detector (album-audit fix, stage 2, `../lib/onset`) — raw "a
+ * beat was felt" signal fanning out to three effects: an ambient-style
+ * spore burst (has an act rate, p.burstRate — gated below via its own
+ * `burstOnsetCooldown`, the b2/a2 raw-vs-per-effect split), a flash
+ * (companion to the burst, no rate of its own), and beat-locked bubble
+ * division (explicitly the album-audit's no-act-rate exception, alongside
+ * a2's pulse channel — keeps the raw detector's own fixed cooldown, no
+ * `rateGapSeconds` gating).
+ *
+ * `bassE` (rate 8, shared with the continuous uBass uniform) measured the
+ * same way as a1/a2/a3: fast-EMA-over-fully-converged-reference-EMA peak
+ * ratio ceiling ~1.104x against the verification harness's synthetic
+ * 120bpm kick. ONSET_REL_MARGIN (0.08) matches the album's own re-measured
+ * bass margin for the identical rate-8-vs-0.25 shape.
+ */
+const ONSET_EMA_RATE = 0.25;
+const ONSET_REL_MARGIN = 0.08;
+const ONSET_ABS_FLOOR = 0.06;
 const ONSET_COOLDOWN = 1.1;
 
 /** uFlash exponential decay rate (1/s) and per-event kick sizes. */
@@ -196,8 +214,15 @@ class Biosphere implements Viz {
   private bassE = 0;
   private midE = 0;
   private highE = 0;
-  private bassSlowE = 0;
-  private onsetCooldown = 0;
+  /** Bass onset detector (`../lib/onset`) — owns its own reference EMA + fixed ONSET_COOLDOWN, chasing `this.bassE`. Raw ("a beat was felt") detector — see ONSET_EMA_RATE's own doc for why it fans out to three separately-gated effects instead of taking a `ratePerMinute` of its own. */
+  private bassOnset = new OnsetDetector({
+    refRate: ONSET_EMA_RATE,
+    relMargin: ONSET_REL_MARGIN,
+    absFloor: ONSET_ABS_FLOOR,
+    cooldown: ONSET_COOLDOWN,
+  });
+  /** Per-effect onset cooldown (density-vs-composition fix, see ONSET_EMA_RATE's doc) — armed via `rateGapSeconds(ONSET_COOLDOWN, p.burstRate)` on every raw bass-onset fire, decremented every frame regardless of whether the raw onset fired that frame. Flash and bubble division have no act rate of their own, so they fire unconditionally on every raw onset (see ONSET_EMA_RATE's doc). */
+  private burstOnsetCooldown = 0;
   private flash = 0;
 
   private burstTimeToNext = 0;
@@ -823,23 +848,30 @@ class Biosphere implements Viz {
 
     // Smooth audio bands with EMAs (a1/a2 idiom) so reactivity isn't jittery.
     const k = Math.min(1, dt * 8);
+    const prevBassE = this.bassE;
     this.bassE += (audio.bass - this.bassE) * k;
     this.midE += (audio.mid - this.midE) * k;
     this.highE += (audio.high - this.highE) * k;
-    this.bassSlowE += (audio.bass - this.bassSlowE) * Math.min(1, dt * 1.5);
 
-    // Bass-onset detector: excess over its own slow EMA fires a small
-    // ambient spore burst + flash.
-    this.onsetCooldown -= dt;
-    if (this.onsetCooldown <= 0 && this.bassE - this.bassSlowE > ONSET_THRESHOLD) {
-      const [x, y] = this.randomDishPoint();
-      this.triggerBurst(x, y, BURST_RADIUS_AMBIENT, BURST_STRENGTH_AMBIENT);
+    // Bass-onset detector (`../lib/onset`) — raw "a beat was felt" signal,
+    // called with no ratePerMinute (always enabled, debounced only by its
+    // own fixed ONSET_COOLDOWN). Fans out to three effects (see
+    // ONSET_EMA_RATE's doc): the ambient-style burst separately follows
+    // p.burstRate via its own cooldown; flash and bubble division fire
+    // unconditionally on every raw onset (no act rate to gate against).
+    this.burstOnsetCooldown -= dt;
+    if (this.bassOnset.update(dt, this.bassE, prevBassE)) {
+      if (this.burstOnsetCooldown <= 0) {
+        const [x, y] = this.randomDishPoint();
+        this.triggerBurst(x, y, BURST_RADIUS_AMBIENT, BURST_STRENGTH_AMBIENT);
+        this.burstOnsetCooldown = rateGapSeconds(ONSET_COOLDOWN, p.burstRate);
+      }
       this.kickFlash(FLASH_KICK_ONSET);
       // Beat-locked division: every bass onset buds one more daughter, if a
       // slot is free — the plan's "beat-locked division" on top of the
-      // Poisson baseline below.
+      // Poisson baseline below. No act rate to follow (album-audit's own
+      // scope note), so ungated beyond the raw detector's own cooldown.
       if (p.bubbles > 0.001) this.trySpawnBubble();
-      this.onsetCooldown = ONSET_COOLDOWN;
     }
 
     this.scheduleBursts(dt, this.forceBurstAlways ? DEBUG_BURST_RATE : p.burstRate);

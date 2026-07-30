@@ -3,7 +3,7 @@ import type { Viz, VizContext, AudioFrame, VizModule, VizPointerEvent } from '..
 import { STERILE_VERT, buildSterileFragment, FRONT_NOISE_AMP } from './sterileShader';
 import { paramsAt, sterileAt, zoomAt, arcAt, lifeClockAt, ACTS, type ActParams } from './sections';
 import { mulberry32 } from '../random';
-import { SlotPool, nextPoissonDelay } from './pools';
+import { SlotPool } from './pools';
 import { OnsetDetector } from '../lib/onset';
 import { PoissonSchedule } from '../lib/poisson';
 
@@ -514,8 +514,27 @@ class SterileBreath implements Viz {
   private bloomPool!: SlotPool;
   /** Seconds remaining before another slow-bass-threshold-crossing bloom may fire (BLOOM_ONSET_COOLDOWN idiom). */
   private bloomCooldown = 0;
-  /** Seconds until the next Poisson-scheduled ambient bloom (nextPoissonDelay, pools.ts) — independent of the onset channel's cooldown. Deliberately NOT migrated onto `PoissonSchedule` (`../lib/poisson`): bloomRate cycles off/on repeatedly across the act table and this bare countdown never got the round-1 rescale fix, so wrapping it would be a real (if arguably-overdue) behaviour change, out of scope for a behaviour-identical refactor — see poisson.ts's own MIGRATION NOTE. */
-  private bloomTimeToNext = 0;
+  /**
+   * Ambient Poisson bloom schedule (stage-2 fix, `../lib/poisson`) —
+   * independent of the onset channel's cooldown. This is the latent bug
+   * poisson.ts's own MIGRATION NOTE flagged and deliberately left alone
+   * during the behaviour-identical stage-1 extraction: `bloomRate` cycles
+   * 10 -> 0 -> 0 -> 4 -> 0 -> 0 -> 1.5 across the act table (the breath
+   * motif seeded in act 0, returning in the remission (act 3) and closing
+   * the record in act 6), and the old bare `nextPoissonDelay` countdown
+   * (pools.ts) had no schedule-rate tracking at all, so it never got the
+   * rescale fix strikeTimeToNext/crackleTimeToNext did. Two rising-through-
+   * epsilon crossings (act 2->3, act 5->6) each baked a multi-hour delay on
+   * arrival — the ambient channel then only ever fired in act 0, silencing
+   * both of the motif's returns even though the closing bloom-to-seed image
+   * itself stayed safe (a separate scripted sequence, `finalEnvAt`, not
+   * this channel). `reactivateDueNow: true` because bloomRate genuinely
+   * cycles off and on more than once (unlike strike/crackle, which only
+   * ever go off once at the very end — see `PoissonSchedule`'s own doc for
+   * why that option is opt-in). No `epsilonFloor` — `nextPoissonDelay`
+   * already used `1 - rand()`, `PoissonSchedule`'s own default derivation.
+   */
+  private bloomSchedule = new PoissonSchedule({ reactivateDueNow: true });
   /** `?bloom=always` — forces the ambient Poisson bloom rate to BLOOM_DEBUG_RATE regardless of the current act. */
   private forceBloomAlways = false;
 
@@ -850,9 +869,12 @@ class SterileBreath implements Viz {
       this.strikeSchedule.reset();
       // Increment 5: the bloom/poke/ripple pools and the bloom Poisson
       // schedule are equally stale across a seek/loop — same "due now" reset
-      // idiom as the strike pool above.
+      // idiom as the strike pool above. Stage 2: bloomSchedule.reset() (like
+      // strikeSchedule's) zeroes both the countdown and the schedule-rate,
+      // so the post-jump "due now" fire doesn't get rescaled against a
+      // stale pre-jump rate on its very first frame.
       this.bloomPool.clearAll();
-      this.bloomTimeToNext = 0;
+      this.bloomSchedule.reset();
       this.pokePool.clearAll();
       this.ripplePool.clearAll();
       // Increment 7: the crackle Poisson schedule is equally stale.
@@ -1091,14 +1113,11 @@ class SterileBreath implements Viz {
       this.bloomCooldown = BLOOM_ONSET_COOLDOWN;
       this.fireBloom();
     }
+    // Stage-2 fix: `this.bloomSchedule` (PoissonSchedule, `../lib/poisson`)
+    // replaces the old bare countdown — see bloomSchedule's own doc for the
+    // postmortem (the motif's act-3/act-6 returns were silently dead).
     const bloomRatePerMin = this.forceBloomAlways ? BLOOM_DEBUG_RATE : p.bloomRate;
-    if (bloomRatePerMin > 0) {
-      this.bloomTimeToNext -= dt;
-      while (this.bloomTimeToNext <= 0) {
-        this.fireBloom();
-        this.bloomTimeToNext += nextPoissonDelay(this.rand, bloomRatePerMin);
-      }
-    }
+    this.bloomSchedule.update(dt, bloomRatePerMin, this.rand, () => this.fireBloom());
     u.uBloomAmp.value = p.bloomAmp;
 
     // Fixed-lifetime pools (increment 5): unlike strikePool's hand-rolled
