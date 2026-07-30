@@ -115,7 +115,11 @@
  * bright cream tone (rather than the composed scene's faint ink mix) so all
  * four motifs are trivially screenshot-able; 5 = the real sterile-side
  * treatment forced full-screen (was a flat placeholder in increments 1-2;
- * now the genuine layered `sbSterileSide`).
+ * now the genuine layered `sbSterileSide`); 6 = living-side ground-churn
+ * diagnostic (NEW this increment, `?solo=ground`) -- `sbDeepGround` alone,
+ * full-frame, ignoring biomass and the sterile side entirely (same "ignore
+ * everything else" convention as modes 1/4/5), so the new dark-gradient
+ * atmosphere behind the biomass can be judged in isolation.
  *
  * Increment 7 (act discipline, camera, scripted hits, crackle, grade) --
  * the big wiring increment, mostly index.ts (act-hold, ambient drift,
@@ -203,6 +207,22 @@
  * retires the increment-7 triangle-seam fwidth() artifact class (see
  * SB_MAX_FWIDTH's own doc) rather than merely clamping it.
  *
+ * Living-side ground churn (artist taste note, this increment): the flat
+ * groundLiving constant in main()'s mode-0 branch is replaced by
+ * `sbDeepGround` (see its own doc, just above `sbSterileSide`) -- a
+ * slow-churning warm-dark (oxblood/umber) field of rising, bubbling masses
+ * in the gaps between clumps, cooling toward ash near the sterilization
+ * front, luma-capped so it never competes with the biomass. New uniform
+ * uGroundPhase (index.ts, a pure function of songTime like finalEnvAt) drives
+ * it; new solo mode 6 (`?solo=ground`) renders it alone. Palette anchors
+ * (GROUND_DEEP/OXBLOOD/UMBER/ASH/CHALK, GROUND_LUMA_CAP -- see sbDeepGround's
+ * own doc) were revised once after a first cut measured functionally
+ * invisible without an artificial brightness boost -- verified this time
+ * against a real unboosted framebuffer readback instead. Also fixed while
+ * building mode 6: the final condensation-to-seed sequence (increment 8,
+ * below) was drawing unconditionally over every uSoloMode, not just the
+ * composed scene -- gated to `uSoloMode == 0` (see that block's own doc).
+ *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
  * have compile-time constant bounds. Reserved-word identifiers (active,
@@ -289,6 +309,7 @@ uniform float uPresence; // 0..1 fraction of clumps present per lifecycle epoch 
 uniform float uBreath; // smoothed-bass breathing amplitude, scales lobe radii
 uniform float uBreathPhase; // CPU-accumulated breathing phase (seconds * rate, NOT raw time) — per-clump hash offsets it further so the field doesn't pump in unison
 uniform float uMotionPhase; // CPU-accumulated interior-speckle drift phase (NOT raw time)
+uniform float uGroundPhase; // songTime * GROUND_PHASE_RATE (index.ts's update(), NOT accumulated -- a pure function of songTime like finalEnvAt, matching that precedent so ?t= deep links reproduce exactly) -- drives sbDeepGround's downward-drifting sampling domains. Loop-wrap (songTime resetting to 0) causes a phase jump here, which is acceptable: the world is reborn at the loop point anyway.
 uniform float uHeat; // 0..1 hot/decayed palette lean (ActParams.heat)
 uniform float uPaleness; // 0..1 chalky pale remission mix (ActParams.paleness)
 
@@ -1362,6 +1383,76 @@ float sbSterility(vec2 p, out float eventRimD) {
   return s;
 }
 
+// Living-side ground churn (artist note, this increment): "instead of just a
+// pure black background, there could be some more interesting dark gradients
+// bubbling behind and adding more to the atmosphere". Replaces the old flat
+// groundLiving constant on the living side ONLY (the sterile side keeps
+// sbSterileSide below, untouched) with a slow-churning warm-dark field: masses
+// visibly RISING (the sampling domains drift DOWNWARD in p, so noise features
+// appear to climb) and bubbling in the gaps between clumps, cooling toward ash
+// near the sterilization front. Deliberately differentiated from the album's
+// other two dark atmospheric grounds by all three axes an artist reads as a
+// "treatment family", not just a palette: HUE (warm oxblood/umber here, vs
+// a1-primordial's indigo/violet domain-warped nebula and b1-biosphere's dark
+// plum dish ground), MOTION (masses rising/bubbling, vs a1's drifting cloud
+// or b1's near-static mottle), and SPATIAL COUPLING (cools toward
+// GROUND_ASH as it nears the S=0 front via the nearFront term below — a move
+// only b3 can make, since only b3 has an advancing boundary). uGroundPhase
+// (index.ts) is a pure function of songTime, not accumulated, matching
+// finalEnvAt's precedent so ?t= deep links reproduce exactly. A hard luma
+// ceiling (GROUND_LUMA_CAP) at the end is ENFORCED, not merely tuned-in, so
+// this can never accidentally out-brighten sbBiomass's own interior tone
+// (vec3(0.30,0.06,0.14)) regardless of what upstream mixes do.
+//
+// Palette revision (post-review): the first-cut anchors (oxblood at luma
+// ~0.026) were chosen by intuition and measured functionally invisible
+// without an artificial brightness boost -- the same "light-on-dark/dark-
+// on-dark values chosen by eye read as near-black in a real screenshot"
+// failure this file's own increment-8 doc already flagged once for the
+// final-fog tone. Root cause: warm dark reds carry very little luma (the
+// luma dot's red coefficient is only 0.2126), so a "dark warm red" that
+// LOOKS reasonable as an RGB triple can still measure far under any
+// reasonable cap, leaving the cap never the binding constraint -- the
+// anchors were. Raised so the anchors themselves clear visibility WITHOUT
+// any boost, verified against a real unboosted framebuffer readback:
+// red-channel bubble crests in the composed gaps land ~30-45/255, the
+// trough-to-crest luma ratio is >=2.5x (so the churn reads as structure/
+// motion, not a flat wash), and the brightest measured ground luma still
+// sits under GROUND_LUMA_CAP (0.10, itself comfortably under the biomass
+// interior tone's own ~0.11 luma) -- the cap is now genuinely load-bearing
+// at GROUND_UMBER's peak instead of every anchor already sitting far
+// beneath it.
+const vec3 GROUND_DEEP = vec3(0.020, 0.010, 0.016);
+const vec3 GROUND_OXBLOOD = vec3(0.165, 0.042, 0.062);
+const vec3 GROUND_UMBER = vec3(0.165, 0.088, 0.034);
+const vec3 GROUND_ASH = vec3(0.055, 0.078, 0.088);
+const vec3 GROUND_CHALK = vec3(0.125, 0.120, 0.115);
+const float GROUND_LUMA_CAP = 0.10;
+
+vec3 sbDeepGround(vec2 p, float s) {
+  float t = uGroundPhase;
+  vec2 q = p * 2.05;
+  // Sampling domains drift DOWNWARD so features appear to rise.
+  vec2 w = vec2(sbFbm(q * 0.85 + vec2(0.0, -t * 0.32)),
+                sbFbm(q * 0.85 + vec2(4.7, 2.1) + vec2(0.0, -t * 0.27)));
+  float n = sbFbm(q + w * 1.15 + vec2(0.0, -t * 0.45));
+  // Bubbles: higher-contrast masses rising FASTER than the murk behind them.
+  float bub = smoothstep(0.44, 0.74, sbFbm(q * 1.55 + w * 0.55 + vec2(0.0, -t * 0.72)));
+
+  vec3 g = mix(GROUND_DEEP, GROUND_OXBLOOD, smoothstep(0.28, 0.72, n));
+  g = mix(g, GROUND_UMBER, bub * 0.5);
+  g *= mix(0.85, 1.15, uHeat);
+  float nearFront = clamp(1.0 - smoothstep(0.0, 0.20, -s), 0.0, 1.0);
+  g = mix(g, GROUND_ASH, nearFront * 0.45);
+  g *= 1.0 + 0.12 * uBreath * (n - 0.5);
+  g = mix(g, GROUND_CHALK, uPaleness * 0.4);
+  // Hard ceiling: this must never compete with the biomass interior tone
+  // vec3(0.30,0.06,0.14). Enforced, not merely intended.
+  float luma = dot(g, vec3(0.2126, 0.7152, 0.0722));
+  g *= min(1.0, GROUND_LUMA_CAP / max(luma, 1e-4));
+  return g;
+}
+
 // The sterile side's layered appearance (increment 3): (1) a cold
 // blue-white base — this must stay clearly COLD, never warm bone/cream
 // (that's b2's ground); (2) a slow-drifting specular dot-product ramp
@@ -1533,12 +1624,27 @@ void main() {
     // harmlessly redundant with ghostDebug's own force). FORCE_SEARCH_S
     // (increment 9) keeps the search unconditional here.
     color = sbBiomass(field, vec3(0.5), 1.0, FORCE_SEARCH_S, true);
+  } else if (uSoloMode == 6) {
+    // Living-side ground churn diagnostic (this increment): sbDeepGround
+    // alone, full-frame, ignoring biomass and the sterile side entirely, so
+    // the atmosphere can be judged on its own -- same "ignore everything
+    // else" convention as modes 1/4/5. s is passed straight through (rather
+    // than forced to a sentinel) so the near-front ash-cooling term is still
+    // visible here, which is part of what this mode exists to judge.
+    color = sbDeepGround(field, S);
   } else {
     // Composed scene (mode 0): the ground itself transitions from the dark
     // living ground to the cold sterile side at the same S boundary that
     // truncates the biomass silhouette, so a scrubbed clump reveals sterile
     // ground beneath it, not the old dark ground.
-    vec3 groundLiving = vec3(0.045, 0.022, 0.04);
+    // Living-side ground churn (this increment's artist note, see
+    // sbDeepGround's own doc): gated on livingMask > 0.002 (rather than
+    // called unconditionally) since sbDeepGround is a real cost per fragment
+    // and the very next line already mixes it away entirely on the sterile
+    // side -- non-uniform branching here is SAFE, this file's only fwidth()
+    // dependency (sbAA()) was removed and replaced with the analytic
+    // uFieldPxScale in increment 9.
+    vec3 groundLiving = (livingMask > 0.002) ? sbDeepGround(field, S) : GROUND_DEEP;
     vec3 sterileBase = sbSterileSide(field, S);
     vec3 ground = mix(groundLiving, sterileBase, 1.0 - livingMask);
     color = sbBiomass(field, ground, livingMask, S, false);
@@ -1555,6 +1661,9 @@ void main() {
   // where they'd be crushed into the same graded/desaturated colour as
   // everything else).
   if (uSoloMode == 0) {
+    // (uSoloMode == 6, the ground diagnostic, is excluded from this block the
+    // same way modes 1/4/5 are -- see the scrub-line gate just below for the
+    // shared reasoning.)
     // Exposure lift: rides the energy envelope (arcAt, index.ts) so the
     // purge's 1.0 peak reads brighter than the remission's restraint dip.
     color *= (0.92 + 0.28 * uEnergy);
@@ -1582,16 +1691,19 @@ ${GRAIN_BLOCK}
   }
 
   // --- Scrub line + droplet glints, drawn LAST so they pop over
-  // everything above. Skipped for the three solo modes that isolate a
+  // everything above. Skipped for the four solo modes that isolate a
   // single layer's own colour and deliberately ignore S entirely (1
-  // biomass-only, 4 ghost-stamp diagnostic, 5 sterile-only) — mode 4's
-  // sbBiomass call above already passes a constant livingMask=1.0 the same
-  // way mode 1 does, so drawing a real S=0 scrub line over it would
-  // contradict that "ignore S" framing and clutter the motif screenshot
-  // with an unrelated line. The diagnostic modes 2 (front) and 3 (events)
-  // both want it forced to full strength regardless of the current act's
-  // glow/glint knobs, so debugging never depends on song position.
-  if (uSoloMode != 1 && uSoloMode != 4 && uSoloMode != 5) {
+  // biomass-only, 4 ghost-stamp diagnostic, 5 sterile-only, 6 ground-churn
+  // diagnostic) — mode 4's sbBiomass call above already passes a constant
+  // livingMask=1.0 the same way mode 1 does, so drawing a real S=0 scrub
+  // line over it would contradict that "ignore S" framing and clutter the
+  // motif screenshot with an unrelated line; mode 6 is meant to show
+  // sbDeepGround in isolation, and a bright scrub line drawn over it would
+  // swamp the very atmosphere it exists to judge. The diagnostic modes 2
+  // (front) and 3 (events) both want it forced to full strength regardless
+  // of the current act's glow/glint knobs, so debugging never depends on
+  // song position.
+  if (uSoloMode != 1 && uSoloMode != 4 && uSoloMode != 5 && uSoloMode != 6) {
     bool diagFront = (uSoloMode == 2 || uSoloMode == 3);
     // uFlash (increment 7, scripted hits) lifts the scrub line's own
     // brightness strongly -- excluded from the diagFront branch since that
@@ -1731,7 +1843,19 @@ ${GRAIN_BLOCK}
   // so this gate is a no-op under normal playback, kept only so the
   // sequence can never bleed onto the living side if that assumption is
   // ever wrong).
-  if (uFinalPhase > 0.5) {
+  //
+  // Bug fix (found while adding solo mode 6, this increment): this block was
+  // previously UNGATED on uSoloMode, so from ~188s onward it drew its fog/
+  // seed overlay on top of every diagnostic mode too -- caught live when
+  // ?solo=ground&t=190 showed the SWELL fog's cool tone at frame centre
+  // instead of pure sbDeepGround, polluting the very diagnostic meant to
+  // isolate the ground layer. Every other diagnostic already excludes itself
+  // from the composed-only post pipeline just above (the uSoloMode == 0
+  // grade/exposure/vignette block); this one had no such gate. Added the
+  // same additional uSoloMode == 0 guard so debugging the final sequence's
+  // own solo modes (were any ever added) or any of modes 1-6 never depends
+  // on whether the album happens to be past 188s.
+  if (uFinalPhase > 0.5 && uSoloMode == 0) {
     float finalSGate = smoothstep(-0.01, 0.01, S);
 
     if (uFinalPhase < 2.5) {

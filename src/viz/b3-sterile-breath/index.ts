@@ -14,6 +14,19 @@ const BASS_SLOW_RATE = 1.5;
 /** uBreathPhase advance rate (cycles/s-ish; see sbClumpSd's breathing formula, sterileShader.ts). */
 const BREATH_PHASE_RATE = 0.18;
 
+/**
+ * uGroundPhase advance rate (this increment, the living-side ground-churn
+ * artist note) -- unlike uBreathPhase/uMotionPhase above, uGroundPhase is
+ * NOT a CPU accumulator: it's derived directly as `songTime *
+ * GROUND_PHASE_RATE` every frame in update(), the same "pure function of
+ * songTime" precedent as finalEnvAt (module scope, below), so `?t=` deep
+ * links reproduce the ground churn exactly rather than depending on how
+ * long the viz has been running. Loop-wrap (songTime resetting to 0 at the
+ * track's end) causes a one-frame phase jump, which is acceptable since the
+ * whole world is reborn at the loop point anyway.
+ */
+const GROUND_PHASE_RATE = 0.035;
+
 /** uFrontDrift advance rate (field-uv/s-ish, x-axis; y-axis runs at x0.83 — see update()'s doc). */
 const FRONT_DRIFT_RATE = 0.008;
 
@@ -353,7 +366,7 @@ function finalEnvAt(songTime: number): { phase: number; t: number; seedFade: num
  * `ActParams.ghostAmp` every frame and parsing the two new debug params
  * below. The scripted camera remains for a later increment on top of this.
  *
- * Debug: `?solo=<0-5>` selects a solo layer (0 = full composed scene,
+ * Debug: `?solo=<0-6>` selects a solo layer (0 = full composed scene,
  * default; `?solo=biomass` -> mode 1, the biomass field alone over a flat
  * mid-gray background across the whole frame, ignoring S entirely; `?solo=
  * front` -> mode 2, the S-field diagnostic (living side dark gray, sterile
@@ -365,7 +378,11 @@ function finalEnvAt(songTime: number): { phase: number; t: number; seedFade: num
  * "ignore S" convention as mode 1) with every clump forced to host a stamp
  * every epoch, drawn at full alpha in bright cream instead of the composed
  * scene's faint ink mix — all four motifs visible immediately on load; 5
- * sterile forces the real sterile-side treatment full-screen), `?life=fast`
+ * sterile forces the real sterile-side treatment full-screen; `?solo=ground`
+ * -> mode 6 (NEW this increment, the artist's "more interesting dark
+ * gradients bubbling behind" note), the living-side ground-churn diagnostic —
+ * `sbDeepGround` alone, full-frame, ignoring biomass and the sterile side
+ * entirely, same "ignore everything else" convention as modes 1/4/5), `?life=fast`
  * multiplies the lifecycle clock's advance by LIFE_FAST_MUL (12) so clump
  * birth/death is visible in seconds, `?breath=<0..1>` pins uBreath to a
  * constant (bypassing audio), `?sterile=<0..1>` pins uSterile to a constant
@@ -552,6 +569,8 @@ class SterileBreath implements Viz {
       soloMode = 3;
     } else if (soloParam === 'ghosts') {
       soloMode = 4;
+    } else if (soloParam === 'ground') {
+      soloMode = 6;
     } else {
       const parsedSolo = soloParam !== null ? parseInt(soloParam, 10) : NaN;
       soloMode = Number.isFinite(parsedSolo) ? parsedSolo : 0;
@@ -695,6 +714,10 @@ class SterileBreath implements Viz {
         uBreath: { value: 0 },
         uBreathPhase: { value: 0 },
         uMotionPhase: { value: 0 },
+        // This increment: living-side ground-churn phase -- see
+        // GROUND_PHASE_RATE's own doc (module scope, above) for why this is
+        // derived fresh from songTime every frame rather than accumulated.
+        uGroundPhase: { value: 0 },
         uHeat: { value: 0 },
         uPaleness: { value: 0 },
         uPocket: { value: pocket },
@@ -906,6 +929,11 @@ class SterileBreath implements Viz {
 
     this.motionPhase += dt * p.motionSpeed * (0.5 + audio.mid);
     u.uMotionPhase.value = this.motionPhase;
+
+    // uGroundPhase: NOT accumulated (unlike breathPhase/motionPhase above) --
+    // a pure function of songTime, the finalEnvAt precedent, so `?t=` deep
+    // links reproduce the ground churn exactly. See GROUND_PHASE_RATE's own doc.
+    u.uGroundPhase.value = songTime * GROUND_PHASE_RATE;
 
     u.uHeat.value = p.heat;
     u.uPaleness.value = p.paleness;
