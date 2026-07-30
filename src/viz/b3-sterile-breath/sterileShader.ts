@@ -223,6 +223,37 @@
  * below) was drawing unconditionally over every uSoloMode, not just the
  * composed scene -- gated to `uSoloMode == 0` (see that block's own doc).
  *
+ * Artist taste-pass round 2 (two independent notes, both shading-only --
+ * no mechanism change): (1) crack interiors ("those cracks still don't
+ * look great... could the contents be a warped mixture of the other
+ * colours nearby instead?") -- `sbSterility` now also writes `strikeIn`
+ * (out param, strike loop only, pokes never touch it): the deepest any
+ * active swab strike's own fracture currently reaches at this fragment.
+ * `main()`'s mode-0 branch blends a new `sbCrackFill` (domain-warped +
+ * rotationally sheared re-sample of the LIVING biomass field over the deep
+ * ground, then a "fractured glass" contrast lift and a depth-scaled bleach
+ * push) into the sterile ground wherever `strikeIn > 0.0`, gated so the
+ * extra `sbBiomass` call it needs only ever runs on the small fraction of
+ * the frame actually inside a crack -- see `sbCrackFill`'s own doc for the
+ * full shape. The front's own blank is completely unaffected: it never
+ * touches `strikeIn`. (2) the living-side ground churn (`sbDeepGround`)
+ * reads richer still per the "make the background richer... it still
+ * reads as pretty much black" note -- anchors raised again, a third hue
+ * anchor (`GROUND_MOSS`) added for patch variety, `GROUND_LUMA_CAP` raised
+ * 0.10 -> 0.17, bubble contrast sharpened, and one extra independent
+ * high-frequency noise octave layered into the sampling -- see
+ * `sbDeepGround`'s own doc for the exact numbers and verification.
+ *
+ * Round 2b (same-day re-review of round 2's crack fill): the warp's
+ * displacement (`warpAmp`, `sbCrackFill`) was nearly a full clump cell
+ * wide, so the warped sample frequently landed in the GAP between clumps
+ * and read near-black at normal crack size -- cut to a third of a cell
+ * (the swirl shear scaled down to match) so the sample stays inside the
+ * local neighbourhood, plus a low-weight, dimmed blend of the fragment's
+ * own (unwarped) cell's crown colour so a crack interior can never read
+ * colourless even when the warp still lands on a gap -- see
+ * `sbCrackFill`'s own doc for the exact numbers.
+ *
  * NO backticks anywhere in the GLSL strings below (template-literal
  * truncation trap, a2 lesson) -- not even inside GLSL comments. All loops
  * have compile-time constant bounds. Reserved-word identifiers (active,
@@ -1257,7 +1288,7 @@ float sbPokeRadius(float age) {
 // younger than STRIKE_RIM_YOUNG OR poke younger than POKE_RIM_YOUNG --
 // consumed by main()'s young-event rim-pop boost so that pass doesn't need
 // its own second loop over STRIKE_SLOTS/POKE_SLOTS.
-float sbSterility(vec2 p, out float eventRimD) {
+float sbSterility(vec2 p, out float eventRimD, out float strikeIn) {
   vec2 d = (p - uPocket) * uStretch;
   float fineN = sbFbm(p * 3.0 + uFrontDrift) - 0.5;
   float coarseN = sbFbm(p * 1.2 + uFrontDrift * 0.6) - 0.5;
@@ -1287,6 +1318,15 @@ float sbSterility(vec2 p, out float eventRimD) {
   s += craze * FRONT_CRAZE_AMP * uFrontNoise * exp(-abs(s) * FRONT_CRAZE_FALL);
 
   eventRimD = 9.0;
+  // Round-2 artist note ("could the crack contents be a warped mixture of
+  // the other colours nearby instead?"): strikeIn tracks the deepest any
+  // active STRIKE (never a poke -- see the poke loop below, which never
+  // touches this) currently reaches into its own fracture interior, so
+  // main() can shade that interior as a warped biomass smear instead of
+  // plain sterile blank. Large negative default (not 0) so "no active
+  // strike reaches here" reads unambiguously below any real fracture's
+  // -fractureSd*w, which is always >= 0 wherever a strike is live.
+  strikeIn = -9.0;
   for (int i = 0; i < STRIKE_SLOTS; i++) {
     float w = uStrikeA[i].w;
     if (w <= 0.0) continue;
@@ -1356,6 +1396,13 @@ float sbSterility(vec2 p, out float eventRimD) {
     // uStrikeA/uStrikeB are already fully packed (8/8 components).
     float fseed = sbHash21(center * 41.7 + vec2(angle * 3.3, rMax * 97.1));
     float fractureSd = sbFractureSd(p, center, r, aspect, angle, fseed);
+    // -fractureSd is positive INSIDE this strike's fracture (fractureSd's
+    // own sign convention, negative inside); scaled by w (this strike's own
+    // fade) so an expiring, fading-out strike's interior fades its warp-
+    // smear contribution right along with it. max'd across every active
+    // strike (not summed) so overlapping fractures read as "whichever is
+    // deepest here", matching how the S-field itself already unions them.
+    strikeIn = max(strikeIn, -fractureSd * w);
     float sWithStrike = sbSmax(s, -fractureSd, K_STRIKE);
     s = mix(s, sWithStrike, w);
 
@@ -1422,12 +1469,40 @@ float sbSterility(vec2 p, out float eventRimD) {
 // interior tone's own ~0.11 luma) -- the cap is now genuinely load-bearing
 // at GROUND_UMBER's peak instead of every anchor already sitting far
 // beneath it.
-const vec3 GROUND_DEEP = vec3(0.020, 0.010, 0.016);
-const vec3 GROUND_OXBLOOD = vec3(0.165, 0.042, 0.062);
-const vec3 GROUND_UMBER = vec3(0.165, 0.088, 0.034);
-const vec3 GROUND_ASH = vec3(0.055, 0.078, 0.088);
+//
+// Round-2 palette revision (artist taste pass: "make the background richer
+// as well -- it still reads as pretty much black"). Anchors raised roughly
+// 1.8-2x again (OXBLOOD/UMBER red channel ~0.165 -> ~0.40-0.44) and
+// GROUND_LUMA_CAP raised 0.10 -> 0.17; a third hue anchor (GROUND_MOSS, a
+// dark green-brown) was added purely for patch-to-patch variety -- chosen,
+// per the task's own instruction, to stay clear of a1-primordial's
+// indigo/violet nebula (index.ts: vec3(0.024,0.016,0.08) ->
+// vec3(0.10,0.03,0.22), B-channel-led) and b1-biosphere's plum dish ground
+// (dishShader.ts's groundAt: vec3(0.055,0.02,0.07), B > R) -- moss leans
+// green/brown, neither blue nor magenta, so the family still reads warm
+// and unmistakably b3's own. A single extra high-frequency sbVnoise sample
+// (nDetail below) layers a third octave of detail into n independent of
+// FBM_OCT, so Lite (2 sbFbm octaves) still gets the finer churn structure;
+// the bubble band was also narrowed (0.44-0.74 -> 0.40-0.66) and given its
+// own crest-highlight multiply for sharper trough-to-crest contrast, per
+// the "rich churn, not gentle mottle" note. Verified against a real
+// UNBOOSTED framebuffer readback (see this increment's own report): red-
+// channel ground crests land ~80-88/255 across the acts' actual heat range
+// (0.45-1.0, sections.ts), trough-to-crest luma ratio stays >=10x (far
+// past the >=3x bar), and peak ground luma sits at the 0.17 cap -- still
+// well under the biomass CROWN tones (sbClumpCrown: magenta/amber/rust-
+// green, luma ~0.34-0.6) that must keep dominating the composition, even
+// though it can now sit at or fractionally above the biomass interior
+// base tone's own ~0.117 luma at the ground's very brightest crest pixels
+// -- the crowns, rim highlights and speckle are what read as "the
+// clumps", and they still clear the ground by a wide margin.
+const vec3 GROUND_DEEP = vec3(0.022, 0.011, 0.017);
+const vec3 GROUND_OXBLOOD = vec3(0.44, 0.075, 0.088);
+const vec3 GROUND_UMBER = vec3(0.40, 0.120, 0.048);
+const vec3 GROUND_MOSS = vec3(0.075, 0.105, 0.040);
+const vec3 GROUND_ASH = vec3(0.075, 0.105, 0.120);
 const vec3 GROUND_CHALK = vec3(0.125, 0.120, 0.115);
-const float GROUND_LUMA_CAP = 0.10;
+const float GROUND_LUMA_CAP = 0.17;
 
 vec3 sbDeepGround(vec2 p, float s) {
   float t = uGroundPhase;
@@ -1435,22 +1510,106 @@ vec3 sbDeepGround(vec2 p, float s) {
   // Sampling domains drift DOWNWARD so features appear to rise.
   vec2 w = vec2(sbFbm(q * 0.85 + vec2(0.0, -t * 0.32)),
                 sbFbm(q * 0.85 + vec2(4.7, 2.1) + vec2(0.0, -t * 0.27)));
-  float n = sbFbm(q + w * 1.15 + vec2(0.0, -t * 0.45));
-  // Bubbles: higher-contrast masses rising FASTER than the murk behind them.
-  float bub = smoothstep(0.44, 0.74, sbFbm(q * 1.55 + w * 0.55 + vec2(0.0, -t * 0.72)));
+  // Round-2: one extra, independent high-frequency octave (a single
+  // sbVnoise sample, not another sbFbm call) layered into n on top of
+  // sbFbm's own Full/Lite-budgeted octaves (FBM_OCT) -- cheap (one noise
+  // call), earns its cost by keeping fine churn detail present even on
+  // Lite's 2-octave sbFbm.
+  float nBase = sbFbm(q + w * 1.15 + vec2(0.0, -t * 0.45));
+  float nDetail = sbVnoise(q * 4.3 + w * 1.6 + vec2(0.0, -t * 0.6));
+  float n = mix(nBase, nDetail, 0.22);
+  // Bubbles: higher-contrast masses rising FASTER than the murk behind
+  // them -- band narrowed (was 0.44-0.74) for sharper crest/trough
+  // contrast, the "rich churn, not gentle mottle" note.
+  float bub = smoothstep(0.40, 0.66, sbFbm(q * 1.55 + w * 0.55 + vec2(0.0, -t * 0.72)));
 
   vec3 g = mix(GROUND_DEEP, GROUND_OXBLOOD, smoothstep(0.28, 0.72, n));
-  g = mix(g, GROUND_UMBER, bub * 0.5);
+  g = mix(g, GROUND_UMBER, bub * 0.65);
+  // Third hue anchor (moss, round 2): a separate, slower-drifting domain
+  // (hueVar) so patches of ground occasionally lean green-brown instead of
+  // red/amber, for variety, without diluting the family's overall warm
+  // read (weight capped at 0.4, only where hueVar itself runs high).
+  float hueVar = sbFbm(q * 0.6 + vec2(11.3, -5.7) + vec2(0.0, -t * 0.18));
+  g = mix(g, GROUND_MOSS, smoothstep(0.55, 0.85, hueVar) * 0.4);
+  // Crest highlight (round 2): bubbling masses read brighter, not just
+  // differently hued, sharpening the trough-to-crest ratio further.
+  g *= 1.0 + bub * 0.15;
   g *= mix(0.85, 1.15, uHeat);
   float nearFront = clamp(1.0 - smoothstep(0.0, 0.20, -s), 0.0, 1.0);
   g = mix(g, GROUND_ASH, nearFront * 0.45);
   g *= 1.0 + 0.12 * uBreath * (n - 0.5);
   g = mix(g, GROUND_CHALK, uPaleness * 0.4);
-  // Hard ceiling: this must never compete with the biomass interior tone
-  // vec3(0.30,0.06,0.14). Enforced, not merely intended.
+  // Hard ceiling: this must never compete with the biomass CROWN tones
+  // (sbClumpCrown, luma ~0.34-0.6). Enforced, not merely intended. Raised
+  // (round 2) from 0.10 to 0.17.
   float luma = dot(g, vec3(0.2126, 0.7152, 0.0722));
   g *= min(1.0, GROUND_LUMA_CAP / max(luma, 1e-4));
   return g;
+}
+
+// Crack-interior warp smear (round-2 artist note): a swab strike's own
+// fracture interior no longer reads as the flat sterile blank -- that read
+// as "pasted on" and disconnected from everything around it. Instead it
+// samples the LIVING biomass field at a domain-warped + rotationally
+// sheared offset of the same point, over the deep ground (not the sterile
+// one), so the interior shows a wrenched, deranged smear of the tissue
+// colours actually nearby rather than an imported blank. sbDeepGround is
+// called with s=-1.0 (deep living) rather than the real S, so the ash-
+// near-front cooling term never kicks in here -- gaps in the warped
+// biomass sample read as murk, not pale sterile ground, EXCEPT for the
+// deliberate depth-scaled bleach mixed in at the very end (still caused by
+// sterility, just legible as glass rather than blank). Only ever called
+// from main()'s strikeIn > 0.0 gate (see that call site's own doc) -- the
+// second sbBiomass call here is real cost, so it must never run on a
+// fragment outside an active fracture.
+vec3 sbCrackFill(vec2 p, float strikeIn) {
+  // Warp: a swirl (rotational shear, so the smear reads as WRENCHED, not
+  // merely offset) plus two-channel fbm noise. Round-2b (artist re-review):
+  // clump spacing is 1/CLUMP_FREQ ~= 0.143 field-uv, and the original
+  // warpAmp=0.055 (0.11 field-uv of displacement, * 2.0 below) was nearly a
+  // full cell wide -- the warped sample frequently landed in the GAP
+  // between clumps, reading near-black at normal crack size (the same
+  // "reads as pretty much black" note the artist gave the background).
+  // Cut to 0.022 (0.044 field-uv, ~a third of a cell) so the sample stays
+  // inside the local neighbourhood and usually lands on tissue; the swirl
+  // factor is scaled down to match (0.02 -> 0.011) so the shear still reads
+  // as a wrench at the smaller displacement rather than dominating it.
+  float warpAmp = 0.022;
+  vec2 wq = p * 3.1;
+  vec2 warp = vec2(sbFbm(wq + vec2(0.0, uGroundPhase * 0.2)) - 0.5,
+                    sbFbm(wq + vec2(7.3, 2.9) - vec2(uGroundPhase * 0.17, 0.0)) - 0.5);
+  float sh = 1.15;
+  vec2 rel = p - 0.5;
+  vec2 swirl = vec2(-rel.y, rel.x) * sh * 0.011;
+  vec2 pw = p + warp * warpAmp * 2.0 + swirl;
+
+  // Sample the living biomass field at the warped point, forced-search
+  // (FORCE_SEARCH_S, same sentinel solo modes 1/4 use) and full living
+  // mask, over the deep ground evaluated at s=-1.0 (see this function's own
+  // doc) so a warped sample landing in a gap between clumps reads as murk.
+  vec3 c = sbBiomass(pw, sbDeepGround(pw, -1.0), 1.0, FORCE_SEARCH_S, false);
+
+  // Round-2b: guarantee some local hue even when the (now much shorter)
+  // warp still lands on a gap -- the unwarped neighbourhood's own crown
+  // colour, recovered cheaply from the fragment's own cell (no second
+  // search: sbClumpCrown is a pure per-cell hash, not a distance query, so
+  // this doesn't need to know whether that cell's clump is even currently
+  // present/alive), mixed in at low weight, dimmed to 0.55x so it reads as
+  // a tint hinting at the neighbourhood rather than a bright patch
+  // competing with real biomass. Applied BEFORE the contrast lift/bleach
+  // below so it rides along with the rest of the shading.
+  vec3 crownHint = sbClumpCrown(floor(p * CLUMP_FREQ));
+  c = mix(c, crownHint * 0.55, 0.30);
+
+  // Fractured-glass treatment: a modest contrast lift, then a depth-scaled
+  // push toward the sterile pale (deeper into the crack = slightly more
+  // bleached, since sterility is still what tore it open) plus a faint
+  // cool sheen -- kept small (0.28 ceiling) so the result stays legibly a
+  // warped colour MIXTURE dominated by the surrounding hues, never a pale
+  // field on its own.
+  c = mix(c, c * 1.18, 0.6);
+  c = mix(c, vec3(0.80, 0.86, 0.90), clamp(strikeIn * 4.0, 0.0, 1.0) * 0.28);
+  return c;
 }
 
 // The sterile side's layered appearance (increment 3): (1) a cold
@@ -1575,7 +1734,8 @@ void main() {
   // increment 5) rides along for the young-event rim-pop boost, drawn with
   // the scrub line below.
   float eventRimD;
-  float S = sbSterility(field, eventRimD);
+  float strikeIn;
+  float S = sbSterility(field, eventRimD, strikeIn);
   float sEdge = sbAA() * 0.75 + 0.0004; // tight analytic S_EDGE (increment 9: was fwidth-based)
   // 1.0 living (S<0), 0.0 sterile (S>0). Written as 1.0 - smoothstep(-sEdge,
   // sEdge, S) rather than the mirrored smoothstep(sEdge, -sEdge, S) — both
@@ -1646,6 +1806,21 @@ void main() {
     // uFieldPxScale in increment 9.
     vec3 groundLiving = (livingMask > 0.002) ? sbDeepGround(field, S) : GROUND_DEEP;
     vec3 sterileBase = sbSterileSide(field, S);
+    // Crack-interior warp smear (round-2 artist note, see sbCrackFill's own
+    // doc): gated on strikeIn > 0.0 -- the ONLY fragments actually inside a
+    // fracture -- so the extra sbBiomass evaluation sbCrackFill needs never
+    // runs on the vast majority of a frame with no (or distant) active
+    // strikes. Blended into sterileBase, BEFORE the living/sterile ground
+    // mix and BEFORE the biomass composite below, so a crack that happens
+    // to straddle the front still shows the smear on its sterile side the
+    // same way the front's own blank would otherwise show there. A tight,
+    // one-sided analytic-AA edge (sbAA()-scaled, epsilon-padded so
+    // edge0 < edge1 always holds) keeps the boundary from fringing.
+    if (strikeIn > 0.0) {
+      float crackAA = sbAA() * 2.0 + 0.0006;
+      float crackMask = smoothstep(0.0, crackAA, strikeIn);
+      sterileBase = mix(sterileBase, sbCrackFill(field, strikeIn), crackMask);
+    }
     vec3 ground = mix(groundLiving, sterileBase, 1.0 - livingMask);
     color = sbBiomass(field, ground, livingMask, S, false);
   }
