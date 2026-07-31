@@ -23,7 +23,10 @@ import { mulberry32 } from '../viz/random';
 const fft = new FFT(DSP.fftSize);
 const window = hannWindow(DSP.fftSize);
 
+/** Long enough for a four-minute run on a deck playing ~4% fast. */
 const TRACK_SECONDS = 260;
+/** The competing track only has to exist for the vote margin to mean anything. */
+const DISTRACTOR_SECONDS = 90;
 const CYCLE_SECONDS = 1.5;
 const WINDOW_SECONDS = 12;
 
@@ -73,9 +76,17 @@ function playOnDeck(track: Float32Array, seconds: number, speedAt: (t: number) =
 }
 
 let db: FingerprintDB;
+/** The exact audio the DB was built from — tests play these back off-speed. */
+let sideA: Float32Array;
+let sideB: Float32Array;
 
+// Generating and fingerprinting four minutes of synthetic audio is the most
+// expensive thing in the unit suite, so it happens exactly once. CI runners are
+// a good deal slower than a dev laptop; the timeout is sized for them.
 beforeAll(() => {
-  const tracks = [makeTrack(1, TRACK_SECONDS), makeTrack(2, TRACK_SECONDS)];
+  sideA = makeTrack(1, TRACK_SECONDS);
+  sideB = makeTrack(2, DISTRACTOR_SECONDS);
+  const tracks = [sideA, sideB];
   const entries: TrackEntry[] = tracks.map((t, i) => ({
     id: `t${i}`,
     frames: Math.floor(t.length / DSP.hop),
@@ -96,7 +107,7 @@ beforeAll(() => {
     }),
     entries,
   );
-});
+}, 180_000);
 
 function rms(x: Float32Array): number {
   let sum = 0;
@@ -164,10 +175,10 @@ describe('matcher loop on a real off-speed deck', () => {
   let deck: Float32Array;
 
   beforeAll(() => {
-    const played = playOnDeck(makeTrack(1, TRACK_SECONDS), RUN_SECONDS, speedAt);
+    const played = playOnDeck(sideA, RUN_SECONDS, speedAt);
     deck = played.out;
     drift = run(played.out, played.truePos, RUN_SECONDS);
-  }, 120_000);
+  }, 180_000);
 
   it('locks on, then holds through the drift without a single drop', () => {
     expect(drift.confirmedAt).not.toBeNull();
@@ -214,8 +225,7 @@ describe('matcher loop on a real off-speed deck', () => {
   }, 60_000);
 
   it('keeps a correctly-calibrated deck on the fast path', () => {
-    const track = makeTrack(1, TRACK_SECONDS);
-    const { out, truePos } = playOnDeck(track, 60, () => 1);
+    const { out, truePos } = playOnDeck(sideA, 60, () => 1);
     const { lock, speeds, confirmedAt, drops } = run(out, truePos, 60);
 
     expect(confirmedAt).not.toBeNull();
@@ -227,8 +237,7 @@ describe('matcher loop on a real off-speed deck', () => {
   }, 60_000);
 
   it('does not latch onto the wrong track', () => {
-    const track = makeTrack(2, TRACK_SECONDS); // the *other* track
-    const { out, truePos } = playOnDeck(track, 60, speedAt);
+    const { out, truePos } = playOnDeck(sideB, 60, speedAt); // the *other* track
     const { lock } = run(out, truePos, 60);
     expect(lock.trackIndex).toBe(1);
   }, 60_000);
@@ -245,7 +254,7 @@ describe('matcher loop on a real off-speed deck', () => {
   it('coasts through a long interruption instead of withdrawing the visuals', () => {
     // Ten seconds of loud non-matching noise over the top of the record — the
     // old four-cycle drop would have torn the visuals down and re-swept.
-    const played = playOnDeck(makeTrack(1, TRACK_SECONDS), 100, speedAt);
+    const played = playOnDeck(sideA, 100, speedAt);
     const rnd = mulberry32(7);
     const noisy = interrupt(played.out, 55, 10, () => (rnd() - 0.5) * 0.6);
     const { lock, drops, worstPositionError } = run(noisy, played.truePos, 100);
@@ -257,7 +266,7 @@ describe('matcher loop on a real off-speed deck', () => {
   }, 60_000);
 
   it('gives up quickly once the input goes silent — the needle was lifted', () => {
-    const played = playOnDeck(makeTrack(1, TRACK_SECONDS), 100, speedAt);
+    const played = playOnDeck(sideA, 100, speedAt);
     const silent = interrupt(played.out, 55, 45, () => 0);
     const { drops, log } = run(silent, played.truePos, 100);
 
