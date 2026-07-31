@@ -349,8 +349,15 @@ if (new URLSearchParams(location.search).has('debug')) {
     if (engine.state !== 'off') {
       const c = engine.lastCycle;
       line += ` · in ${(engine.inputLevel * 100).toFixed(1)}%`;
+      // `speed` is the deck's measured playback error and `mode` the phase that
+      // measured it: search (sweeping the coarse grid) → refine (local search
+      // after a confirm) → lock (settled, following drift). A lock that keeps
+      // falling back to search, or a speed that wanders, is the signature of a
+      // deck the tracker can't hold. `coast` counts cycles the visuals are
+      // being carried through on extrapolation alone.
       line += c
-        ? ` · votes ${c.votes}/${c.runnerUpVotes} · speed ${((c.ratio - 1) * 100).toFixed(1)}%`
+        ? ` · votes ${c.votes}/${c.runnerUpVotes} · speed ${((c.ratio - 1) * 100).toFixed(2)}%`
+          + ` ${c.speedMode}${c.misses > 0 ? ` · coast ${c.misses}` : ''}`
         : ' · no cycle yet';
     }
     hud.textContent = line;

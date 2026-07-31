@@ -2,6 +2,7 @@ import type { AudioFrame } from '../viz/types';
 import type { TrackEntry } from './dsp';
 import type { CycleMessage, WorkerOut } from './match-worker';
 import { MicInput } from './MicInput';
+import { TrackLock } from './tracking';
 import { TRACKS } from '../tracks';
 
 export type MicState = 'off' | 'starting' | 'listening' | 'matched' | 'error';
@@ -12,14 +13,6 @@ export interface TrackMatch {
   position: number;
   votes: number;
 }
-
-/** A cycle must clear both bars to count as a hit for its track. */
-const MIN_VOTES = 12;
-const MIN_RATIO = 2.0; // top votes vs best other-track votes
-/** Consecutive agreeing cycles before we announce a (new) track. */
-const CONFIRM_CYCLES = 2;
-/** Consecutive missed cycles before we drop back to "listening". */
-const DROP_CYCLES = 4;
 
 /**
  * Orchestrates mic → match-worker and exposes:
@@ -37,13 +30,15 @@ export class AudioEngine extends EventTarget {
    * or mic dead), cycles with a silent input (`inputLevel` ~0), or cycles with
    * real audio that just don't clear the vote gate.
    */
-  lastCycle: { votes: number; runnerUpVotes: number; windowSeconds: number; ratio: number } | null = null;
-  /**
-   * Playback ratio of the confirmed match — 1.03 means the record is running
-   * 3% fast. Turntables drift, and a few percent is enough to break matching
-   * outright, so the worker searches ratios and we lock to the winner.
-   */
-  playbackRatio = 1;
+  lastCycle: {
+    votes: number;
+    runnerUpVotes: number;
+    windowSeconds: number;
+    ratio: number;
+    speedMode: 'search' | 'refine' | 'lock';
+    /** Missed cycles being coasted through; 0 while cleanly matched. */
+    misses: number;
+  } | null = null;
 
   readonly frame: AudioFrame = {
     frequency: new Float32Array(64),
@@ -55,11 +50,26 @@ export class AudioEngine extends EventTarget {
   private mic: MicInput | null = null;
   private worker: Worker | null = null;
   private bytes = new Uint8Array(1024);
-  private candidateTrack: number | null = null;
-  private hits = 0;
-  private misses = 0;
-  /** performance.now() (ms) at which `current.position` was last set, for extrapolating `frame.time`. */
-  private positionAnchorMs = 0;
+  /**
+   * All of the hold/drop/deck-speed logic. Lives in its own module because
+   * nothing in this class can be unit-tested (Worker + import.meta).
+   */
+  private readonly lock = new TrackLock();
+
+  /**
+   * Measured playback speed of the deck — 1.03 means the record is running 3%
+   * fast. Turntables drift, and about 1% is enough to break matching outright,
+   * so the matcher refines this after every lock and then tracks it from the
+   * position stream rather than trusting the acquisition grid.
+   */
+  get playbackRatio(): number {
+    return this.lock.speed;
+  }
+
+  /** True while the visuals are being held open on extrapolation alone. */
+  get coasting(): boolean {
+    return this.lock.coasting;
+  }
 
   /** Fetch + parse the fingerprint DB and spin up the worker. */
   private async loadWorker(): Promise<Worker> {
@@ -116,10 +126,8 @@ export class AudioEngine extends EventTarget {
     this.worker?.terminate();
     this.worker = null;
     this.current = null;
-    this.candidateTrack = null;
     this.lastCycle = null;
-    this.playbackRatio = 1;
-    this.hits = 0; this.misses = 0;
+    this.lock.reset();
     this.setState('off');
   }
 
@@ -129,10 +137,10 @@ export class AudioEngine extends EventTarget {
     const f = this.frame;
     f.matched = this.state === 'matched';
     if (f.matched && this.current) {
-      // Scale by the playback ratio: on a deck running fast, the track's own
-      // clock advances faster than wall time between cycle re-anchors.
-      f.time = this.current.position
-        + ((performance.now() - this.positionAnchorMs) / 1000) * this.playbackRatio;
+      // Extrapolate at the deck's measured speed: on a fast deck the track's
+      // own clock advances faster than wall time between cycle re-anchors, and
+      // while coasting through missed cycles this is the only clock there is.
+      f.time = this.lock.predict(performance.now() / 1000);
     }
     if (!mic) {
       f.frequency.fill(0);
@@ -162,51 +170,52 @@ export class AudioEngine extends EventTarget {
   }
 
   private onCycle(c: CycleMessage) {
+    const update = this.lock.observe({
+      now: performance.now() / 1000,
+      trackIndex: c.top?.trackIndex ?? null,
+      votes: c.top?.votes ?? 0,
+      runnerUpVotes: c.runnerUpVotes,
+      position: c.positionSeconds,
+      ratio: c.ratio,
+      level: this.inputLevel,
+    });
+
     this.lastCycle = {
       votes: c.top?.votes ?? 0,
       runnerUpVotes: c.runnerUpVotes,
       windowSeconds: c.windowSeconds,
       ratio: c.ratio,
+      speedMode: c.speedMode,
+      misses: this.lock.misses,
     };
-    const hit =
-      c.top !== null &&
-      c.top.votes >= MIN_VOTES &&
-      c.top.votes >= c.runnerUpVotes * MIN_RATIO;
 
-    if (hit) {
-      const t = c.top!.trackIndex;
-      this.misses = 0;
-      this.hits = t === this.candidateTrack ? this.hits + 1 : 1;
-      this.candidateTrack = t;
-      if (this.hits >= CONFIRM_CYCLES && this.current?.trackId !== trackIdOf(t)) {
-        this.current = {
-          trackId: trackIdOf(t),
-          position: c.positionSeconds ?? 0,
-          votes: c.top!.votes,
-        };
-        this.positionAnchorMs = performance.now();
-        // Stop searching speeds: every later cycle costs one fingerprint
-        // instead of RATIOS_PER_CYCLE of them.
-        this.playbackRatio = c.ratio;
-        this.worker?.postMessage({ type: 'lockSpeed', ratio: c.ratio });
-        this.setState('matched');
-        this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: this.current }));
-      } else if (this.current?.trackId === trackIdOf(t)) {
-        this.current.position = c.positionSeconds ?? this.current.position;
-        this.current.votes = c.top!.votes;
-        this.positionAnchorMs = performance.now();
-      }
-    } else {
-      this.hits = 0;
-      this.misses++;
-      if (this.current && this.misses >= DROP_CYCLES) {
-        this.current = null;
-        this.candidateTrack = null;
-        this.playbackRatio = 1;
-        this.worker?.postMessage({ type: 'unlockSpeed' });
-        this.setState('listening');
-        this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: null }));
-      }
+    if (update.speed) {
+      this.worker?.postMessage(
+        update.speed.kind === 'unlock'
+          ? { type: 'unlockSpeed' }
+          : { type: 'lockSpeed', ratio: update.speed.ratio, refine: update.speed.refine },
+      );
+    }
+
+    // A held cycle re-anchors the track we're already showing; only 'confirm'
+    // and 'drop' are visible to listeners.
+    if (update.held && this.current && update.event !== 'confirm') {
+      this.current.position = this.lock.position;
+      this.current.votes = this.lock.votes;
+    }
+
+    if (update.event === 'confirm') {
+      this.current = {
+        trackId: trackIdOf(this.lock.trackIndex!),
+        position: this.lock.position,
+        votes: this.lock.votes,
+      };
+      this.setState('matched');
+      this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: this.current }));
+    } else if (update.event === 'drop') {
+      this.current = null;
+      this.setState('listening');
+      this.dispatchEvent(new CustomEvent<TrackMatch | null>('match', { detail: null }));
     }
   }
 
