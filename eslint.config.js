@@ -51,8 +51,10 @@ export default tseslint.config(
     },
   },
   {
-    // Colocated unit tests + Playwright smoke specs.
-    files: ['src/**/*.test.ts', 'tests/**/*.ts'],
+    // Colocated unit tests + Playwright smoke specs, plus the Canvas
+    // capture harness — Playwright drivers whose page.evaluate callbacks
+    // are browser code inside a node file.
+    files: ['src/**/*.test.ts', 'tests/**/*.ts', 'scripts/capture-canvas.mjs'],
     languageOptions: {
       globals: { ...globals.node, ...globals.browser },
     },
