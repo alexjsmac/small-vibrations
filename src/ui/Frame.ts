@@ -69,7 +69,7 @@ const NOTES: Record<string, string> = {
  *  anyone who declined the mic — in browse mode it describes something that
  *  isn't happening. See `albumNoteFor`. */
 const ALBUM_NOTE_BASE =
-  'Written & performed by Sunntack. Every visualization is generated live and reseeds on each play. ' +
+  'Every visualization is generated live and reseeds on each play. ' +
   'Cyanotype plates after 19th-century field guides.';
 const ALBUM_NOTE_MIC =
   'This page listens through your microphone and matches its visuals to whatever track is spinning.';
