@@ -207,28 +207,39 @@ test('mobile: stage is full-bleed and never shrinks for the sheet overlay; liner
 async function waitForSheetSettled(page: Page) {
   await page.evaluate(() => new Promise<void>((resolve) => {
     const sheet = document.getElementById('sheet')!;
-    const done = () => { sheet.removeEventListener('transitionend', done); resolve(); };
-    sheet.addEventListener('transitionend', done);
-    setTimeout(done, 900); // already settled (no transition to hear) → fall through
+    const finish = () => { sheet.removeEventListener('transitionend', onEnd); resolve(); };
+    // transitionend BUBBLES, and the sheet has descendants that transition on
+    // their own clocks — .sheetgrip and .sheetpeek-label fade with the
+    // chrome-idle timer, .sheethairline animates width. Listening for any
+    // transitionend resolves on whichever of those lands first and measures
+    // the sheet mid-slide; whether one is in flight depends on the idle
+    // timer, which is what made it fail intermittently rather than always.
+    const onEnd = (e: TransitionEvent) => {
+      if (e.target === sheet && e.propertyName === 'transform') finish();
+    };
+    sheet.addEventListener('transitionend', onEnd);
+    setTimeout(finish, 900); // already settled (no transition to hear) → fall through
   }));
 }
 
-/** Scroll the sheet's body to its very end, so "can the user ever get here?"
- *  is a question about reachability rather than initial scroll position. */
-async function scrollSheetToEnd(page: Page) {
-  await page.evaluate(() => {
-    const body = document.getElementById('sheet-body')!;
-    body.scrollTop = body.scrollHeight;
-  });
-}
-
-/** True when the element is fully inside the viewport (not clipped off the
- *  bottom edge, which is how every sheet bug in this file presented). */
-async function isFullyOnScreen(page: Page, selector: string) {
-  const box = await page.locator(selector).boundingBox();
-  if (!box) return false;
+/**
+ * Can the user actually get to this block — is there *some* scroll position
+ * that puts it fully on screen? That is the property every sheet bug here
+ * violated: the block existed and was `display: block`, but no amount of
+ * scrolling could bring it inside the viewport.
+ *
+ * Scroll the element into view rather than scrolling the body to its end.
+ * Scrolling to the end only lands a mid-list block on screen if the content
+ * below it happens to be shorter than the visible strip — true locally, false
+ * under CI's font metrics, and never the thing being tested.
+ */
+async function isReachableInSheet(page: Page, selector: string) {
+  const el = page.locator(selector);
+  await el.scrollIntoViewIfNeeded();
+  const box = await el.boundingBox();
+  if (!box || box.height === 0) return false;
   const vh = page.viewportSize()!.height;
-  return box.y >= 0 && box.y + box.height <= vh && box.height > 0;
+  return box.y >= 0 && box.y + box.height <= vh;
 }
 
 test('mobile sheet: a tap cycles peek → half → full, and every block is reachable without dragging', async ({ page }) => {
@@ -266,15 +277,14 @@ test('mobile sheet: a tap cycles peek → half → full, and every block is reac
   });
   expect(halfOverflow, 'sheet body must scroll at half, not clip').toBeGreaterThan(0);
 
-  await scrollSheetToEnd(page);
-  expect(await isFullyOnScreen(page, '.sheet-credits .credits'), 'credits reachable at half').toBe(true);
-  expect(await isFullyOnScreen(page, '.sheet .railctls'), 'controls reachable at half').toBe(true);
+  expect(await isReachableInSheet(page, '.sheet-credits .credits'), 'credits reachable at half').toBe(true);
+  expect(await isReachableInSheet(page, '.sheet .railctls'), 'controls reachable at half').toBe(true);
 
   await peek.click();
   await expect(app).toHaveAttribute('data-sheet', 'full');
   await waitForSheetSettled(page);
   await expect(page.locator('#sheet-tracklist')).toBeVisible();
-  expect(await isFullyOnScreen(page, '#sheet-tracklist .trow >> nth=0'), 'tracklist rows reachable at full').toBe(true);
+  expect(await isReachableInSheet(page, '#sheet-tracklist .trow >> nth=0'), 'tracklist rows reachable at full').toBe(true);
 
   await peek.click();
   await expect(app).toHaveAttribute('data-sheet', 'peek');
