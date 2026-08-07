@@ -78,6 +78,22 @@ const ALBUM_NOTE_MIC =
 const albumNoteFor = (state: VisualState) =>
   state === 'browse' ? ALBUM_NOTE_BASE : `${ALBUM_NOTE_BASE} ${ALBUM_NOTE_MIC}`;
 
+/** Credits, taken from the printed sleeve's back panel — the record is the
+ *  source of truth for how collaborators are named, so this wording tracks it
+ *  rather than being re-edited here. `SUPPORT` stands in for the London Arts
+ *  Council / City of London logos on the jacket (the site has no logo assets,
+ *  and the acknowledgement is the part that matters). */
+const CREDITS: readonly string[] = [
+  'All music written and recorded by Alex MacLean',
+  'Mixed by Matt Thibideau',
+  'Mastered by Jon Tornblom at Transparent Mastering',
+  'Vinyl cut at Precision Pressing',
+];
+const THANKS =
+  'Special thanks to Elizabeth for listening to every version of every track ' +
+  'and the bugs that inspired this project.';
+const SUPPORT = 'Supported by the London Arts Council and the City of London.';
+
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const fmtDur = (sec: number) => {
   const m = Math.floor(sec / 60);
@@ -94,6 +110,16 @@ function rowsFor(side: 'A' | 'B'): string {
       `<span class="ttitle">${esc(t.title)}</span><span class="tdur">${fmtDur(t.duration)}</span></div>`
     : ''
   )).join('');
+}
+
+/** Credits block — identical markup in the rail and the sheet. */
+function creditsBlock(): string {
+  return `
+    <div class="rule"></div>
+    <div class="eyebrow liner-label">Credits</div>
+    <div class="credits">${CREDITS.map((l) => `<div>${esc(l)}</div>`).join('')}</div>
+    <div class="credits-note">${esc(THANKS)}</div>
+    <div class="credits-note">${esc(SUPPORT)}</div>`;
 }
 
 /** The control cluster (rail + sheet share it). Buttons show per data-mode via CSS. */
@@ -143,6 +169,8 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="rule"></div>
         <div class="eyebrow liner-label">Liner Notes — <span id="liner-label">Small Vibrations</span></div>
         <div class="liner-text" id="liner-text">${esc(albumNoteFor('choose'))}</div>
+
+        ${creditsBlock()}
 
         <div class="rail-spacer"></div>
         ${controls('stage')}
@@ -221,6 +249,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
           <div class="rule"></div>
           <div class="eyebrow liner-label">${ALBUM.catalog} · Album Note</div>
           <div class="liner-text" id="sheet-album-note-text">${esc(albumNoteFor('choose'))}</div>
+          ${creditsBlock()}
         </div>
 
         ${controls('stage')}

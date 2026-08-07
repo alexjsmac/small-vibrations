@@ -114,7 +114,16 @@ html, body {
   padding: 44px 40px 40px;
   display: flex; flex-direction: column;
   transition: opacity 0.3s ease;
+  /* The column is a fixed height (inset: 0), and the credits block pushed the
+     total past it on short windows — which silently clipped the controls off
+     the bottom rather than reflowing. */
+  overflow-y: auto; overscroll-behavior: contain;
+  /* A default scrollbar reads as a bug against this chrome, and it steals
+     width from the 392px column (it re-wrapped the liner label). Scrolling
+     still works — it's only ever needed on short windows. */
+  scrollbar-width: none;
 }
+.railbody::-webkit-scrollbar { display: none; }
 .rail.collapsed .railbody { opacity: 0; pointer-events: none; }
 
 .rail-title { font-size: 40px; margin-top: 12px; }
@@ -140,6 +149,16 @@ html, body {
 .liner-text {
   font: 400 11px/1.85 var(--mono); letter-spacing: 0.03em;
   color: rgba(236, 228, 207, 0.5);
+}
+
+/* credits — mirrors the sleeve's back panel (rail + sheet share the markup) */
+.credits {
+  font: 400 10px/1.7 var(--mono); letter-spacing: 0.03em;
+  color: rgba(236, 228, 207, 0.5);
+}
+.credits-note {
+  font: 400 10px/1.7 var(--mono); letter-spacing: 0.03em;
+  color: rgba(236, 228, 207, 0.34); margin-top: 10px;
 }
 
 /* rail now-playing (matched) */
