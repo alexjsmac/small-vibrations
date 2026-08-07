@@ -185,10 +185,27 @@ function applySheetTransform(visiblePx: number, dragging: boolean) {
   refs.sheet.style.transform = `translateY(${Math.max(0, total - visiblePx)}px)`;
 }
 
+/**
+ * Cap the scrolling body to the part of the sheet that is actually on screen.
+ *
+ * The sheet's box is a fixed 85dvh and only its transform moves, so at `half`
+ * the lower ~40% of that box sits below the viewport. Without this cap the
+ * body's content fits its own 85dvh-tall box, never overflows, and therefore
+ * never scrolls — everything past the screen edge is simply unreachable. That
+ * is why the album note + credits were full-state-only: half had no way to
+ * reach them. At `full` the cap equals the body's natural height, so this is a
+ * no-op there.
+ */
+function syncSheetBodyHeight() {
+  const peekH = refs.sheetPeek.getBoundingClientRect().height;
+  refs.sheetBody.style.maxHeight = `${Math.max(0, snapVisiblePx(sheetSnap) - peekH)}px`;
+}
+
 /** Re-apply the currently-settled snap's position (e.g. after a resize) without treating it as a new interaction. */
 function reapplySheetSnap() {
   refs.root.dataset.sheet = sheetSnap;
   applySheetTransform(snapVisiblePx(sheetSnap), false);
+  syncSheetBodyHeight();
 }
 
 function setSheetSnap(snap: SheetSnap) {
@@ -288,8 +305,12 @@ refs.micStartBtn.addEventListener('click', async () => {
   setVisual('listening');
   await engine.start();
   if (engine.state === 'error') {
-    // No mic — don't strand them on a scene with no controls.
+    // No mic — don't strand them on a scene with no controls. Re-assert the
+    // error status *after* enterBrowse (which resets it to 'off'), so the chip
+    // explains why they landed in browse rather than listening; this is
+    // otherwise the one failure path with no user-visible copy at all.
     enterBrowse();
+    setMicStatus('error');
     return;
   }
   host.setAudioSource(() => {
@@ -301,10 +322,19 @@ refs.micStartBtn.addEventListener('click', async () => {
 refs.micSkipBtn.addEventListener('click', () => enterBrowse());
 
 // --- now-playing progress (drives the collapsed spine bar + clock) ---
+//
+// Matched only. In browse mode nothing is playing, so counting up from the
+// moment a track was selected would assert a playback position that doesn't
+// exist — the clock is hidden there (styles.css) and the bar/hairline are
+// zeroed here so neither carries a stale value back into the next match.
 
 const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 setInterval(() => {
-  if (visual !== 'matched' && visual !== 'browse') return;
+  if (visual !== 'matched') {
+    refs.progressBar.style.height = '0%';
+    refs.sheetHairline.style.width = '0%';
+    return;
+  }
   const dur = TRACKS[idx].duration;
   const el = Math.min(dur, (performance.now() - trackStart) / 1000);
   const pct = dur ? Math.round((el / dur) * 100) : 0;

@@ -4,7 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#08202e" />
-    <title>Sunntack — Small Vibrations</title>
+    <title>Small Vibrations — Sunntack</title>
+    <meta
+      name="description"
+      content="Audiovisual companion for the Sunntack Small Vibrations LP — a mic-matched, per-track visual album."
+    />
+
+    <!-- Share cards. og:url and og:image must be absolute, so they point at
+         production; PR previews inherit the production card, which is
+         harmless (nothing here affects how the app loads). This is the one
+         place a full URL is hardcoded — see CLAUDE.md on the base path. -->
+    <meta property="og:type" content="music.album" />
+    <meta property="og:site_name" content="Sunntack" />
+    <meta property="og:title" content="Small Vibrations — Sunntack" />
+    <meta
+      property="og:description"
+      content="Audiovisual companion for the Sunntack Small Vibrations LP — a mic-matched, per-track visual album."
+    />
+    <meta property="og:url" content="https://www.alexmaclean.ca/small-vibrations/" />
+    <meta property="og:image" content="https://www.alexmaclean.ca/small-vibrations/og-cover.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="1230" />
+    <meta
+      property="og:image:alt"
+      content="Small Vibrations album cover — a cyanotype plate of insect remains on a specimen grid."
+    />
+    <!-- `summary`, not `summary_large_image`: the cover is square, and a wide
+         card centre-crops to 1.91:1, which would cut the title off the top and
+         the specimen field off the bottom. A square thumbnail shows it whole. -->
+    <meta name="twitter:card" content="summary" />
 
     <!-- PWA / Add to Home Screen — true iOS fullscreen (no Fullscreen API on
          iPhone Safari otherwise). start_url is relative ("."), and this link

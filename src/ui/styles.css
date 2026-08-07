@@ -114,7 +114,16 @@ html, body {
   padding: 44px 40px 40px;
   display: flex; flex-direction: column;
   transition: opacity 0.3s ease;
+  /* The column is a fixed height (inset: 0), and the credits block pushed the
+     total past it on short windows — which silently clipped the controls off
+     the bottom rather than reflowing. */
+  overflow-y: auto; overscroll-behavior: contain;
+  /* A default scrollbar reads as a bug against this chrome, and it steals
+     width from the 392px column (it re-wrapped the liner label). Scrolling
+     still works — it's only ever needed on short windows. */
+  scrollbar-width: none;
 }
+.railbody::-webkit-scrollbar { display: none; }
 .rail.collapsed .railbody { opacity: 0; pointer-events: none; }
 
 .rail-title { font-size: 40px; margin-top: 12px; }
@@ -140,6 +149,16 @@ html, body {
 .liner-text {
   font: 400 11px/1.85 var(--mono); letter-spacing: 0.03em;
   color: rgba(236, 228, 207, 0.5);
+}
+
+/* credits — mirrors the sleeve's back panel (rail + sheet share the markup) */
+.credits {
+  font: 400 10px/1.7 var(--mono); letter-spacing: 0.03em;
+  color: rgba(236, 228, 207, 0.5);
+}
+.credits-note {
+  font: 400 10px/1.7 var(--mono); letter-spacing: 0.03em;
+  color: rgba(236, 228, 207, 0.34); margin-top: 10px;
 }
 
 /* rail now-playing (matched) */
@@ -193,9 +212,10 @@ html, body {
   writing-mode: vertical-rl; transform: rotate(180deg);
   font: 400 9px var(--mono); letter-spacing: 0.2em; color: rgba(236, 228, 207, 0.35);
 }
+/* Matched only — in browse nothing is actually playing, so there is no
+   position to report. See the progress interval in main.ts. */
 .progress-plate { display: none; flex-direction: column; align-items: center; gap: 12px; }
-#app[data-mode="matched"] .progress-plate,
-#app[data-mode="browse"]  .progress-plate { display: flex; }
+#app[data-mode="matched"] .progress-plate { display: flex; }
 .progress-track {
   width: 3px; height: 118px; border-radius: 2px;
   background: rgba(236, 228, 207, 0.16); position: relative; overflow: hidden;
@@ -250,7 +270,7 @@ html, body {
 .now-plate { position: absolute; bottom: 48px; left: 48px; z-index: 5; display: none; pointer-events: none; }
 #app[data-mode="matched"] .now-plate,
 #app[data-mode="browse"]  .now-plate { display: block; }
-.plate-title { font-size: 50px; margin-top: 12px; }
+.plate-title { font-size: 50px; }
 .plate-meta {
   font: 400 11px var(--mono); letter-spacing: 0.16em;
   color: rgba(236, 228, 207, 0.5); margin-top: 12px;
@@ -296,6 +316,10 @@ html, body {
   margin-bottom: 32px; max-width: 42ch;
 }
 .choose-actions { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.choose-privacy {
+  font: 400 10px/1.4 var(--mono); letter-spacing: 0.12em; text-transform: uppercase;
+  color: rgba(236, 228, 207, 0.42); max-width: 46ch; margin-top: -4px;
+}
 .pill {
   appearance: none; background: var(--cream); color: var(--ink); border: none;
   border-radius: 999px; padding: 17px 36px;
@@ -373,21 +397,45 @@ html, body {
 .sheet-tracklist { display: none; }
 #app[data-sheet="full"] .sheet-tracklist { display: block; }
 
-/* now-playing/liner block — shown in BOTH half and full, and (per showTrack
-   in Frame.ts) in both browse and matched. This is the liner-notes fix:
-   it used to be a matched-only block. */
+/* now-playing/liner block — shown in BOTH half and full, and in both browse
+   and matched. This is the liner-notes fix: it used to be a matched-only
+   block.
+
+   The mode gate has to match `showTrack` in Frame.ts, which fills this block:
+   with no track chosen, showTrack is false and the liner slot falls back to
+   the album note — which would then print immediately above the dedicated
+   album-note block, the same text twice. It also showed a now-playing title
+   for a track nobody had selected. */
 .sheet-nowplaying { display: none; }
 #app[data-sheet="half"] .sheet-nowplaying,
 #app[data-sheet="full"]  .sheet-nowplaying { display: block; }
-.sheet-now-title { font-size: 26px; margin-top: 8px; margin-bottom: 4px; }
+#app[data-mode="choose"]    .sheet-nowplaying,
+#app[data-mode="listening"] .sheet-nowplaying { display: none; }
+.sheet-now-title { font-size: 26px; margin-bottom: 4px; }
 .sheet-now-meta {
   font: 400 11px var(--mono); letter-spacing: 0.14em;
   color: rgba(236, 228, 207, 0.5); margin-bottom: 16px;
 }
 
-/* fixed album colophon — full-state only, below the now-playing/liner block */
+/* Album note — the record's own liner note, and the inverse of the block
+   above: it shows only while NO track is on display. Once a track is showing,
+   its note occupies the liner slot and the album note would be a second,
+   competing blurb directly beneath it. Mirrors the desktop rail, where the
+   one liner slot holds the album note until a track replaces it. */
 .sheet-album-note { display: none; }
+#app[data-sheet="half"] .sheet-album-note,
 #app[data-sheet="full"] .sheet-album-note { display: block; }
+#app[data-mode="browse"]  .sheet-album-note,
+#app[data-mode="matched"] .sheet-album-note { display: none; }
+
+/* Credits — a separate block from the album note precisely so they survive
+   in every mode. Shown from half up: the rail is display:none on mobile, so
+   the sheet is the only route to them, and full is reachable only by dragging
+   (a tap toggles peek<->half, see main.ts), which made full-state-only
+   credits unreachable for anyone who taps rather than drags. */
+.sheet-credits { display: none; }
+#app[data-sheet="half"] .sheet-credits,
+#app[data-sheet="full"] .sheet-credits { display: block; }
 
 .sheet .railctls { display: none; gap: 8px; margin-top: 18px; }
 #app[data-sheet="half"] .sheet .railctls,

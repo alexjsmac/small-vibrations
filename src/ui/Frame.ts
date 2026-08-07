@@ -28,7 +28,6 @@ export interface FrameRefs {
   micLabel: HTMLSpanElement;
 
   // museum plate (bottom-left of the stage)
-  plateEyebrow: HTMLDivElement;
   plateTitle: HTMLDivElement;
   plateMeta: HTMLDivElement;
 
@@ -49,7 +48,6 @@ export interface FrameRefs {
   sheetHairline: HTMLDivElement;
   sheetBody: HTMLDivElement;
   /** now-playing/liner block — shown in both half and full (browse AND matched, see showTrack). */
-  sheetPlateEyebrow: HTMLDivElement;
   sheetNowTitle: HTMLDivElement;
   sheetNowMeta: HTMLDivElement;
   sheetLinerLabel: HTMLSpanElement;
@@ -58,20 +56,40 @@ export interface FrameRefs {
 
 /** Liner blurbs + display seeds live only in the chrome (tracks.ts stays untouched). */
 const NOTES: Record<string, string> = {
-  a1: 'The album opens at ground level — a thousand small legs finding the same tempo before anyone gives the order.',
-  a2: 'Domestic ritual rendered as architecture. Comfort as a load-bearing wall, humming just below hearing.',
-  a3: 'One tile tips and the whole ecosystem answers in sequence — cause and consequence collapsing into rhythm.',
-  b1: 'Rot as abundance. The gooey underside of a thriving thing, magnified until it turns beautiful.',
-  b2: 'Naming the last of something. A catalogue closing in on itself, specimen by specimen.',
-  b3: 'The record exhales. Clean, sterile, and — at last — completely still.',
+  a1: 'A thousand small legs find the same tempo before anyone gives the order. Then the march thins back to specks.',
+  a2: 'Homemaking rendered as architecture. Two kinds of home grown into one load-bearing wall, humming just below hearing.',
+  a3: 'One tile tips and the whole ecosystem answers in sequence. One link breaks and the whole web goes dark.',
+  b1: 'One spore becomes a whole teeming world — blooms, rot, rebirth — then exhales back to a spore.',
+  b2: 'Naming the last of something. Each specimen’s own language overwritten into one machine grammar — and half the labels are wrong.',
+  b3: 'The record exhales, and doesn’t breathe in again. Everything it grew, scrubbed to a clinical blank.',
 };
-const SEEDS: Record<string, string> = {
-  a1: '0x8F2C', a2: '0x21B7', a3: '0x5D04', b1: '0x9A11', b2: '0x3E88', b3: '0xB742',
-};
+/** The album's own note: what the record is about, matching what the per-track
+ *  notes do. How the *page* works isn't stated here — the start overlay and the
+ *  listening state both explain the mic, and provenance lives in `COLOPHON`. */
 const ALBUM_NOTE =
-  'Written & performed by Sunntack. Every visualization is generated live and reseeds on each play. ' +
-  'Cyanotype plates after 19th-century field guides. This page listens through your microphone and ' +
-  'matches its visuals to whatever track is spinning.';
+  'Six studies in small life: how it finds order, builds, and thrives — ' +
+  'and how it is catalogued and scrubbed away.';
+
+/** Credits, taken from the printed sleeve's back panel — the record is the
+ *  source of truth for how collaborators are named, so this wording tracks it
+ *  rather than being re-edited here. `SUPPORT` stands in for the London Arts
+ *  Council / City of London logos on the jacket (the site has no logo assets,
+ *  and the acknowledgement is the part that matters). */
+const CREDITS: readonly string[] = [
+  'All music written and recorded by Alex MacLean',
+  'Mixed by Matt Thibideau',
+  'Mastered by Jon Tornblom at Transparent Mastering',
+  'Vinyl cut at Precision Pressing',
+];
+const THANKS =
+  'Special thanks to Elizabeth for listening to every version of every track ' +
+  'and the bugs that inspired this project.';
+const SUPPORT = 'Supported by the London Arts Council and the City of London.';
+/** Provenance of the visuals — moved out of the album note, which describes the
+ *  record rather than this page. */
+const COLOPHON =
+  'Every visualization is generated live and reseeds on each play. ' +
+  'Cyanotype plates after 19th-century field guides.';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const fmtDur = (sec: number) => {
@@ -80,8 +98,7 @@ const fmtDur = (sec: number) => {
   return `${m}:${s < 10 ? '0' + s : s}`;
 };
 const sideId = (t: Track) => `${t.side}${t.n}`;
-const plateMeta = (t: Track) =>
-  `${fmtDur(t.duration)}  ·  SIDE ${t.side}  ·  SEED ${SEEDS[t.id] ?? '0x0000'}`;
+const plateMeta = (t: Track) => `${sideId(t)} · ${fmtDur(t.duration)}`;
 
 /** Track rows for one side, as an HTML string. `idx` is the global TRACKS index. */
 function rowsFor(side: 'A' | 'B'): string {
@@ -92,6 +109,17 @@ function rowsFor(side: 'A' | 'B'): string {
   )).join('');
 }
 
+/** Credits block — identical markup in the rail and the sheet. */
+function creditsBlock(): string {
+  return `
+    <div class="rule"></div>
+    <div class="eyebrow liner-label">Credits</div>
+    <div class="credits">${CREDITS.map((l) => `<div>${esc(l)}</div>`).join('')}</div>
+    <div class="credits-note">${esc(COLOPHON)}</div>
+    <div class="credits-note">${esc(THANKS)}</div>
+    <div class="credits-note">${esc(SUPPORT)}</div>`;
+}
+
 /** The control cluster (rail + sheet share it). Buttons show per data-mode via CSS. */
 function controls(fsTarget: string): string {
   return `
@@ -99,10 +127,10 @@ function controls(fsTarget: string): string {
       <button class="btn ctl js-prev"      data-m="browse">‹ Prev</button>
       <button class="btn ctl js-next"      data-m="browse">Next ›</button>
       <button class="btn ctl js-quality"   data-m="browse matched">Quality: Full</button>
-      <button class="btn ctl js-fullscreen" data-m="browse matched" data-fs="${fsTarget}">⤢ Full</button>
+      <button class="btn ctl js-fullscreen" data-m="browse matched" data-fs="${fsTarget}">⤢ Fullscreen</button>
       <button class="btn ctl js-browse"    data-m="listening">Browse instead</button>
       <button class="btn ctl ghost js-startover" data-m="browse">← Start over</button>
-      <button class="btn ctl ghost js-stop" data-m="matched listening">■ Stop</button>
+      <button class="btn ctl ghost js-stop" data-m="matched listening">■ Stop listening</button>
     </div>`;
 }
 
@@ -115,7 +143,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <button class="railtoggle rail-fold js-railtoggle" title="Fold the sleeve">‹‹</button>
         <div class="eyebrow wide">${ALBUM.artist}</div>
         <div class="disp rail-title">Small<br>Vibrations</div>
-        <div class="rail-cat">${ALBUM.catalog} · 2×LP · CYANOTYPE EDITION</div>
+        <div class="rail-cat">${ALBUM.catalog} · LP · CYANOTYPE EDITION</div>
         <div class="rule"></div>
 
         <div class="rail-tracklist" id="rail-tracklist">
@@ -139,6 +167,8 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="rule"></div>
         <div class="eyebrow liner-label">Liner Notes — <span id="liner-label">Small Vibrations</span></div>
         <div class="liner-text" id="liner-text">${esc(ALBUM_NOTE)}</div>
+
+        ${creditsBlock()}
 
         <div class="rail-spacer"></div>
         ${controls('stage')}
@@ -168,7 +198,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
       </div>
 
       <div class="now-plate" id="now-plate">
-        <div class="eyebrow" id="plate-eyebrow">Plate A1 · Specimen 01</div>
         <div class="disp plate-title" id="now-title">—</div>
         <div class="plate-meta" id="plate-meta"></div>
       </div>
@@ -178,7 +207,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
           <span></span><span></span><span></span>
         </div>
         <div class="listening-head">Listening for Small Vibrations</div>
-        <div class="listening-sub">Play the record — visuals appear the moment a track is recognised.</div>
+        <div class="listening-sub">Play the record — visuals appear the moment a track is recognized.</div>
       </div>
 
       <div class="mic-overlay" id="mic-overlay">
@@ -187,6 +216,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="choose-sub">The record decides the visuals — the page matches each track by ear.</div>
         <div class="choose-actions">
           <button id="mic-start" class="pill">◉ Listen with microphone</button>
+          <div class="choose-privacy">Audio is matched on your device and never leaves it.</div>
           <button id="mic-skip" class="link-btn">Browse without microphone</button>
         </div>
       </div>
@@ -207,7 +237,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         </div>
 
         <div class="sheet-nowplaying" id="sheet-nowplaying">
-          <div class="eyebrow soft" id="sheet-plate-eyebrow">Plate A1 · Specimen 01</div>
           <div class="disp sheet-now-title" id="sheet-now-title">—</div>
           <div class="sheet-now-meta" id="sheet-now-meta"></div>
           <div class="eyebrow liner-label">Liner Notes — <span id="sheet-liner-label">Small Vibrations</span></div>
@@ -217,8 +246,10 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="sheet-album-note" id="sheet-album-note">
           <div class="rule"></div>
           <div class="eyebrow liner-label">${ALBUM.catalog} · Album Note</div>
-          <div class="liner-text">${esc(ALBUM_NOTE)}</div>
+          <div class="liner-text" id="sheet-album-note-text">${esc(ALBUM_NOTE)}</div>
         </div>
+
+        <div class="sheet-credits">${creditsBlock()}</div>
 
         ${controls('stage')}
       </div>
@@ -240,7 +271,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     listeningMsg:  q<HTMLDivElement>('#listening-msg'),
     micDot:        q<HTMLSpanElement>('#mic-dot'),
     micLabel:      q<HTMLSpanElement>('#mic-label'),
-    plateEyebrow:  q<HTMLDivElement>('#plate-eyebrow'),
     plateTitle:    q<HTMLDivElement>('#now-title'),
     plateMeta:     q<HTMLDivElement>('#plate-meta'),
     railNowTitle:  q<HTMLDivElement>('#rail-now-title'),
@@ -252,7 +282,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     sheetPeekLabel:    q<HTMLSpanElement>('#sheet-peek-label'),
     sheetHairline:     q<HTMLDivElement>('#sheet-hairline'),
     sheetBody:         q<HTMLDivElement>('#sheet-body'),
-    sheetPlateEyebrow: q<HTMLDivElement>('#sheet-plate-eyebrow'),
     sheetNowTitle:     q<HTMLDivElement>('#sheet-now-title'),
     sheetNowMeta:      q<HTMLDivElement>('#sheet-now-meta'),
     sheetLinerLabel:   q<HTMLSpanElement>('#sheet-liner-label'),
@@ -272,27 +301,24 @@ export function renderChrome(refs: FrameRefs, state: VisualState, idx: number) {
   const showTrack = state === 'matched' || state === 'browse';
 
   // museum plate + rail/sheet now-playing
-  const eyebrow = `Plate ${sideId(t)} · Specimen 0${idx + 1}`;
-  refs.plateEyebrow.textContent = eyebrow;
   refs.plateTitle.textContent = t.title;
   refs.plateMeta.textContent = plateMeta(t);
   refs.railNowTitle.textContent = t.title;
   refs.railNowMeta.textContent = plateMeta(t);
-  refs.sheetPlateEyebrow.textContent = eyebrow;
   refs.sheetNowTitle.textContent = t.title;
   refs.sheetNowMeta.textContent = plateMeta(t);
 
   // liner notes — showTrack (matched||browse) gates the track-specific note,
   // exactly like the desktop rail; the sheet mirrors this on mobile in BOTH
   // browse and matched (the liner-notes fix — it used to be matched-only).
-  refs.linerLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : ALBUM.title;
+  refs.linerLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : ALBUM.title;
   const liner = showTrack ? (NOTES[t.id] ?? ALBUM_NOTE) : ALBUM_NOTE;
   refs.linerText.textContent = liner;
-  refs.sheetLinerLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : ALBUM.title;
+  refs.sheetLinerLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : ALBUM.title;
   refs.sheetLiner.textContent = liner;
 
   // peek bar label — one line, identity at a glance even collapsed
-  refs.sheetPeekLabel.textContent = showTrack ? `Plate ${sideId(t)} · ${t.title}` : 'Inner Sleeve';
+  refs.sheetPeekLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : 'Inner Sleeve';
 
   // active track row (only highlighted while browsing)
   refs.root.querySelectorAll<HTMLElement>('.trow[data-idx]').forEach((row) => {
