@@ -397,12 +397,20 @@ html, body {
 .sheet-tracklist { display: none; }
 #app[data-sheet="full"] .sheet-tracklist { display: block; }
 
-/* now-playing/liner block — shown in BOTH half and full, and (per showTrack
-   in Frame.ts) in both browse and matched. This is the liner-notes fix:
-   it used to be a matched-only block. */
+/* now-playing/liner block — shown in BOTH half and full, and in both browse
+   and matched. This is the liner-notes fix: it used to be a matched-only
+   block.
+
+   The mode gate has to match `showTrack` in Frame.ts, which fills this block:
+   with no track chosen, showTrack is false and the liner slot falls back to
+   the album note — which would then print immediately above the dedicated
+   album-note block, the same text twice. It also showed a now-playing title
+   for a track nobody had selected. */
 .sheet-nowplaying { display: none; }
 #app[data-sheet="half"] .sheet-nowplaying,
 #app[data-sheet="full"]  .sheet-nowplaying { display: block; }
+#app[data-mode="choose"]    .sheet-nowplaying,
+#app[data-mode="listening"] .sheet-nowplaying { display: none; }
 .sheet-now-title { font-size: 26px; margin-bottom: 4px; }
 .sheet-now-meta {
   font: 400 11px var(--mono); letter-spacing: 0.14em;
