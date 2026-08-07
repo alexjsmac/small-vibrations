@@ -1,6 +1,6 @@
 /**
  * "Sterile Breath" — the album closer, and the record's undoing: the last
- * lush biomass this album has spent nine tracks growing is progressively
+ * lush biomass this album has spent five tracks growing is progressively
  * scrubbed away by an advancing sterilization front, ending in a clinical
  * blank and true silence. A dark, hot-and-decayed ground of living clumps
  * fills the frame at full vibrancy; a scrub line sweeps across it toward a

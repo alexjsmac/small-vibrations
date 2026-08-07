@@ -52,31 +52,23 @@ export interface FrameRefs {
   sheetNowMeta: HTMLDivElement;
   sheetLinerLabel: HTMLSpanElement;
   sheetLiner: HTMLDivElement;
-  /** Album note in the sheet's full state — kept in sync with the rail's. */
-  sheetAlbumNote: HTMLDivElement;
 }
 
 /** Liner blurbs + display seeds live only in the chrome (tracks.ts stays untouched). */
 const NOTES: Record<string, string> = {
   a1: 'The album opens at ground level — a thousand small legs finding the same tempo before anyone gives the order.',
-  a2: 'Domestic ritual rendered as architecture. Comfort as a load-bearing wall, humming just below hearing.',
-  a3: 'One tile tips and the whole ecosystem answers in sequence — cause and consequence collapsing into rhythm.',
-  b1: 'Rot as abundance. The gooey underside of a thriving thing, magnified until it turns beautiful.',
-  b2: 'Naming the last of something. A catalogue closing in on itself, specimen by specimen.',
-  b3: 'The record exhales. Clean, sterile, and — at last — completely still.',
+  a2: 'Homemaking rendered as architecture. Two kinds of home grown into one load-bearing wall, humming just below hearing.',
+  a3: 'One tile tips and the whole ecosystem answers in sequence. One link breaks and the whole web goes dark.',
+  b1: 'One spore becomes a whole teeming world — blooms, rot, rebirth — then exhales back to a spore.',
+  b2: 'Naming the last of something. Each specimen’s own language overwritten into one machine grammar — and half the labels are wrong.',
+  b3: 'The record exhales, and doesn’t breathe in again. Everything it grew, scrubbed to a clinical blank.',
 };
-/** The album note, split so the microphone sentence can be withheld from
- *  anyone who declined the mic — in browse mode it describes something that
- *  isn't happening. See `albumNoteFor`. */
-const ALBUM_NOTE_BASE =
-  'Every visualization is generated live and reseeds on each play. ' +
-  'Cyanotype plates after 19th-century field guides.';
-const ALBUM_NOTE_MIC =
-  'This page listens through your microphone and matches its visuals to whatever track is spinning.';
-
-/** Browse mode = the listener declined the mic, so drop the mic sentence. */
-const albumNoteFor = (state: VisualState) =>
-  state === 'browse' ? ALBUM_NOTE_BASE : `${ALBUM_NOTE_BASE} ${ALBUM_NOTE_MIC}`;
+/** The album's own note: what the record is about, matching what the per-track
+ *  notes do. How the *page* works isn't stated here — the start overlay and the
+ *  listening state both explain the mic, and provenance lives in `COLOPHON`. */
+const ALBUM_NOTE =
+  'Six studies in small life: how it finds order, builds, and thrives — ' +
+  'and how it is catalogued and scrubbed away.';
 
 /** Credits, taken from the printed sleeve's back panel — the record is the
  *  source of truth for how collaborators are named, so this wording tracks it
@@ -93,6 +85,11 @@ const THANKS =
   'Special thanks to Elizabeth for listening to every version of every track ' +
   'and the bugs that inspired this project.';
 const SUPPORT = 'Supported by the London Arts Council and the City of London.';
+/** Provenance of the visuals — moved out of the album note, which describes the
+ *  record rather than this page. */
+const COLOPHON =
+  'Every visualization is generated live and reseeds on each play. ' +
+  'Cyanotype plates after 19th-century field guides.';
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const fmtDur = (sec: number) => {
@@ -118,6 +115,7 @@ function creditsBlock(): string {
     <div class="rule"></div>
     <div class="eyebrow liner-label">Credits</div>
     <div class="credits">${CREDITS.map((l) => `<div>${esc(l)}</div>`).join('')}</div>
+    <div class="credits-note">${esc(COLOPHON)}</div>
     <div class="credits-note">${esc(THANKS)}</div>
     <div class="credits-note">${esc(SUPPORT)}</div>`;
 }
@@ -168,7 +166,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
 
         <div class="rule"></div>
         <div class="eyebrow liner-label">Liner Notes — <span id="liner-label">Small Vibrations</span></div>
-        <div class="liner-text" id="liner-text">${esc(albumNoteFor('choose'))}</div>
+        <div class="liner-text" id="liner-text">${esc(ALBUM_NOTE)}</div>
 
         ${creditsBlock()}
 
@@ -248,7 +246,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="sheet-album-note" id="sheet-album-note">
           <div class="rule"></div>
           <div class="eyebrow liner-label">${ALBUM.catalog} · Album Note</div>
-          <div class="liner-text" id="sheet-album-note-text">${esc(albumNoteFor('choose'))}</div>
+          <div class="liner-text" id="sheet-album-note-text">${esc(ALBUM_NOTE)}</div>
           ${creditsBlock()}
         </div>
 
@@ -287,7 +285,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     sheetNowMeta:      q<HTMLDivElement>('#sheet-now-meta'),
     sheetLinerLabel:   q<HTMLSpanElement>('#sheet-liner-label'),
     sheetLiner:        q<HTMLDivElement>('#sheet-liner'),
-    sheetAlbumNote:    q<HTMLDivElement>('#sheet-album-note-text'),
   };
 }
 
@@ -313,15 +310,11 @@ export function renderChrome(refs: FrameRefs, state: VisualState, idx: number) {
   // liner notes — showTrack (matched||browse) gates the track-specific note,
   // exactly like the desktop rail; the sheet mirrors this on mobile in BOTH
   // browse and matched (the liner-notes fix — it used to be matched-only).
-  // The album note is state-dependent (see albumNoteFor), so it's recomputed
-  // here rather than baked into the initial markup.
-  const albumNote = albumNoteFor(state);
   refs.linerLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : ALBUM.title;
-  const liner = showTrack ? (NOTES[t.id] ?? albumNote) : albumNote;
+  const liner = showTrack ? (NOTES[t.id] ?? ALBUM_NOTE) : ALBUM_NOTE;
   refs.linerText.textContent = liner;
   refs.sheetLinerLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : ALBUM.title;
   refs.sheetLiner.textContent = liner;
-  refs.sheetAlbumNote.textContent = albumNote;
 
   // peek bar label — one line, identity at a glance even collapsed
   refs.sheetPeekLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : 'Inner Sleeve';
