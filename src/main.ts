@@ -237,8 +237,13 @@ function finishSheetDrag() {
   if (!sheetDragging) return;
   sheetDragging = false;
   if (!sheetMoved) {
-    // Tap: toggle peek↔half (a tap while full collapses it to peek).
-    setSheetSnap(sheetSnap === 'peek' ? 'half' : 'peek');
+    // Tap cycles peek → half → full → peek. Full is the only state carrying
+    // the tracklist, and it used to be drag-only — a tap just toggled
+    // peek↔half — which left the tracklist unreachable for anyone who taps
+    // rather than drags. On mobile the rail is display:none, so that list is
+    // the only one in the app. Dragging still lands on the nearest snap.
+    const NEXT_SNAP: Record<SheetSnap, SheetSnap> = { peek: 'half', half: 'full', full: 'peek' };
+    setSheetSnap(NEXT_SNAP[sheetSnap]);
     return;
   }
   let nearest: SheetSnap = 'peek', best = Infinity;

@@ -198,3 +198,124 @@ test('mobile: stage is full-bleed and never shrinks for the sheet overlay; liner
   const linerText = await page.locator('#sheet-liner').textContent();
   expect(linerText?.trim().length).toBeGreaterThan(0);
 });
+
+/**
+ * Wait for the sheet to finish sliding. `data-sheet` flips the instant the
+ * tap lands, but the transform takes 0.5s to settle — measuring geometry in
+ * between reports the sheet mid-flight and produces phantom failures.
+ */
+async function waitForSheetSettled(page: Page) {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const sheet = document.getElementById('sheet')!;
+    const done = () => { sheet.removeEventListener('transitionend', done); resolve(); };
+    sheet.addEventListener('transitionend', done);
+    setTimeout(done, 900); // already settled (no transition to hear) → fall through
+  }));
+}
+
+/** Scroll the sheet's body to its very end, so "can the user ever get here?"
+ *  is a question about reachability rather than initial scroll position. */
+async function scrollSheetToEnd(page: Page) {
+  await page.evaluate(() => {
+    const body = document.getElementById('sheet-body')!;
+    body.scrollTop = body.scrollHeight;
+  });
+}
+
+/** True when the element is fully inside the viewport (not clipped off the
+ *  bottom edge, which is how every sheet bug in this file presented). */
+async function isFullyOnScreen(page: Page, selector: string) {
+  const box = await page.locator(selector).boundingBox();
+  if (!box) return false;
+  const vh = page.viewportSize()!.height;
+  return box.y >= 0 && box.y + box.height <= vh && box.height > 0;
+}
+
+test('mobile sheet: a tap cycles peek → half → full, and every block is reachable without dragging', async ({ page }) => {
+  // Three shipped bugs live here, all invisible in the source and all only
+  // visible against a real viewport:
+  //   1. The credits sat in a full-state-only block while `full` was
+  //      reachable only by *dragging* — a tap toggled peek<->half — so
+  //      anyone who tapped never saw them.
+  //   2. The sheet's box is a fixed 85dvh and only its transform moves, so
+  //      at `half` its content fit its own box, never overflowed, and never
+  //      scrolled: everything past the screen edge was simply unreachable.
+  //   3. The tracklist is still full-only, which is *why* the tap has to
+  //      reach `full` — on mobile the rail is display:none, so that list is
+  //      the only one in the app.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('');
+  await page.click('#mic-skip'); // → browse, where the tracklist matters
+  await waitForRenderLoop(page);
+
+  const app = page.locator('#app');
+  const peek = page.locator('#sheet-peek');
+  await expect(app).toHaveAttribute('data-sheet', 'peek');
+
+  // (1)+(3): taps alone must walk the full cycle. toHaveAttribute retries,
+  // which absorbs the sheet's 0.5s settle without a fixed timeout.
+  await peek.click();
+  await expect(app).toHaveAttribute('data-sheet', 'half');
+  await waitForSheetSettled(page);
+
+  // (2): at half the body must actually overflow — that is the difference
+  // between "scrollable" and "clipped by the screen edge".
+  const halfOverflow = await page.evaluate(() => {
+    const body = document.getElementById('sheet-body')!;
+    return body.scrollHeight - body.clientHeight;
+  });
+  expect(halfOverflow, 'sheet body must scroll at half, not clip').toBeGreaterThan(0);
+
+  await scrollSheetToEnd(page);
+  expect(await isFullyOnScreen(page, '.sheet-credits .credits'), 'credits reachable at half').toBe(true);
+  expect(await isFullyOnScreen(page, '.sheet .railctls'), 'controls reachable at half').toBe(true);
+
+  await peek.click();
+  await expect(app).toHaveAttribute('data-sheet', 'full');
+  await waitForSheetSettled(page);
+  await expect(page.locator('#sheet-tracklist')).toBeVisible();
+  expect(await isFullyOnScreen(page, '#sheet-tracklist .trow >> nth=0'), 'tracklist rows reachable at full').toBe(true);
+
+  await peek.click();
+  await expect(app).toHaveAttribute('data-sheet', 'peek');
+});
+
+test('mobile sheet: the album note shows only with no track on display; credits persist in every mode', async ({ page }) => {
+  // The album note used to render underneath a track's own note (a second,
+  // competing blurb), and before that it printed *twice* — the now-playing
+  // block had no mode gate, so with no track chosen the liner slot fell back
+  // to the album note directly above the album-note block. The credits are a
+  // separate block precisely so gating the note never hides them again.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('');
+  await waitForRenderLoop(page);
+  await page.locator('#sheet-peek').click();
+  await expect(page.locator('#app')).toHaveAttribute('data-sheet', 'half');
+  await waitForSheetSettled(page);
+
+  // choose: album note present, no now-playing block, and exactly one copy
+  // of the album note on screen.
+  await expect(page.locator('#sheet-album-note')).toBeVisible();
+  await expect(page.locator('#sheet-nowplaying')).toBeHidden();
+  const albumNote = (await page.locator('#sheet-album-note-text').textContent())!.trim();
+  const copies = await page.evaluate((text) => [...document.querySelectorAll('#sheet-body .liner-text')]
+    .filter((el) => (el as HTMLElement).offsetParent !== null && el.textContent!.trim() === text).length, albumNote);
+  expect(copies, 'album note must not render twice').toBe(1);
+
+  // browse: a track's note takes the liner slot, the album note steps aside,
+  // and the credits stay. Reload rather than collapsing the sheet — at half
+  // it overlays the lower ~46% of the stage, which is where the choose
+  // overlay's buttons sit, so #mic-skip is not clickable from here.
+  await page.goto('');
+  await waitForRenderLoop(page);
+  await page.click('#mic-skip');
+  await page.locator('#sheet-peek').click();
+  await expect(page.locator('#app')).toHaveAttribute('data-sheet', 'half');
+  await waitForSheetSettled(page);
+  await expect(page.locator('#sheet-nowplaying')).toBeVisible();
+  await expect(page.locator('#sheet-album-note')).toBeHidden();
+  await expect(page.locator('.sheet-credits .credits')).toBeVisible();
+  const trackNote = (await page.locator('#sheet-liner').textContent())!.trim();
+  expect(trackNote.length).toBeGreaterThan(0);
+  expect(trackNote, 'liner slot must hold the track note, not the album note').not.toBe(albumNote);
+});
