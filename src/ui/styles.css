@@ -409,8 +409,13 @@ html, body {
   color: rgba(236, 228, 207, 0.5); margin-bottom: 16px;
 }
 
-/* fixed album colophon — full-state only, below the now-playing/liner block */
+/* Album note + credits, below the now-playing/liner block. Shown from half
+   up, like every other block in the sheet — the rail is display:none on
+   mobile, so this is the only route to the credits, and full is reachable
+   only by dragging (a tap toggles peek<->half, see main.ts). Full-state-only
+   made the credits unreachable for anyone who taps rather than drags. */
 .sheet-album-note { display: none; }
+#app[data-sheet="half"] .sheet-album-note,
 #app[data-sheet="full"] .sheet-album-note { display: block; }
 
 .sheet .railctls { display: none; gap: 8px; margin-top: 18px; }

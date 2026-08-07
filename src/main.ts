@@ -185,10 +185,27 @@ function applySheetTransform(visiblePx: number, dragging: boolean) {
   refs.sheet.style.transform = `translateY(${Math.max(0, total - visiblePx)}px)`;
 }
 
+/**
+ * Cap the scrolling body to the part of the sheet that is actually on screen.
+ *
+ * The sheet's box is a fixed 85dvh and only its transform moves, so at `half`
+ * the lower ~40% of that box sits below the viewport. Without this cap the
+ * body's content fits its own 85dvh-tall box, never overflows, and therefore
+ * never scrolls — everything past the screen edge is simply unreachable. That
+ * is why the album note + credits were full-state-only: half had no way to
+ * reach them. At `full` the cap equals the body's natural height, so this is a
+ * no-op there.
+ */
+function syncSheetBodyHeight() {
+  const peekH = refs.sheetPeek.getBoundingClientRect().height;
+  refs.sheetBody.style.maxHeight = `${Math.max(0, snapVisiblePx(sheetSnap) - peekH)}px`;
+}
+
 /** Re-apply the currently-settled snap's position (e.g. after a resize) without treating it as a new interaction. */
 function reapplySheetSnap() {
   refs.root.dataset.sheet = sheetSnap;
   applySheetTransform(snapVisiblePx(sheetSnap), false);
+  syncSheetBodyHeight();
 }
 
 function setSheetSnap(snap: SheetSnap) {

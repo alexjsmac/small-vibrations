@@ -56,7 +56,7 @@ export interface FrameRefs {
 
 /** Liner blurbs + display seeds live only in the chrome (tracks.ts stays untouched). */
 const NOTES: Record<string, string> = {
-  a1: 'The album opens at ground level — a thousand small legs finding the same tempo before anyone gives the order.',
+  a1: 'A thousand small legs find the same tempo before anyone gives the order. Then the march thins back to specks.',
   a2: 'Homemaking rendered as architecture. Two kinds of home grown into one load-bearing wall, humming just below hearing.',
   a3: 'One tile tips and the whole ecosystem answers in sequence. One link breaks and the whole web goes dark.',
   b1: 'One spore becomes a whole teeming world — blooms, rot, rebirth — then exhales back to a spore.',
