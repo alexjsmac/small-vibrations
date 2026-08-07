@@ -28,7 +28,6 @@ export interface FrameRefs {
   micLabel: HTMLSpanElement;
 
   // museum plate (bottom-left of the stage)
-  plateEyebrow: HTMLDivElement;
   plateTitle: HTMLDivElement;
   plateMeta: HTMLDivElement;
 
@@ -49,11 +48,12 @@ export interface FrameRefs {
   sheetHairline: HTMLDivElement;
   sheetBody: HTMLDivElement;
   /** now-playing/liner block — shown in both half and full (browse AND matched, see showTrack). */
-  sheetPlateEyebrow: HTMLDivElement;
   sheetNowTitle: HTMLDivElement;
   sheetNowMeta: HTMLDivElement;
   sheetLinerLabel: HTMLSpanElement;
   sheetLiner: HTMLDivElement;
+  /** Album note in the sheet's full state — kept in sync with the rail's. */
+  sheetAlbumNote: HTMLDivElement;
 }
 
 /** Liner blurbs + display seeds live only in the chrome (tracks.ts stays untouched). */
@@ -65,13 +65,18 @@ const NOTES: Record<string, string> = {
   b2: 'Naming the last of something. A catalogue closing in on itself, specimen by specimen.',
   b3: 'The record exhales. Clean, sterile, and — at last — completely still.',
 };
-const SEEDS: Record<string, string> = {
-  a1: '0x8F2C', a2: '0x21B7', a3: '0x5D04', b1: '0x9A11', b2: '0x3E88', b3: '0xB742',
-};
-const ALBUM_NOTE =
+/** The album note, split so the microphone sentence can be withheld from
+ *  anyone who declined the mic — in browse mode it describes something that
+ *  isn't happening. See `albumNoteFor`. */
+const ALBUM_NOTE_BASE =
   'Written & performed by Sunntack. Every visualization is generated live and reseeds on each play. ' +
-  'Cyanotype plates after 19th-century field guides. This page listens through your microphone and ' +
-  'matches its visuals to whatever track is spinning.';
+  'Cyanotype plates after 19th-century field guides.';
+const ALBUM_NOTE_MIC =
+  'This page listens through your microphone and matches its visuals to whatever track is spinning.';
+
+/** Browse mode = the listener declined the mic, so drop the mic sentence. */
+const albumNoteFor = (state: VisualState) =>
+  state === 'browse' ? ALBUM_NOTE_BASE : `${ALBUM_NOTE_BASE} ${ALBUM_NOTE_MIC}`;
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const fmtDur = (sec: number) => {
@@ -80,8 +85,7 @@ const fmtDur = (sec: number) => {
   return `${m}:${s < 10 ? '0' + s : s}`;
 };
 const sideId = (t: Track) => `${t.side}${t.n}`;
-const plateMeta = (t: Track) =>
-  `${fmtDur(t.duration)}  ·  SIDE ${t.side}  ·  SEED ${SEEDS[t.id] ?? '0x0000'}`;
+const plateMeta = (t: Track) => `${sideId(t)} · ${fmtDur(t.duration)}`;
 
 /** Track rows for one side, as an HTML string. `idx` is the global TRACKS index. */
 function rowsFor(side: 'A' | 'B'): string {
@@ -99,10 +103,10 @@ function controls(fsTarget: string): string {
       <button class="btn ctl js-prev"      data-m="browse">‹ Prev</button>
       <button class="btn ctl js-next"      data-m="browse">Next ›</button>
       <button class="btn ctl js-quality"   data-m="browse matched">Quality: Full</button>
-      <button class="btn ctl js-fullscreen" data-m="browse matched" data-fs="${fsTarget}">⤢ Full</button>
+      <button class="btn ctl js-fullscreen" data-m="browse matched" data-fs="${fsTarget}">⤢ Fullscreen</button>
       <button class="btn ctl js-browse"    data-m="listening">Browse instead</button>
       <button class="btn ctl ghost js-startover" data-m="browse">← Start over</button>
-      <button class="btn ctl ghost js-stop" data-m="matched listening">■ Stop</button>
+      <button class="btn ctl ghost js-stop" data-m="matched listening">■ Stop listening</button>
     </div>`;
 }
 
@@ -115,7 +119,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <button class="railtoggle rail-fold js-railtoggle" title="Fold the sleeve">‹‹</button>
         <div class="eyebrow wide">${ALBUM.artist}</div>
         <div class="disp rail-title">Small<br>Vibrations</div>
-        <div class="rail-cat">${ALBUM.catalog} · 2×LP · CYANOTYPE EDITION</div>
+        <div class="rail-cat">${ALBUM.catalog} · LP · CYANOTYPE EDITION</div>
         <div class="rule"></div>
 
         <div class="rail-tracklist" id="rail-tracklist">
@@ -138,7 +142,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
 
         <div class="rule"></div>
         <div class="eyebrow liner-label">Liner Notes — <span id="liner-label">Small Vibrations</span></div>
-        <div class="liner-text" id="liner-text">${esc(ALBUM_NOTE)}</div>
+        <div class="liner-text" id="liner-text">${esc(albumNoteFor('choose'))}</div>
 
         <div class="rail-spacer"></div>
         ${controls('stage')}
@@ -168,7 +172,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
       </div>
 
       <div class="now-plate" id="now-plate">
-        <div class="eyebrow" id="plate-eyebrow">Plate A1 · Specimen 01</div>
         <div class="disp plate-title" id="now-title">—</div>
         <div class="plate-meta" id="plate-meta"></div>
       </div>
@@ -178,7 +181,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
           <span></span><span></span><span></span>
         </div>
         <div class="listening-head">Listening for Small Vibrations</div>
-        <div class="listening-sub">Play the record — visuals appear the moment a track is recognised.</div>
+        <div class="listening-sub">Play the record — visuals appear the moment a track is recognized.</div>
       </div>
 
       <div class="mic-overlay" id="mic-overlay">
@@ -187,6 +190,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="choose-sub">The record decides the visuals — the page matches each track by ear.</div>
         <div class="choose-actions">
           <button id="mic-start" class="pill">◉ Listen with microphone</button>
+          <div class="choose-privacy">Audio is matched on your device and never leaves it.</div>
           <button id="mic-skip" class="link-btn">Browse without microphone</button>
         </div>
       </div>
@@ -207,7 +211,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         </div>
 
         <div class="sheet-nowplaying" id="sheet-nowplaying">
-          <div class="eyebrow soft" id="sheet-plate-eyebrow">Plate A1 · Specimen 01</div>
           <div class="disp sheet-now-title" id="sheet-now-title">—</div>
           <div class="sheet-now-meta" id="sheet-now-meta"></div>
           <div class="eyebrow liner-label">Liner Notes — <span id="sheet-liner-label">Small Vibrations</span></div>
@@ -217,7 +220,7 @@ export function mountFrame(root: HTMLElement): FrameRefs {
         <div class="sheet-album-note" id="sheet-album-note">
           <div class="rule"></div>
           <div class="eyebrow liner-label">${ALBUM.catalog} · Album Note</div>
-          <div class="liner-text">${esc(ALBUM_NOTE)}</div>
+          <div class="liner-text" id="sheet-album-note-text">${esc(albumNoteFor('choose'))}</div>
         </div>
 
         ${controls('stage')}
@@ -240,7 +243,6 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     listeningMsg:  q<HTMLDivElement>('#listening-msg'),
     micDot:        q<HTMLSpanElement>('#mic-dot'),
     micLabel:      q<HTMLSpanElement>('#mic-label'),
-    plateEyebrow:  q<HTMLDivElement>('#plate-eyebrow'),
     plateTitle:    q<HTMLDivElement>('#now-title'),
     plateMeta:     q<HTMLDivElement>('#plate-meta'),
     railNowTitle:  q<HTMLDivElement>('#rail-now-title'),
@@ -252,11 +254,11 @@ export function mountFrame(root: HTMLElement): FrameRefs {
     sheetPeekLabel:    q<HTMLSpanElement>('#sheet-peek-label'),
     sheetHairline:     q<HTMLDivElement>('#sheet-hairline'),
     sheetBody:         q<HTMLDivElement>('#sheet-body'),
-    sheetPlateEyebrow: q<HTMLDivElement>('#sheet-plate-eyebrow'),
     sheetNowTitle:     q<HTMLDivElement>('#sheet-now-title'),
     sheetNowMeta:      q<HTMLDivElement>('#sheet-now-meta'),
     sheetLinerLabel:   q<HTMLSpanElement>('#sheet-liner-label'),
     sheetLiner:        q<HTMLDivElement>('#sheet-liner'),
+    sheetAlbumNote:    q<HTMLDivElement>('#sheet-album-note-text'),
   };
 }
 
@@ -272,27 +274,28 @@ export function renderChrome(refs: FrameRefs, state: VisualState, idx: number) {
   const showTrack = state === 'matched' || state === 'browse';
 
   // museum plate + rail/sheet now-playing
-  const eyebrow = `Plate ${sideId(t)} · Specimen 0${idx + 1}`;
-  refs.plateEyebrow.textContent = eyebrow;
   refs.plateTitle.textContent = t.title;
   refs.plateMeta.textContent = plateMeta(t);
   refs.railNowTitle.textContent = t.title;
   refs.railNowMeta.textContent = plateMeta(t);
-  refs.sheetPlateEyebrow.textContent = eyebrow;
   refs.sheetNowTitle.textContent = t.title;
   refs.sheetNowMeta.textContent = plateMeta(t);
 
   // liner notes — showTrack (matched||browse) gates the track-specific note,
   // exactly like the desktop rail; the sheet mirrors this on mobile in BOTH
   // browse and matched (the liner-notes fix — it used to be matched-only).
-  refs.linerLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : ALBUM.title;
-  const liner = showTrack ? (NOTES[t.id] ?? ALBUM_NOTE) : ALBUM_NOTE;
+  // The album note is state-dependent (see albumNoteFor), so it's recomputed
+  // here rather than baked into the initial markup.
+  const albumNote = albumNoteFor(state);
+  refs.linerLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : ALBUM.title;
+  const liner = showTrack ? (NOTES[t.id] ?? albumNote) : albumNote;
   refs.linerText.textContent = liner;
-  refs.sheetLinerLabel.textContent = showTrack ? `${sideId(t)} — ${t.title}` : ALBUM.title;
+  refs.sheetLinerLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : ALBUM.title;
   refs.sheetLiner.textContent = liner;
+  refs.sheetAlbumNote.textContent = albumNote;
 
   // peek bar label — one line, identity at a glance even collapsed
-  refs.sheetPeekLabel.textContent = showTrack ? `Plate ${sideId(t)} · ${t.title}` : 'Inner Sleeve';
+  refs.sheetPeekLabel.textContent = showTrack ? `${sideId(t)} · ${t.title}` : 'Inner Sleeve';
 
   // active track row (only highlighted while browsing)
   refs.root.querySelectorAll<HTMLElement>('.trow[data-idx]').forEach((row) => {

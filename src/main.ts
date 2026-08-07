@@ -288,8 +288,12 @@ refs.micStartBtn.addEventListener('click', async () => {
   setVisual('listening');
   await engine.start();
   if (engine.state === 'error') {
-    // No mic — don't strand them on a scene with no controls.
+    // No mic — don't strand them on a scene with no controls. Re-assert the
+    // error status *after* enterBrowse (which resets it to 'off'), so the chip
+    // explains why they landed in browse rather than listening; this is
+    // otherwise the one failure path with no user-visible copy at all.
     enterBrowse();
+    setMicStatus('error');
     return;
   }
   host.setAudioSource(() => {
@@ -301,10 +305,19 @@ refs.micStartBtn.addEventListener('click', async () => {
 refs.micSkipBtn.addEventListener('click', () => enterBrowse());
 
 // --- now-playing progress (drives the collapsed spine bar + clock) ---
+//
+// Matched only. In browse mode nothing is playing, so counting up from the
+// moment a track was selected would assert a playback position that doesn't
+// exist — the clock is hidden there (styles.css) and the bar/hairline are
+// zeroed here so neither carries a stale value back into the next match.
 
 const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 setInterval(() => {
-  if (visual !== 'matched' && visual !== 'browse') return;
+  if (visual !== 'matched') {
+    refs.progressBar.style.height = '0%';
+    refs.sheetHairline.style.width = '0%';
+    return;
+  }
   const dur = TRACKS[idx].duration;
   const el = Math.min(dur, (performance.now() - trackStart) / 1000);
   const pct = dur ? Math.round((el / dur) * 100) : 0;

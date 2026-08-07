@@ -193,9 +193,10 @@ html, body {
   writing-mode: vertical-rl; transform: rotate(180deg);
   font: 400 9px var(--mono); letter-spacing: 0.2em; color: rgba(236, 228, 207, 0.35);
 }
+/* Matched only — in browse nothing is actually playing, so there is no
+   position to report. See the progress interval in main.ts. */
 .progress-plate { display: none; flex-direction: column; align-items: center; gap: 12px; }
-#app[data-mode="matched"] .progress-plate,
-#app[data-mode="browse"]  .progress-plate { display: flex; }
+#app[data-mode="matched"] .progress-plate { display: flex; }
 .progress-track {
   width: 3px; height: 118px; border-radius: 2px;
   background: rgba(236, 228, 207, 0.16); position: relative; overflow: hidden;
@@ -250,7 +251,7 @@ html, body {
 .now-plate { position: absolute; bottom: 48px; left: 48px; z-index: 5; display: none; pointer-events: none; }
 #app[data-mode="matched"] .now-plate,
 #app[data-mode="browse"]  .now-plate { display: block; }
-.plate-title { font-size: 50px; margin-top: 12px; }
+.plate-title { font-size: 50px; }
 .plate-meta {
   font: 400 11px var(--mono); letter-spacing: 0.16em;
   color: rgba(236, 228, 207, 0.5); margin-top: 12px;
@@ -296,6 +297,10 @@ html, body {
   margin-bottom: 32px; max-width: 42ch;
 }
 .choose-actions { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.choose-privacy {
+  font: 400 10px/1.4 var(--mono); letter-spacing: 0.12em; text-transform: uppercase;
+  color: rgba(236, 228, 207, 0.42); max-width: 46ch; margin-top: -4px;
+}
 .pill {
   appearance: none; background: var(--cream); color: var(--ink); border: none;
   border-radius: 999px; padding: 17px 36px;
@@ -379,7 +384,7 @@ html, body {
 .sheet-nowplaying { display: none; }
 #app[data-sheet="half"] .sheet-nowplaying,
 #app[data-sheet="full"]  .sheet-nowplaying { display: block; }
-.sheet-now-title { font-size: 26px; margin-top: 8px; margin-bottom: 4px; }
+.sheet-now-title { font-size: 26px; margin-bottom: 4px; }
 .sheet-now-meta {
   font: 400 11px var(--mono); letter-spacing: 0.14em;
   color: rgba(236, 228, 207, 0.5); margin-bottom: 16px;
