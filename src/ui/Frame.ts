@@ -247,8 +247,9 @@ export function mountFrame(root: HTMLElement): FrameRefs {
           <div class="rule"></div>
           <div class="eyebrow liner-label">${ALBUM.catalog} · Album Note</div>
           <div class="liner-text" id="sheet-album-note-text">${esc(ALBUM_NOTE)}</div>
-          ${creditsBlock()}
         </div>
+
+        <div class="sheet-credits">${creditsBlock()}</div>
 
         ${controls('stage')}
       </div>

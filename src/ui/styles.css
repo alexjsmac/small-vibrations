@@ -417,14 +417,25 @@ html, body {
   color: rgba(236, 228, 207, 0.5); margin-bottom: 16px;
 }
 
-/* Album note + credits, below the now-playing/liner block. Shown from half
-   up, like every other block in the sheet — the rail is display:none on
-   mobile, so this is the only route to the credits, and full is reachable
-   only by dragging (a tap toggles peek<->half, see main.ts). Full-state-only
-   made the credits unreachable for anyone who taps rather than drags. */
+/* Album note — the record's own liner note, and the inverse of the block
+   above: it shows only while NO track is on display. Once a track is showing,
+   its note occupies the liner slot and the album note would be a second,
+   competing blurb directly beneath it. Mirrors the desktop rail, where the
+   one liner slot holds the album note until a track replaces it. */
 .sheet-album-note { display: none; }
 #app[data-sheet="half"] .sheet-album-note,
 #app[data-sheet="full"] .sheet-album-note { display: block; }
+#app[data-mode="browse"]  .sheet-album-note,
+#app[data-mode="matched"] .sheet-album-note { display: none; }
+
+/* Credits — a separate block from the album note precisely so they survive
+   in every mode. Shown from half up: the rail is display:none on mobile, so
+   the sheet is the only route to them, and full is reachable only by dragging
+   (a tap toggles peek<->half, see main.ts), which made full-state-only
+   credits unreachable for anyone who taps rather than drags. */
+.sheet-credits { display: none; }
+#app[data-sheet="half"] .sheet-credits,
+#app[data-sheet="full"] .sheet-credits { display: block; }
 
 .sheet .railctls { display: none; gap: 8px; margin-top: 18px; }
 #app[data-sheet="half"] .sheet .railctls,
