@@ -3,6 +3,18 @@
 Visual album app for the Sunntack *Small Vibrations* LP (Aug 7 2026 release).
 Deploys to GitHub Pages at base path `/small-vibrations/`.
 
+## Design references
+
+Before building or reworking a track visualization, read the two research
+references in `docs/reference/`:
+
+- `threejs-techniques-catalogue.md` — per-technique WebGL2/GLSL catalogue
+  (stateless GPU particles, GPGPU ping-pong, boids, reaction-diffusion, SDF
+  raymarching, …) matched to this repo's stack and per-track arcs.
+- `audiovisual-structure-manual.md` — high-level structure manual for
+  full-track visual arcs (act staging, audio-reactivity mapping, camera and
+  transition design), oriented to the album's insect life-cycle theme.
+
 ## Workflow: branch → PR → green CI → merge
 
 `main` is protected: direct pushes are disabled (including for admins), a PR
