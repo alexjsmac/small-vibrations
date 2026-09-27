@@ -40,7 +40,8 @@ GitHub Pages serves from the **`gh-pages` branch** (Pages source must be set to
   `/small-vibrations/` and publishes to the branch **root** → the live site
   at `https://www.alexmaclean.ca/small-vibrations/`. It uses
   `clean-exclude: pr-preview/` so it never wipes open previews.
-- **`preview.yml`** (every PR) builds with `BASE_PATH=/small-vibrations/pr-preview/pr-<N>/`
+- **`preview.yml`** (every PR except Dependabot's, which would run new
+  packages' install scripts with a write token) builds with `BASE_PATH=/small-vibrations/pr-preview/pr-<N>/`
   and publishes to `pr-preview/pr-<N>/` on the branch, then comments the live
   preview URL on the PR; it removes that subdir when the PR closes.
 

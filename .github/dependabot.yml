@@ -1,0 +1,43 @@
+# GitHub reads this file directly and opens the PRs itself; ci.yml checks them
+# like any other PR, and preview.yml skips them (see the comment there).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Hold back releases younger than this. A merge auto-deploys to Pages, and
+    # hijacked npm releases are usually caught and yanked within days.
+    # Security updates ignore cooldown, so advisories still land immediately.
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    groups:
+      # three and its types are version-coupled (both on the 0.x minor line,
+      # where every minor can break the API), so they ship as one PR.
+      three:
+        patterns:
+          - three
+          - '@types/three'
+      # Build, lint and test tooling: batch the safe bumps. Majors stay
+      # individual so each one gets read.
+      dev-tooling:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns:
+          - '*'
