@@ -604,7 +604,7 @@ class SterileBreath implements Viz {
 
     const params = new URLSearchParams(location.search);
     const soloParam = params.get('solo');
-    let soloMode = 0;
+    let soloMode: number;
     if (soloParam === 'biomass') {
       soloMode = 1;
     } else if (soloParam === 'front') {
