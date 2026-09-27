@@ -17,19 +17,25 @@ references in `docs/reference/`:
 
 ## Workflow: branch → PR → green CI → merge
 
-`main` is protected: direct pushes are disabled (including for admins), a PR
-is required, and the `CI` status check must pass. There is no second
-approver (solo maintainer) — `required_approving_review_count` is 0, so a
-green PR can be self-merged.
+The workflow setup here is shared with alexjsmac's other site repos
+(small-vibrations, bluheron-interactive, alexjsmac.github.io). When you change
+it in one, change it in all three.
 
-1. Work on a branch, never on `main`.
-2. Open a PR. CI runs automatically (lint, typecheck, unit tests, build,
-   Playwright smoke test).
-3. Once `CI` is green, merge the PR yourself.
-4. Merging to `main` auto-deploys to GitHub Pages via `.github/workflows/deploy.yml` — no
-   separate deploy step.
-
-Never commit or push directly to `main`, and never bypass the `CI` check.
+- `main` is protected by the `main` ruleset (`.github/rulesets/main.json`):
+  a PR is required, the `CI` check must pass, force-pushes and deletion are
+  blocked, and nobody can bypass it. There's no second approver (solo
+  maintainer), so a green PR can be self-merged. Merges are squash-only.
+- Work on a branch, open a PR, and merge it yourself once `CI` is green.
+  Never push to `main` or bypass `CI`.
+- Merging to `main` deploys to production via `.github/workflows/deploy.yml`.
+- Before opening a PR, run `npm run verify`. `.github/workflows/ci.yml` runs
+  the same script, so a local pass means a CI pass. It runs lint, typecheck,
+  unit tests, build and the Playwright smoke test (first run: `npx playwright
+  install --with-deps chromium`).
+- Node version: `.nvmrc`. CI and deploy both read it.
+- Dependabot (`.github/dependabot.yml`) opens grouped update PRs every Monday,
+  after a 3-day cooldown (7 for majors). TypeScript >=7 is ignored until the
+  lint/type tooling supports it.
 
 ## Deploys & PR previews
 
@@ -52,18 +58,6 @@ makes everything load from the right subpath. Never hardcode the base elsewhere.
 
 `.nojekyll` is written at the branch root on every production deploy — required
 because branch-served Pages runs Jekyll by default.
-
-## Before opening a PR, run locally
-
-```
-npm run lint
-npm run typecheck
-npm run test:unit
-npm run build
-npm run test:smoke   # first run: npx playwright install --with-deps chromium
-```
-
-All five must pass — CI runs the same steps and will reject the PR otherwise.
 
 ## Test layout
 

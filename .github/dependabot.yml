@@ -1,5 +1,6 @@
-# GitHub reads this file directly and opens the PRs itself; ci.yml checks them
-# like any other PR, and preview.yml skips them (see the comment there).
+# Dependabot opens update PRs itself; ci.yml checks them like any other PR.
+# This layout is shared across alexjsmac's site repos (only the framework
+# group differs) so the weekly Dependabot review can treat them all the same.
 version: 2
 
 updates:
@@ -16,8 +17,8 @@ updates:
       default-days: 3
       semver-major-days: 7
     # TypeScript 7 is the Go rewrite and drops the JS compiler API that
-    # typescript-eslint is built on. Remove this once typescript-eslint
-    # supports 7; until then every 7.x PR fails npm ci.
+    # typescript-eslint is built on. Remove this once typescript-eslint supports 7;
+    # until then every 7.x PR fails npm ci.
     ignore:
       - dependency-name: typescript
         versions: ['>=7']
