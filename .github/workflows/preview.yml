@@ -25,14 +25,18 @@ concurrency:
 
 jobs:
   preview:
+    # Skip Dependabot PRs: this job runs `npm ci` (the new package's install
+    # scripts) with a repo-write token checked out, which is exactly what a
+    # hijacked release would want. ci.yml still checks them read-only.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: github.event.action != 'closed'
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Build with the preview base path
