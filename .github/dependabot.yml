@@ -15,6 +15,12 @@ updates:
     cooldown:
       default-days: 3
       semver-major-days: 7
+    # TypeScript 7 is the Go rewrite and drops the JS compiler API that
+    # typescript-eslint is built on. Remove this once typescript-eslint
+    # supports 7; until then every 7.x PR fails npm ci.
+    ignore:
+      - dependency-name: typescript
+        versions: ['>=7']
     groups:
       # three and its types are version-coupled (both on the 0.x minor line,
       # where every minor can break the API), so they ship as one PR.
