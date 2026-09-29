@@ -1,2 +1,0 @@
-function e(e,t){return Math.max(e,t>0?60/t:1/0)}var t=class{tuning;refEma=0;cooldown=0;constructor(e){this.tuning=e}update(t,n,r,i){return this.refEma+=(n-this.refEma)*Math.min(1,t*this.tuning.refRate),this.cooldown=Math.max(0,this.cooldown-t),(i===void 0||i>0)&&this.cooldown<=0&&n>r&&n>this.tuning.absFloor&&n>this.refEma*(1+this.tuning.relMargin)&&(this.cooldown=i===void 0?this.tuning.cooldown:e(this.tuning.cooldown,i),!0)}};export{e as n,t};
-//# sourceMappingURL=onset-BQ22vJ7j.js.map
