@@ -5,6 +5,7 @@
  * regeneration breaks one of these, matching silently degrades in
  * production rather than failing loudly.
  */
+/// <reference types="node" />
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
