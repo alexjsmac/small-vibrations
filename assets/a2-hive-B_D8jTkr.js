@@ -1,10 +1,10 @@
-import{a as j,n as Z,L as J,b as Ae,H as Oe,S as pe,O as xe,d as be,e as H,M as ye,B as Se,f as ee,c as U,A as Ce,h as Te,V as k}from"./three-BvJYnaQj.js";import{m as Re}from"./random-DL1jLgMw.js";import{O as te,r as oe}from"./onset-DHl140yf.js";import{P as ae}from"./poisson-BRMs42Pw.js";const m=.055,Le=16,_e=3.5,A=.6,Be=4,Fe=1.2,se=.05,Ie=.005,Ne=.008,De=.006,ie=.08,Ue=7,He=3*m,K=2.6,le=4,Pe=2,We=.5,Ge=1.1,V=[[0,0],[7,-5],[-5,7],[9,2],[-8,-3]],re=10,ze=5,Ve=.5*m,Ke=.22*m,Xe=1.6*m,$e=.5*m,Ye=1.5*m,ne=6,qe=3,Qe=1.6,je=.3,Ze=`
+import{A as e,D as t,E as n,O as r,S as i,a,f as o,g as s,h as c,i as l,j as u,o as d,w as f,x as p,y as m}from"./three-BrpLoc7e.js";import{t as h}from"./random-gG32nY7D.js";import{n as g,t as _}from"./onset-BQ22vJ7j.js";import{t as v}from"./poisson-BvIUfcNJ.js";var y=.055,b=3.5,x=.6,S=1.2,C=.05,w=.005,T=.008,E=.006,D=.08,O=3*y,k=2.6,A=[[0,0],[7,-5],[-5,7],[9,2],[-8,-3]],ee=.5*y,te=.22*y,ne=1.6*y,re=.5*y,ie=1.5*y,ae=`
 varying vec2 vUv;
 void main() {
   vUv = uv;
   gl_Position = vec4(position.xy, 0.0, 1.0);
 }
-`,Me=`
+`,j=`
 void computeRoomBirth(vec2 wallUv, out vec2 cellMin, out vec2 cellMax, out float roomBirth) {
   vec2 baseId = floor(wallUv / uRoomSize);
   cellMin = baseId * uRoomSize; cellMax = cellMin + uRoomSize;
@@ -51,9 +51,9 @@ void computeRoomBirth(vec2 wallUv, out vec2 cellMin, out vec2 cellMax, out float
   vec2 roomIdEff = cellMin; // unique per room; do NOT quantize
   float roomHash = hash21(roomIdEff * 2.3 + uSeed + 91.7);
   float roomRing = max(abs(baseId.x), abs(baseId.y)); // birth wave stays keyed to the coarse block
-  roomBirth = clamp((roomRing + roomHash * ${Fe.toFixed(2)}) / ${Be.toFixed(1)}, 0.0, 1.0);
+  roomBirth = clamp((roomRing + roomHash * ${S.toFixed(2)}) / ${4 .toFixed(1)}, 0.0, 1.0);
 }
-`;function Je(h){function e(t){return t===h-1?`hexDist(hexId, seed${t})`:`min(hexDist(hexId, seed${t}), ${e(t+1)})`}return e(0)}function et(h,e,t,o){return`
+`;function oe(e){function t(n){return n===e-1?`hexDist(hexId, seed${n})`:`min(hexDist(hexId, seed${n}), ${t(n+1)})`}return t(0)}function se(e,t,n,r){return`
 precision highp float;
 varying vec2 vUv;
 
@@ -70,17 +70,17 @@ uniform float uGhost, uBeatPulse;
 // for windows/bees/big scene lifts — raising ITS rate to pulse-channel
 // speeds (60-90/min) would strobe everything, not just the comb.
 uniform float uPulse, uPulseCount;
-uniform vec4 uKnockBoost[${e}];
-uniform vec4 uKnockGlow[${e}];
-uniform vec4 uLineA[${t}];
-uniform vec4 uLineMeta[${t}];
+uniform vec4 uKnockBoost[${t}];
+uniform vec4 uKnockGlow[${t}];
+uniform vec4 uLineA[${n}];
+uniform vec4 uLineMeta[${n}];
 // Homemakers: xy wall pos, z heading (rad), w strength 0..1.
-uniform vec4 uCrawler[${o}];
+uniform vec4 uCrawler[${r}];
 // xy cell-center wall pos, z age (s), w strength 0..1 — dedicated array, NOT
 // a reuse of uKnockBoost: knock is user-tap-facing feedback, and folding
 // crawler pre-build into the same pool would let ambient crawler traffic
 // steal/overwrite a tap's boost slot.
-uniform vec4 uCrawlerBoost[${o}];
+uniform vec4 uCrawlerBoost[${r}];
 // Trace field (taste round 3): R = healing line-cut damage, G = fading
 // crawler-dim trail, B = permanent room-build trace. uDamage scales how
 // deep a fresh scar cuts (an ActParams-driven severity knob — see
@@ -94,9 +94,9 @@ uniform float uDamage;
 // is cheap uniform-driven select, not a shader recompile).
 uniform float uTraceOff;
 
-const float HEX_WALL_HALF = ${Ie.toFixed(4)};
-const float ROOM_WALL_HALF = ${Ne.toFixed(4)};
-const float REGION_HALF = ${K.toFixed(2)};
+const float HEX_WALL_HALF = ${w.toFixed(4)};
+const float ROOM_WALL_HALF = ${T.toFixed(4)};
+const float REGION_HALF = ${k.toFixed(2)};
 // Chalk-line marks: a physical scratch (LINE_HALF) thinner than either wall
 // line, a bbox reject margin (LINE_REACH), and a constant-screen-size head.
 const float LINE_HALF = 0.005;
@@ -140,12 +140,12 @@ float vnoise(vec2 p){
 // term after the two lattice SDFs, so it's first in the perf cut order).
 float honeyFbm(vec2 p){
   float v = 0.5 * vnoise(p);
-${h?`  p = p * 2.03 + 17.1;
-  v += 0.25 * vnoise(p);`:""}
+${e?`  p = p * 2.03 + 17.1;
+  v += 0.25 * vnoise(p);`:``}
   return v;
 }
 
-${Me}
+${j}
 
 // Amber / honey / brown regional anchors — anti-monochrome (a1 lesson: flat
 // palettes read as a wash from a distance; neighbouring cells must differ).
@@ -176,7 +176,7 @@ void main(){
   // must never fold back on itself.
   vec2 wallUv = (vUv - 0.5) * uCover / uZoom + uScroll;
 
-${h?"  float aa = fwidth(wallUv.x) * 1.5;":"  float aa = 0.0035;"} // fixed epsilon on Lite: no derivatives on that path
+${e?`  float aa = fwidth(wallUv.x) * 1.5;`:`  float aa = 0.0035;`} // fixed epsilon on Lite: no derivatives on that path
 
   // Trace field sample: R = damage, G = crawler-dim trail, B = build trace.
   // Fetched once here (not per-use-site below) — same texUv mapping as
@@ -199,20 +199,20 @@ ${h?"  float aa = fwidth(wallUv.x) * 1.5;":"  float aa = 0.0035;"} // fixed epsi
   // Generated from the exported HEX_SEEDS array (not hand-duplicated here)
   // so the CPU crawler system's hexBirthApprox() can never silently drift
   // from what the GPU actually renders.
-${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`).join(`
+${A.map((e,t)=>`  vec2 seed${t} = vec2(${e[0].toFixed(1)}, ${e[1].toFixed(1)});`).join(`
 `)}
-  float hexRing = ${Je(V.length)};
-  float hexBirth = clamp((hexRing + hexHash * ${_e.toFixed(1)}) / ${Le.toFixed(1)}, 0.0, 1.0);
-  float hexGrow = 1.0 - smoothstep(uHexBuild, uHexBuild + ${se.toFixed(3)}, hexBirth);
+  float hexRing = ${oe(A.length)};
+  float hexBirth = clamp((hexRing + hexHash * ${b.toFixed(1)}) / ${16 .toFixed(1)}, 0.0, 1.0);
+  float hexGrow = 1.0 - smoothstep(uHexBuild, uHexBuild + ${C.toFixed(3)}, hexBirth);
 
   // Knock boost: a tap (or ambient knock) pre-builds the neighbourhood
   // early, proximity-weighted and decaying — never permanently, so the
   // birth-order field is still the source of truth once the pulse fades.
-  for (int i = 0; i < ${e}; i++) {
+  for (int i = 0; i < ${t}; i++) {
     vec4 kb = uKnockBoost[i];
     if (kb.w <= 0.0) continue;
     float d = length(wallUv - kb.xy);
-    float prox = clamp(1.0 - d / ${He.toFixed(4)}, 0.0, 1.0);
+    float prox = clamp(1.0 - d / ${O.toFixed(4)}, 0.0, 1.0);
     hexGrow = max(hexGrow, kb.w * exp(-kb.z * 2.0) * prox);
   }
 
@@ -222,11 +222,11 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
   // knock's 3*HEX_R — only the cell underfoot should visibly "finish") and
   // its own array (see uCrawlerBoost's declaration for why it isn't folded
   // into uKnockBoost).
-  for (int i = 0; i < ${o}; i++) {
+  for (int i = 0; i < ${r}; i++) {
     vec4 cb = uCrawlerBoost[i];
     if (cb.w <= 0.0) continue;
     float d = length(wallUv - cb.xy);
-    float prox = clamp(1.0 - d / ${Ye.toFixed(4)}, 0.0, 1.0);
+    float prox = clamp(1.0 - d / ${ie.toFixed(4)}, 0.0, 1.0);
     hexGrow = max(hexGrow, cb.w * exp(-cb.z * 2.0) * prox);
   }
 
@@ -250,7 +250,7 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
 
   vec2 roomHalfV = (cellMax - cellMin) * 0.5 - vec2(ROOM_WALL_HALF);
   float roomEdge = sdBox(wallUv - (cellMin + cellMax) * 0.5, roomHalfV);
-  float roomGrow = 1.0 - smoothstep(uRoomBuild, uRoomBuild + ${se.toFixed(3)}, roomBirth);
+  float roomGrow = 1.0 - smoothstep(uRoomBuild, uRoomBuild + ${C.toFixed(3)}, roomBirth);
 
   float roomInterior = (1.0 - smoothstep(-aa, aa, roomEdge)) * roomGrow;
   float roomWallMask = (smoothstep(-aa, aa, roomEdge) - smoothstep(ROOM_WALL_HALF - aa, ROOM_WALL_HALF + aa, roomEdge)) * roomGrow;
@@ -274,8 +274,8 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
   roomWallMask *= roomReveal;
 
   // ---- lights-out: latest-built edge cells die first, seed cells die last ----
-  float hexAlive = 1.0 - smoothstep(1.0 - uDim - ${ie.toFixed(2)}, 1.0 - uDim, hexBirth);
-  float roomAlive = 1.0 - smoothstep(1.0 - uDim - ${ie.toFixed(2)}, 1.0 - uDim, roomBirth);
+  float hexAlive = 1.0 - smoothstep(1.0 - uDim - ${D.toFixed(2)}, 1.0 - uDim, hexBirth);
+  float roomAlive = 1.0 - smoothstep(1.0 - uDim - ${D.toFixed(2)}, 1.0 - uDim, roomBirth);
 
   // ---- honeyFill: deep-amber -> honey-gold, noise wobble, rim highlight, slow drip ----
   float wobble = honeyFbm(wallUv * 4.0 + hexId * 0.35 + uTime * 0.02);
@@ -329,7 +329,7 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
 
   // Boundary accent shimmer where the two lattices' edges nearly coincide
   // and both wall masks are hot — the negotiation's visible handshake.
-  float coincide = 1.0 - smoothstep(0.0, ${De.toFixed(3)}, abs(hexEdge - roomEdge));
+  float coincide = 1.0 - smoothstep(0.0, ${E.toFixed(3)}, abs(hexEdge - roomEdge));
   float boundaryMask = coincide * hexWallMask * roomWallMask;
   col += boundaryMask * COL_ACCENT * uShimmer * (0.5 + 0.5 * sin(uTime * 3.0 + hexHash * 30.0)) * (0.7 + 0.3 * uHigh);
 
@@ -357,7 +357,7 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
   // evaluation entirely outside the climax. Same pointy-top/apothem fix as
   // the main lattice. ----
   if (uMacro > 0.001) {
-    float macroR = uHexR * ${Ue.toFixed(1)};
+    float macroR = uHexR * ${7 .toFixed(1)};
     vec2 macroId = axialRound(pixelToAxial(wallUv, macroR));
     vec2 macroLocal = wallUv - axialToPixel(macroId, macroR);
     float macroEdge = sdHexagon(vec2(macroLocal.y, macroLocal.x), macroR * 0.8660254 - HEX_WALL_HALF * 6.0);
@@ -374,15 +374,15 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
   // knocks/chalk-lines below (those are drawn ACROSS everything, the
   // topmost "mark on top of the whole scene" layer, and must stay on top of
   // the crawlers rather than being walked over). ----
-  const float CRAWLER_LEN = ${Ve.toFixed(5)};
-  const float CRAWLER_WID = ${Ke.toFixed(5)};
-  const float WAKE_LEN = ${Xe.toFixed(5)};
-  const float WAKE_WID = ${$e.toFixed(5)};
+  const float CRAWLER_LEN = ${ee.toFixed(5)};
+  const float CRAWLER_WID = ${te.toFixed(5)};
+  const float WAKE_LEN = ${ne.toFixed(5)};
+  const float WAKE_WID = ${re.toFixed(5)};
   // Ember, deliberately NOT COL_WALL_GLOW — the wake needs to read as the
   // crawler's own trail, not just more of the wall's ambient gold glow (the
   // two would visually merge into one indistinct color on a built cell).
   const vec3 COL_CRAWLER_WAKE = vec3(0.95, 0.55, 0.18);
-  for (int i = 0; i < ${o}; i++) {
+  for (int i = 0; i < ${r}; i++) {
     vec4 cw = uCrawler[i];
     if (cw.w <= 0.0) continue;
     vec2 d = wallUv - cw.xy;
@@ -408,7 +408,7 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
 
   // ---- knocks: expanding ring, masked by the lattice so light travels along it ----
   float latticeMask = max(hexWallMask, roomWallMask);
-  for (int i = 0; i < ${e}; i++) {
+  for (int i = 0; i < ${t}; i++) {
     vec4 kg = uKnockGlow[i];
     if (kg.w <= 0.0) continue;
     float d = length(wallUv - kg.xy);
@@ -421,7 +421,7 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
   // (unlike the knock ring above), since these are drawn across everything,
   // not light travelling along a wall. lm.x is raw age in seconds; the head
   // reaches B at age 0.5s, then the line persists and fades. ----
-  for (int i = 0; i < ${t}; i++) {
+  for (int i = 0; i < ${n}; i++) {
     vec4 la = uLineA[i]; vec4 lm = uLineMeta[i];
     if (lm.y <= 0.0) continue;
     vec2 bmin = min(la.xy, la.zw) - LINE_REACH, bmax = max(la.xy, la.zw) + LINE_REACH;
@@ -443,24 +443,24 @@ ${V.map((a,s)=>`  vec2 seed${s} = vec2(${a[0].toFixed(1)}, ${a[1].toFixed(1)});`
   col = 1.0 - exp(-col * 2.2);
   gl_FragColor = vec4(col, 1.0);
 }
-`}const ce=`
+`}var M=`
 varying vec2 vUv;
 void main() {
   vUv = uv;
   gl_Position = vec4(position.xy, 0.0, 1.0);
 }
-`,tt=.012,ot=8,at=3,st=1024,it=512,lt=.4*m,rt=.55*m;function nt(h,e,t){return`
+`,N=.012,ce=8,le=3,ue=1024,de=512,fe=.4*y,pe=.55*y;function me(e,t,n){return`
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D uPrev;
 uniform float uDecayR, uDecayG;
-uniform vec4 uLineA[${h}];
-uniform vec4 uLineMeta[${h}];
-uniform vec4 uCrawler[${e}];
+uniform vec4 uLineA[${e}];
+uniform vec4 uLineMeta[${e}];
+uniform vec4 uCrawler[${t}];
 
-const float REGION_HALF = ${K.toFixed(2)};
-const float LINE_HALF_DEPOSIT = ${tt.toFixed(4)};
-const float CRAWLER_SPLAT_R = ${t.toFixed(6)};
+const float REGION_HALF = ${k.toFixed(2)};
+const float LINE_HALF_DEPOSIT = ${N.toFixed(4)};
+const float CRAWLER_SPLAT_R = ${n.toFixed(6)};
 
 // Distance from p to the segment a->b, but only tracing it up to 'prog'
 // (0..1) of the way — matches the wall shader's travelling-head reveal, so
@@ -483,7 +483,7 @@ void main() {
   // the scar's lifetime is governed entirely by uDecayR (~8s), independent
   // of how quickly the stroke itself fades from view. ----
   float rDeposit = 0.0;
-  for (int i = 0; i < ${h}; i++) {
+  for (int i = 0; i < ${e}; i++) {
     vec4 la = uLineA[i]; vec4 lm = uLineMeta[i];
     if (lm.y <= 0.0) continue;
     float prog = clamp(lm.x * 2.0, 0.0, 1.0);
@@ -496,7 +496,7 @@ void main() {
   // ---- G/B: crawler splat, shared between the fading dim-trail (G) and the
   // permanent build-trace (B) — same gaussian, different persistence. ----
   float splat = 0.0;
-  for (int i = 0; i < ${e}; i++) {
+  for (int i = 0; i < ${t}; i++) {
     vec4 cw = uCrawler[i];
     if (cw.w <= 0.0) continue;
     vec2 d = wallUv - cw.xy;
@@ -511,17 +511,17 @@ void main() {
 
   gl_FragColor = vec4(r, gOut, bOut, 1.0);
 }
-`}function ct(){return`
+`}function he(){return`
 precision highp float;
 varying vec2 vUv;
 uniform float uRoomBuildAtSeed;
 uniform float uSeed, uRoomSize;
 
-const float REGION_HALF = ${K.toFixed(2)};
+const float REGION_HALF = ${k.toFixed(2)};
 
 float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
-${Me}
+${j}
 
 void main() {
   // Pre-trace B for every cell that "should" already be built at the
@@ -538,7 +538,7 @@ void main() {
   computeRoomBirth(wallUv, cellMin, cellMax, roomBirth);
   gl_FragColor = vec4(0.0, 0.0, step(roomBirth, uRoomBuildAtSeed), 1.0);
 }
-`}class ht{renderer;targets;readIndex=0;scene;camera;quad;depositMaterial;seedMaterial;constructor(e,t,o,a,s,r,u,l){this.renderer=e;const n=t?st:it,i={type:Oe,format:Ae,minFilter:J,magFilter:J,wrapS:Z,wrapT:Z,depthBuffer:!1,stencilBuffer:!1};this.targets=[new j(n,n,i),new j(n,n,i)];const f=t?lt:rt;this.scene=new pe,this.camera=new xe(-1,1,1,-1,0,1);const d=new be(2,2);this.depositMaterial=new H({vertexShader:ce,fragmentShader:nt(o,a,f),depthTest:!1,depthWrite:!1,uniforms:{uPrev:{value:null},uDecayR:{value:1},uDecayG:{value:1},uLineA:{value:r},uLineMeta:{value:u},uCrawler:{value:l}}}),this.seedMaterial=new H({vertexShader:ce,fragmentShader:ct(),depthTest:!1,depthWrite:!1,uniforms:{uRoomBuildAtSeed:{value:0},uSeed:{value:s},uRoomSize:{value:A}}}),this.quad=new ye(d,this.depositMaterial),this.scene.add(this.quad)}step(e){this.depositMaterial.uniforms.uDecayR.value=Math.exp(-e/ot),this.depositMaterial.uniforms.uDecayG.value=Math.exp(-e/at);const t=this.renderer.getRenderTarget(),o=this.targets[this.readIndex],a=this.targets[1-this.readIndex];this.depositMaterial.uniforms.uPrev.value=o.texture,this.quad.material=this.depositMaterial,this.renderer.setRenderTarget(a),this.renderer.render(this.scene,this.camera),this.readIndex=1-this.readIndex,this.renderer.setRenderTarget(t??null)}seed(e){this.seedMaterial.uniforms.uRoomBuildAtSeed.value=e;const t=this.renderer.getRenderTarget();this.quad.material=this.seedMaterial;for(const o of this.targets)this.renderer.setRenderTarget(o),this.renderer.render(this.scene,this.camera);this.renderer.setRenderTarget(t??null),this.quad.material=this.depositMaterial}get texture(){return this.targets[this.readIndex].texture}dispose(){this.targets[0].dispose(),this.targets[1].dispose(),this.depositMaterial.dispose(),this.seedMaterial.dispose(),this.quad.geometry.dispose()}}class ut{constructor(e,t,o){this.renderer=o;const a=Re(e^11746099),s=Math.min(t.particleBudget,t.level==="full"?2e4:6e3),r=new Float32Array(s*3),u=new Float32Array(s);for(let l=0;l<s;l++)r[l*3+0]=(a()*2-1)*3.2,r[l*3+1]=(a()*2-1)*2,r[l*3+2]=(a()*2-1)*2.4,u[l]=a();this.geometry=new Se,this.geometry.setAttribute("position",new ee(r,3)),this.geometry.setAttribute("aSeed",new ee(u,1)),this.uniforms={uFlowTime:{value:0},uTurbulence:{value:.7},uFlowAmount:{value:1.1},uSwarm:{value:0},uSettle:{value:0},uDensity:{value:1},uBrightness:{value:.6},uHigh:{value:0},uBass:{value:0},uScale:{value:96},uSeedShift:{value:a()*100},uFlash:{value:0},uAccent:{value:.25},uZoom:{value:1},uCover:{value:new U(1,1)}},this.material=new H({uniforms:this.uniforms,transparent:!0,depthTest:!1,depthWrite:!1,blending:Ce,vertexShader:`
+`}var P=class{renderer;targets;readIndex=0;scene;camera;quad;depositMaterial;seedMaterial;constructor(e,r,i,a,l,h,g,_){this.renderer=e;let v=r?ue:de,y={type:o,format:f,minFilter:c,magFilter:c,wrapS:d,wrapT:d,depthBuffer:!1,stencilBuffer:!1};this.targets=[new u(v,v,y),new u(v,v,y)];let b=r?fe:pe;this.scene=new n,this.camera=new m(-1,1,1,-1,0,1);let S=new p(2,2);this.depositMaterial=new t({vertexShader:M,fragmentShader:me(i,a,b),depthTest:!1,depthWrite:!1,uniforms:{uPrev:{value:null},uDecayR:{value:1},uDecayG:{value:1},uLineA:{value:h},uLineMeta:{value:g},uCrawler:{value:_}}}),this.seedMaterial=new t({vertexShader:M,fragmentShader:he(),depthTest:!1,depthWrite:!1,uniforms:{uRoomBuildAtSeed:{value:0},uSeed:{value:l},uRoomSize:{value:x}}}),this.quad=new s(S,this.depositMaterial),this.scene.add(this.quad)}step(e){this.depositMaterial.uniforms.uDecayR.value=Math.exp(-e/ce),this.depositMaterial.uniforms.uDecayG.value=Math.exp(-e/le);let t=this.renderer.getRenderTarget(),n=this.targets[this.readIndex],r=this.targets[1-this.readIndex];this.depositMaterial.uniforms.uPrev.value=n.texture,this.quad.material=this.depositMaterial,this.renderer.setRenderTarget(r),this.renderer.render(this.scene,this.camera),this.readIndex=1-this.readIndex,this.renderer.setRenderTarget(t??null)}seed(e){this.seedMaterial.uniforms.uRoomBuildAtSeed.value=e;let t=this.renderer.getRenderTarget();this.quad.material=this.seedMaterial;for(let e of this.targets)this.renderer.setRenderTarget(e),this.renderer.render(this.scene,this.camera);this.renderer.setRenderTarget(t??null),this.quad.material=this.depositMaterial}get texture(){return this.targets[this.readIndex].texture}dispose(){this.targets[0].dispose(),this.targets[1].dispose(),this.depositMaterial.dispose(),this.seedMaterial.dispose(),this.quad.geometry.dispose()}},F=class{renderer;object;material;geometry;uniforms;constructor(e,n,o){this.renderer=o;let s=h(e^11746099),c=Math.min(n.particleBudget,n.level===`full`?2e4:6e3),u=new Float32Array(c*3),d=new Float32Array(c);for(let e=0;e<c;e++)u[e*3+0]=(s()*2-1)*3.2,u[e*3+1]=(s()*2-1)*2,u[e*3+2]=(s()*2-1)*2.4,d[e]=s();this.geometry=new a,this.geometry.setAttribute(`position`,new l(u,3)),this.geometry.setAttribute(`aSeed`,new l(d,1)),this.uniforms={uFlowTime:{value:0},uTurbulence:{value:.7},uFlowAmount:{value:1.1},uSwarm:{value:0},uSettle:{value:0},uDensity:{value:1},uBrightness:{value:.6},uHigh:{value:0},uBass:{value:0},uScale:{value:96},uSeedShift:{value:s()*100},uFlash:{value:0},uAccent:{value:.25},uZoom:{value:1},uCover:{value:new r(1,1)}},this.material=new t({uniforms:this.uniforms,transparent:!0,depthTest:!1,depthWrite:!1,blending:2,vertexShader:`
         precision highp float;
         uniform float uFlowTime;
         uniform float uTurbulence;
@@ -649,5 +649,5 @@ void main() {
           float alpha = falloff * clamp(brightness, 0.1, 1.0) * 0.65;
           gl_FragColor = vec4(col, alpha);
         }
-      `}),this.object=new Te(this.geometry,this.material),this.object.frustumCulled=!1}object;material;geometry;uniforms;update(e,t,o,a,s,r,u=0){const l=o.params,n=this.uniforms;n.uFlowTime.value+=e*(.4+l.beeSwarm*.6),n.uTurbulence.value=.6+a.energy*.4,n.uFlowAmount.value=.9+a.energy*.5,n.uSwarm.value=l.beeSwarm,n.uSettle.value=a.settle,n.uDensity.value=l.beeDensity,n.uHigh.value=t.high,n.uBass.value=t.bass,n.uFlash.value=u,n.uZoom.value=s,n.uCover.value.copy(r),n.uScale.value=this.renderer.domElement.height*.12}dispose(){this.geometry.dispose(),this.material.dispose()}}const S=[0,54,101,132,188,252,267,294.124],N=[{name:"groundbreaking",wallGlow:.4,honeyFill:.15,roomLight:0,shimmer:0,beeDensity:.35,beeSwarm:.1,flashRate:2.5,knockRate:4,driftX:.02,driftY:.01,palMix:.1,hueVar:.4,zoom:1,ghost:.8,beatPulse:.15,lineRate:0,pulseRate:8,crawlers:.2,damage:.35},{name:"raising-the-frame",wallGlow:.65,honeyFill:.5,roomLight:.2,shimmer:.15,beeDensity:.4,beeSwarm:.25,flashRate:8,knockRate:4,driftX:.05,driftY:.02,palMix:.3,hueVar:.55,zoom:1,ghost:.5,beatPulse:.8,lineRate:6,pulseRate:60,crawlers:.5,damage:.6},{name:"settling-in",wallGlow:.55,honeyFill:.4,roomLight:.15,shimmer:.12,beeDensity:.3,beeSwarm:.2,flashRate:2,knockRate:5,driftX:.015,driftY:.01,palMix:.25,hueVar:.5,zoom:1,ghost:.2,beatPulse:.2,lineRate:3,pulseRate:30,crawlers:.35,damage:.5},{name:"inside-the-house",wallGlow:.5,honeyFill:.45,roomLight:.4,shimmer:.18,beeDensity:.3,beeSwarm:.15,flashRate:3,knockRate:8,driftX:.01,driftY:.04,palMix:.4,hueVar:.6,zoom:1.6,ghost:.15,beatPulse:.35,lineRate:4,pulseRate:45,crawlers:.6,damage:.55},{name:"two-homes-one-wall",wallGlow:.9,honeyFill:.85,roomLight:.6,shimmer:1,beeDensity:.85,beeSwarm:.85,flashRate:9,knockRate:16,driftX:.08,driftY:.03,palMix:.6,hueVar:.8,zoom:.55,ghost:.3,beatPulse:1,lineRate:20,pulseRate:90,crawlers:.9,damage:1},{name:"housewarming",wallGlow:.75,honeyFill:.75,roomLight:.5,shimmer:.4,beeDensity:.5,beeSwarm:.5,flashRate:3,knockRate:9,driftX:.03,driftY:.015,palMix:.5,hueVar:.65,zoom:.85,ghost:0,beatPulse:.25,lineRate:3,pulseRate:25,crawlers:.55,damage:.4},{name:"lights-out",wallGlow:.3,honeyFill:.2,roomLight:.05,shimmer:0,beeDensity:.1,beeSwarm:.1,flashRate:.3,knockRate:0,driftX:.005,driftY:.005,palMix:.2,hueVar:.3,zoom:1,ghost:0,beatPulse:0,lineRate:0,pulseRate:4,crawlers:.1,damage:.15}],E=[[0,.05,0,0,0,0,.15],[53.8,.24,0,0,0,0,.4],[54.3,.3,0,0,0,0,.75],[95,.58,0,0,0,0,.7],[101,.6,0,0,0,0,.35],[132,.6,0,0,0,0,.3],[150,.63,.12,0,0,0,.35],[187.8,.7,.38,0,0,0,.5],[188.4,.78,.5,0,.1,0,1],[215,.93,.85,0,1,0,1],[225,1,1,0,1,0,.95],[248,1,1,0,1,.9,.85],[252,1,1,0,1,.95,.7],[267,1,1,0,0,1,.4],[290,1,1,.97,0,1,.08],[294.124,1,1,1,0,1,0]],_={hexBuild:0,roomBuild:0,dim:0,macro:0,settle:0,energy:0};function mt(h){const e=Math.min(Math.max(h,0),E[E.length-1][0]);let t=0;for(;t<E.length-2&&e>=E[t+1][0];)t++;const o=E[t],a=E[t+1],s=Math.min(1,Math.max(0,(e-o[0])/Math.max(.001,a[0]-o[0])));return _.hexBuild=o[1]+(a[1]-o[1])*s,_.roomBuild=o[2]+(a[2]-o[2])*s,_.dim=o[3]+(a[3]-o[3])*s,_.macro=o[4]+(a[4]-o[4])*s,_.settle=o[5]+(a[5]-o[5])*s,_.energy=o[6]+(a[6]-o[6])*s,_}const dt=6;function ft(h){const e=Math.min(1,Math.max(0,h));return e*e*(3-2*e)}function vt(h,e,t){if(t<=0)return h;if(t>=1)return e;const o={...h,name:t<.5?h.name:e.name};for(const a of Object.keys(h)){const s=h[a],r=e[a];typeof s=="number"&&typeof r=="number"&&(o[a]=s+(r-s)*t)}return o}function gt(h){const e=S[S.length-1],t=Math.min(Math.max(h,0),e-.001);let o=0;for(;o<N.length-1&&t>=S[o+1];)o++;const a=S[o],s=S[o+1]??e,r=Math.min(1,Math.max(0,(t-a)/Math.max(.001,s-a))),u=o<N.length-1,l=s-t,n=u?ft(1-Math.min(1,l/dt)):0,i=N[o],f=u?N[o+1]:i;return{params:vt(i,f,n),actIndex:o,localT:r,blend:n}}const he=.25,wt=.08,pt=.06,G=1.5,xt=.5,bt=.9,yt=1.2,Rt=.4,Lt=1.5,_t=.6,Mt=.5,kt=1.2,Et=.04,At=.04,Ot=.3,St=.12,ue=.5,Ct=.9,Tt=.006,Bt=.08,Ft=1.8,It=1.1,Nt=1.5,Dt=3,Ut=.04,x=[[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];function y(h,e,t){return t*(1.7320508*h+.8660254*e)}function R(h,e,t){return t*1.5*e}function Ht(h,e,t,o){const a=h,s=-h-e,r=e,u=t,l=-t-o,n=o;return Math.max(Math.abs(a-u),Math.abs(s-l),Math.abs(r-n))}function Pt(h){return h-Math.floor(h)}function me(h,e,t){let o=1/0;for(const[l,n]of V){const i=Ht(h,e,l,n);i<o&&(o=i)}const a=h*1.7+t,s=e*1.7+t,r=Pt(Math.sin(a*127.1+s*311.7)*43758.5453),u=(o+r*_e)/Le;return Math.min(1,Math.max(0,u))}const de=1.4,fe=1,Wt=60,Gt=40,ve=.6,ge=.33,zt=6,Vt=8,we=5e-4,Kt=10,D=1.5,z=8*m;class Xt{renderer;scene;camera;quad;material;bees;traceField;rand;soloWall=!0;soloBees=!0;forceKnockAlways=!1;forceLinesAlways=!1;arcOverride=null;forceCrawlers=null;forceTraceOff=!1;firstUpdate=!0;lastDt=0;cover=new U(1,1);currentZoom=1;bassE=0;midE=0;highE=0;bassOnset=new te({refRate:he,relMargin:wt,absFloor:pt,cooldown:G});flashOnsetCooldown=0;knockOnsetCooldown=0;flash=0;flashCount=0;flashTimeToNext=0;knockSchedule=new ae({epsilonFloor:1e-6});lineSchedule=new ae({epsilonFloor:1e-6});lastSongTime=-1;pulse=0;pulseCount=0;pulseOnset=new te({refRate:he,relMargin:Et,absFloor:At,cooldown:Ot});pulseTimeToNext=0;knockSlotCount=le;knockBoosts=[];knockBoostUniformValues;knockGlows=[];knockGlowUniformValues;lineSlotCount=ne;lines=[];lineAUniformValues;lineMetaUniformValues;crawlerSlotCount=re;crawlers=[];crawlerUniformValues;crawlerBoosts=[];crawlerBoostUniformValues;hexSeedFloat=0;held=!1;dragDx=0;dragDy=0;velX=0;velY=0;init(e){const{renderer:t,seed:o,quality:a}=e;this.renderer=t,this.rand=Re(o^1085400558);const s=new URLSearchParams(location.search),r=s.get("solo");this.soloWall=!r||r==="wall",this.soloBees=!r||r==="bees",this.forceKnockAlways=s.get("knock")==="always",this.forceLinesAlways=s.get("lines")==="always",this.forceTraceOff=s.get("trace")==="off";const u=s.get("arc");if(u){const c=u.split(",").map(Number);c.length===4&&c.every(Number.isFinite)&&(this.arcOverride={hexBuild:c[0],roomBuild:c[1],macro:c[2],dim:c[3]})}const l=s.get("crawlers");if(l!==null){const c=Number(l);Number.isFinite(c)&&(this.forceCrawlers=Math.min(1,Math.max(0,c)))}const n=a.level==="full";this.knockSlotCount=n?le:Pe;for(let c=0;c<this.knockSlotCount;c++)this.knockBoosts.push({age:0,active:!1});this.knockBoostUniformValues=[];for(let c=0;c<this.knockSlotCount;c++)this.knockBoostUniformValues.push(new k(0,0,0,0));for(let c=0;c<this.knockSlotCount;c++)this.knockGlows.push({age:0,active:!1});this.knockGlowUniformValues=[];for(let c=0;c<this.knockSlotCount;c++)this.knockGlowUniformValues.push(new k(0,0,0,0));this.lineSlotCount=n?ne:qe;for(let c=0;c<this.lineSlotCount;c++)this.lines.push({age:0,active:!1});this.lineAUniformValues=[];for(let c=0;c<this.lineSlotCount;c++)this.lineAUniformValues.push(new k(0,0,0,0));this.lineMetaUniformValues=[];for(let c=0;c<this.lineSlotCount;c++)this.lineMetaUniformValues.push(new k(0,0,0,0));this.crawlerSlotCount=n?re:ze,this.crawlerUniformValues=[];for(let c=0;c<this.crawlerSlotCount;c++)this.crawlerUniformValues.push(new k(0,0,0,0));for(let c=0;c<this.crawlerSlotCount;c++)this.crawlerBoosts.push({age:0,lifetime:0,active:!1});this.crawlerBoostUniformValues=[];for(let c=0;c<this.crawlerSlotCount;c++)this.crawlerBoostUniformValues.push(new k(0,0,0,0));this.scene=new pe,this.camera=new xe(-1,1,1,-1,0,1);const i=new be(2,2),f=(o>>>0)%1e5/1e5;this.hexSeedFloat=f,this.material=new H({vertexShader:Ze,fragmentShader:et(n,this.knockSlotCount,this.lineSlotCount,this.crawlerSlotCount),depthTest:!1,depthWrite:!1,uniforms:{uTime:{value:0},uSeed:{value:f},uHexR:{value:m},uRoomSize:{value:A},uCover:{value:new U(1,1)},uScroll:{value:new U(0,0)},uZoom:{value:1},uHexBuild:{value:0},uRoomBuild:{value:0},uMacro:{value:0},uDim:{value:0},uWallGlow:{value:0},uHoneyFill:{value:0},uRoomLight:{value:0},uShimmer:{value:0},uPalMix:{value:0},uHueVar:{value:0},uBass:{value:0},uMid:{value:0},uHigh:{value:0},uFlash:{value:0},uFlashCount:{value:0},uPulse:{value:0},uPulseCount:{value:0},uGhost:{value:0},uBeatPulse:{value:0},uKnockBoost:{value:this.knockBoostUniformValues},uKnockGlow:{value:this.knockGlowUniformValues},uLineA:{value:this.lineAUniformValues},uLineMeta:{value:this.lineMetaUniformValues},uCrawler:{value:this.crawlerUniformValues},uCrawlerBoost:{value:this.crawlerBoostUniformValues},uTrace:{value:null},uDamage:{value:0},uTraceOff:{value:this.forceTraceOff?1:0}}}),this.quad=new ye(i,this.material),this.soloWall&&this.scene.add(this.quad),this.bees=new ut(o,a,t),this.soloBees&&this.scene.add(this.bees.object),this.traceField=new ht(t,n,this.lineSlotCount,this.crawlerSlotCount,f,this.lineAUniformValues,this.lineMetaUniformValues,this.crawlerUniformValues),this.initCrawlers();const d=t.domElement,g=d.clientWidth||1,w=d.clientHeight||1;this.resize(g,w)}kickFlash(e){this.flash=Math.min(Lt,this.flash+e),this.flashCount++}kickPulse(e){this.pulse=Math.min(kt,this.pulse+e),this.pulseCount++}activateKnockBoost(e,t,o=1){let a=this.knockBoosts.findIndex(r=>!r.active);a<0&&(a=0);const s=this.knockBoosts[a];s.active=!0,s.age=0,this.knockBoostUniformValues[a].set(e,t,0,o)}activateKnockGlow(e,t,o=1){let a=this.knockGlows.findIndex(r=>!r.active);a<0&&(a=0);const s=this.knockGlows[a];s.active=!0,s.age=0,this.knockGlowUniformValues[a].set(e,t,0,o)}updateKnockAges(e){for(let t=0;t<this.knockBoosts.length;t++){const o=this.knockBoosts[t];o.active&&(o.age+=e,o.age>=We?(o.active=!1,this.knockBoostUniformValues[t].w=0):this.knockBoostUniformValues[t].z=o.age)}for(let t=0;t<this.knockGlows.length;t++){const o=this.knockGlows[t];o.active&&(o.age+=e,o.age>=Ge?(o.active=!1,this.knockGlowUniformValues[t].w=0):this.knockGlowUniformValues[t].z=o.age)}}scheduleFlash(e,t){const o=Math.max(0,t)/60;if(!(o<=0))for(this.flashTimeToNext-=e;this.flashTimeToNext<=0;){this.kickFlash(Rt);const a=Math.max(1e-6,this.rand());this.flashTimeToNext+=-Math.log(a)/o}}schedulePulse(e,t){const o=Math.max(0,t)/60;if(!(o<=0))for(this.pulseTimeToNext-=e;this.pulseTimeToNext<=0;){this.kickPulse(Mt);const a=Math.max(1e-6,this.rand());this.pulseTimeToNext+=Math.max(St,-Math.log(a)/o)}}scheduleKnocks(e,t){this.knockSchedule.update(e,t,this.rand,()=>{const o=(this.rand()*2-1)*de,a=(this.rand()*2-1)*fe;this.activateKnockBoost(o,a,.6),this.activateKnockGlow(o,a,.6)})}activateLine(){let e=this.lines.findIndex(d=>!d.active);e<0&&(e=0);const t=this.lines[e],o=this.cover,a=this.material.uniforms.uZoom.value,s=this.material.uniforms.uScroll.value,r=o.x/a*ve,u=o.y/a*ve;let l=0,n=0,i=0,f=0;for(let d=0;d<zt;d++){const g=s.x+(this.rand()*2-1)*r*ge,w=s.y+(this.rand()*2-1)*u*ge,c=s.x+(this.rand()*2-1)*r,v=s.y+(this.rand()*2-1)*u;if(this.rand()<.5?(l=g,n=w,i=c,f=v):(l=c,n=v,i=g,f=w),Math.hypot(i-l,f-n)>=je)break}t.active=!0,t.age=0,this.lineAUniformValues[e].set(l,n,i,f),this.lineMetaUniformValues[e].set(0,1,this.rand(),0)}updateLineAges(e){for(let t=0;t<this.lines.length;t++){const o=this.lines[t];o.active&&(o.age+=e,o.age>=Qe?(o.active=!1,this.lineMetaUniformValues[t].y=0):this.lineMetaUniformValues[t].x=o.age)}}scheduleLines(e,t){this.lineSchedule.update(e,t,this.rand,()=>this.activateLine())}initCrawlers(){for(let e=0;e<this.crawlerSlotCount;e++){let t=0,o=0,a=1/0;for(let u=0;u<12;u++){const l=Math.round((this.rand()*2-1)*4),n=Math.round((this.rand()*2-1)*4),i=me(l,n,this.hexSeedFloat);i<a&&(a=i,t=l,o=n)}const s=x[Math.min(x.length-1,Math.floor(this.rand()*x.length))],r={fromQ:t,fromR:o,toQ:t+s[0],toR:o+s[1],heading:0,t:this.rand(),stepDur:ue+this.rand()*(Ct-ue),strength:0};r.heading=Math.atan2(R(r.toQ,r.toR,m)-R(r.fromQ,r.fromR,m),y(r.toQ,r.toR,m)-y(r.fromQ,r.fromR,m)),this.crawlers.push(r)}}chooseNeighbor(e,t,o,a,s){const r=y(e.toQ,e.toR,m),u=R(e.toQ,e.toR,m),l=Math.cos(e.heading),n=Math.sin(e.heading),i=o-r,f=a-u,d=Math.hypot(i,f),g=Math.max(this.cover.x,this.cover.y)/Math.max(.3,this.currentZoom)*.5,w=Math.min(It,g*.85),c=Math.max(0,d-w),v=d>1e-6?i/d:0,b=d>1e-6?f/d:0,L=[];let C=0;for(const[p,B]of x){const F=e.toQ+p,I=e.toR+B,P=y(F,I,m),W=R(F,I,m),X=P-r,$=W-u,Y=Math.hypot(X,$),q=X/Y,Q=$/Y;let M=.35+Math.max(0,q*l+Q*n);if(F===e.fromQ&&I===e.fromR&&(M*=Bt),me(F,I,this.hexSeedFloat)<=t&&(M*=Ft),M*=1+c*Nt*Math.max(0,q*v+Q*b),s){const ke=Math.abs(P-Math.round(P/A)*A),Ee=Math.abs(W-Math.round(W/A)*A);Math.min(ke,Ee)<Ut&&(M*=Dt)}L.push(M),C+=M}let T=this.rand()*C;for(let p=0;p<x.length;p++)if(T-=L[p],T<=0)return[e.toQ+x[p][0],e.toR+x[p][1]];const O=x[x.length-1];return[e.toQ+O[0],e.toR+O[1]]}activateCrawlerBoost(e,t,o,a,s){const r=this.crawlerBoosts[e];r.active=!0,r.age=0,r.lifetime=a,this.crawlerBoostUniformValues[e].set(t,o,0,s)}updateCrawlerAges(e){for(let t=0;t<this.crawlerBoosts.length;t++){const o=this.crawlerBoosts[t];o.active&&(o.age+=e,o.age>=o.lifetime?(o.active=!1,this.crawlerBoostUniformValues[t].w=0):this.crawlerBoostUniformValues[t].z=o.age)}}updateCrawlers(e,t,o,a,s,r){const u=this.crawlers.length,l=Math.min(1,e*3);for(let n=0;n<u;n++){const i=this.crawlers[n],f=n<t*u?1:0;for(i.strength+=(f-i.strength)*l,i.t+=e/i.stepDur;i.t>=1;){i.t-=1;const O=y(i.toQ,i.toR,m),p=R(i.toQ,i.toR,m);this.activateCrawlerBoost(n,O,p,i.stepDur,i.strength);const B=this.chooseNeighbor(i,o,a,s,r);i.fromQ=i.toQ,i.fromR=i.toR,i.toQ=B[0],i.toR=B[1],i.heading=Math.atan2(R(i.toQ,i.toR,m)-p,y(i.toQ,i.toR,m)-O)}const d=i.t,g=d*d*(3-2*d),w=y(i.fromQ,i.fromR,m),c=R(i.fromQ,i.fromR,m),v=y(i.toQ,i.toR,m),b=R(i.toQ,i.toR,m),L=Math.sin(d*Math.PI*2+n*2.399)*Tt,C=w+(v-w)*g-Math.sin(i.heading)*L,T=c+(b-c)*g+Math.cos(i.heading)*L;this.crawlerUniformValues[n].set(C,T,i.heading,i.strength)}}update(e,t){const o=gt(t.time),a=mt(t.time),s=o.params;this.lastDt=e,this.firstUpdate&&(this.firstUpdate=!1,this.traceField.seed(this.arcOverride?.roomBuild??a.roomBuild)),this.lastSongTime>=0&&t.time<this.lastSongTime-10&&this.traceField.seed(this.arcOverride?.roomBuild??a.roomBuild),this.lastSongTime>=0&&t.time-this.lastSongTime>=0&&t.time-this.lastSongTime<.5&&(this.lastSongTime<54&&t.time>=54&&this.kickFlash(bt),this.lastSongTime<188&&t.time>=188&&this.kickFlash(yt)),this.lastSongTime=t.time;const r=Math.min(1,e*8),u=this.bassE;if(this.bassE+=(t.bass-this.bassE)*r,this.midE+=(t.mid-this.midE)*r,this.highE+=(t.high-this.highE)*r,this.flashOnsetCooldown-=e,this.knockOnsetCooldown-=e,this.bassOnset.update(e,this.bassE,u)){if(this.flashOnsetCooldown<=0&&(this.kickFlash(xt),this.flashOnsetCooldown=oe(G,s.flashRate)),this.knockOnsetCooldown<=0){const v=(this.rand()*2-1)*de,b=(this.rand()*2-1)*fe;this.activateKnockBoost(v,b),this.activateKnockGlow(v,b),this.knockOnsetCooldown=oe(G,s.knockRate)}s.lineRate>=Vt&&this.activateLine()}this.pulseOnset.update(e,this.bassE,u)&&this.kickPulse(_t),this.scheduleFlash(e,s.flashRate),this.flash*=Math.exp(-3*e),this.schedulePulse(e,s.pulseRate),this.pulse*=Math.exp(-6*e),this.scheduleKnocks(e,this.forceKnockAlways?Wt:s.knockRate),this.updateKnockAges(e),this.scheduleLines(e,this.forceLinesAlways?Gt:s.lineRate),this.updateLineAges(e);const l=this.material.uniforms;l.uTime.value+=e,l.uBass.value=this.bassE,l.uMid.value=this.midE,l.uHigh.value=this.highE,l.uFlash.value=this.flash,l.uFlashCount.value=this.flashCount,l.uPulse.value=this.pulse,l.uPulseCount.value=this.pulseCount,l.uGhost.value=s.ghost,l.uBeatPulse.value=s.beatPulse,l.uDamage.value=s.damage,l.uHexBuild.value=this.arcOverride?.hexBuild??a.hexBuild,l.uRoomBuild.value=this.arcOverride?.roomBuild??a.roomBuild,l.uMacro.value=this.arcOverride?.macro??a.macro,l.uDim.value=this.arcOverride?.dim??a.dim,l.uWallGlow.value=s.wallGlow,l.uHoneyFill.value=s.honeyFill,l.uRoomLight.value=s.roomLight,l.uShimmer.value=s.shimmer,l.uPalMix.value=s.palMix,l.uHueVar.value=s.hueVar;const n=s.zoom;l.uZoom.value=n,this.currentZoom=n;const i=l.uScroll.value,f=1+t.mid*.3;i.x+=s.driftX*e*f,i.y+=s.driftY*e*f;const d=this.cover;if(this.held){if(e>1e-5){const v=Math.min(1,e*Kt),b=Math.min(D,Math.max(-D,this.dragDx/e)),L=Math.min(D,Math.max(-D,this.dragDy/e));this.velX+=(b-this.velX)*v,this.velY+=(L-this.velY)*v}this.dragDx=0,this.dragDy=0}else if(this.velX!==0||this.velY!==0){i.x+=this.velX*d.x/n*e,i.y+=this.velY*d.y/n*e;const v=Math.exp(-2.5*e);this.velX*=v,this.velY*=v,Math.abs(this.velX)<we&&(this.velX=0),Math.abs(this.velY)<we&&(this.velY=0)}const g=Math.hypot(i.x,i.y);g>z&&(i.x*=z/g,i.y*=z/g,this.velX=0,this.velY=0);const w=this.arcOverride?.roomBuild??a.roomBuild,c=w>0&&w<1;this.updateCrawlers(e,this.forceCrawlers??s.crawlers,this.arcOverride?.hexBuild??a.hexBuild,i.x,i.y,c),this.updateCrawlerAges(e),this.bees.update(e,t,o,a,n,d,this.flash)}pointer(e){const t=this.material.uniforms,o=this.cover,a=t.uZoom.value,s=t.uScroll.value;if(e.type==="down"){this.held=!0,this.dragDx=0,this.dragDy=0,this.velX=0,this.velY=0;const r=(e.x-.5)*o.x/a+s.x,u=(e.y-.5)*o.y/a+s.y;this.activateKnockBoost(r,u),this.activateKnockGlow(r,u);return}if(e.type==="move"){if(!this.held)return;s.x+=e.dx*o.x/a,s.y+=e.dy*o.y/a,this.dragDx+=e.dx,this.dragDy+=e.dy;return}if(e.type==="up"){this.held=!1;return}this.held=!1,this.velX=0,this.velY=0,this.dragDx=0,this.dragDy=0}render(){this.traceField.step(this.lastDt),this.material.uniforms.uTrace.value=this.traceField.texture,this.renderer.setRenderTarget(null),this.renderer.render(this.scene,this.camera)}resize(e,t){if(!this.material||e<=0||t<=0)return;const o=Math.min(3.5,Math.max(.28,e/t));o>=1?this.cover.set(o,1):this.cover.set(1,1/o),this.material.uniforms.uCover.value.copy(this.cover)}dispose(){this.material.dispose(),this.quad.geometry.dispose(),this.bees.dispose(),this.traceField.dispose(),this.renderer.setRenderTarget(null)}}const $t={default:()=>new Xt},Zt=$t.default;export{Zt as default};
-//# sourceMappingURL=index-h-_5Gpxx.js.map
+      `}),this.object=new i(this.geometry,this.material),this.object.frustumCulled=!1}update(e,t,n,r,i,a,o=0){let s=n.params,c=this.uniforms;c.uFlowTime.value+=e*(.4+s.beeSwarm*.6),c.uTurbulence.value=.6+r.energy*.4,c.uFlowAmount.value=.9+r.energy*.5,c.uSwarm.value=s.beeSwarm,c.uSettle.value=r.settle,c.uDensity.value=s.beeDensity,c.uHigh.value=t.high,c.uBass.value=t.bass,c.uFlash.value=o,c.uZoom.value=i,c.uCover.value.copy(a),c.uScale.value=this.renderer.domElement.height*.12}dispose(){this.geometry.dispose(),this.material.dispose()}},I=[0,54,101,132,188,252,267,294.124],L=[{name:`groundbreaking`,wallGlow:.4,honeyFill:.15,roomLight:0,shimmer:0,beeDensity:.35,beeSwarm:.1,flashRate:2.5,knockRate:4,driftX:.02,driftY:.01,palMix:.1,hueVar:.4,zoom:1,ghost:.8,beatPulse:.15,lineRate:0,pulseRate:8,crawlers:.2,damage:.35},{name:`raising-the-frame`,wallGlow:.65,honeyFill:.5,roomLight:.2,shimmer:.15,beeDensity:.4,beeSwarm:.25,flashRate:8,knockRate:4,driftX:.05,driftY:.02,palMix:.3,hueVar:.55,zoom:1,ghost:.5,beatPulse:.8,lineRate:6,pulseRate:60,crawlers:.5,damage:.6},{name:`settling-in`,wallGlow:.55,honeyFill:.4,roomLight:.15,shimmer:.12,beeDensity:.3,beeSwarm:.2,flashRate:2,knockRate:5,driftX:.015,driftY:.01,palMix:.25,hueVar:.5,zoom:1,ghost:.2,beatPulse:.2,lineRate:3,pulseRate:30,crawlers:.35,damage:.5},{name:`inside-the-house`,wallGlow:.5,honeyFill:.45,roomLight:.4,shimmer:.18,beeDensity:.3,beeSwarm:.15,flashRate:3,knockRate:8,driftX:.01,driftY:.04,palMix:.4,hueVar:.6,zoom:1.6,ghost:.15,beatPulse:.35,lineRate:4,pulseRate:45,crawlers:.6,damage:.55},{name:`two-homes-one-wall`,wallGlow:.9,honeyFill:.85,roomLight:.6,shimmer:1,beeDensity:.85,beeSwarm:.85,flashRate:9,knockRate:16,driftX:.08,driftY:.03,palMix:.6,hueVar:.8,zoom:.55,ghost:.3,beatPulse:1,lineRate:20,pulseRate:90,crawlers:.9,damage:1},{name:`housewarming`,wallGlow:.75,honeyFill:.75,roomLight:.5,shimmer:.4,beeDensity:.5,beeSwarm:.5,flashRate:3,knockRate:9,driftX:.03,driftY:.015,palMix:.5,hueVar:.65,zoom:.85,ghost:0,beatPulse:.25,lineRate:3,pulseRate:25,crawlers:.55,damage:.4},{name:`lights-out`,wallGlow:.3,honeyFill:.2,roomLight:.05,shimmer:0,beeDensity:.1,beeSwarm:.1,flashRate:.3,knockRate:0,driftX:.005,driftY:.005,palMix:.2,hueVar:.3,zoom:1,ghost:0,beatPulse:0,lineRate:0,pulseRate:4,crawlers:.1,damage:.15}],R=[[0,.05,0,0,0,0,.15],[53.8,.24,0,0,0,0,.4],[54.3,.3,0,0,0,0,.75],[95,.58,0,0,0,0,.7],[101,.6,0,0,0,0,.35],[132,.6,0,0,0,0,.3],[150,.63,.12,0,0,0,.35],[187.8,.7,.38,0,0,0,.5],[188.4,.78,.5,0,.1,0,1],[215,.93,.85,0,1,0,1],[225,1,1,0,1,0,.95],[248,1,1,0,1,.9,.85],[252,1,1,0,1,.95,.7],[267,1,1,0,0,1,.4],[290,1,1,.97,0,1,.08],[294.124,1,1,1,0,1,0]],z={hexBuild:0,roomBuild:0,dim:0,macro:0,settle:0,energy:0};function ge(e){let t=Math.min(Math.max(e,0),R[R.length-1][0]),n=0;for(;n<R.length-2&&t>=R[n+1][0];)n++;let r=R[n],i=R[n+1],a=Math.min(1,Math.max(0,(t-r[0])/Math.max(.001,i[0]-r[0])));return z.hexBuild=r[1]+(i[1]-r[1])*a,z.roomBuild=r[2]+(i[2]-r[2])*a,z.dim=r[3]+(i[3]-r[3])*a,z.macro=r[4]+(i[4]-r[4])*a,z.settle=r[5]+(i[5]-r[5])*a,z.energy=r[6]+(i[6]-r[6])*a,z}var _e=6;function ve(e){let t=Math.min(1,Math.max(0,e));return t*t*(3-2*t)}function ye(e,t,n){if(n<=0)return e;if(n>=1)return t;let r={...e,name:n<.5?e.name:t.name};for(let i of Object.keys(e)){let a=e[i],o=t[i];typeof a==`number`&&typeof o==`number`&&(r[i]=a+(o-a)*n)}return r}function be(e){let t=I[I.length-1],n=Math.min(Math.max(e,0),t-.001),r=0;for(;r<L.length-1&&n>=I[r+1];)r++;let i=I[r],a=I[r+1]??t,o=Math.min(1,Math.max(0,(n-i)/Math.max(.001,a-i))),s=r<L.length-1,c=a-n,l=s?ve(1-Math.min(1,c/_e)):0,u=L[r];return{params:ye(u,s?L[r+1]:u,l),actIndex:r,localT:o,blend:l}}var B=.25,xe=.08,Se=.06,V=1.5,Ce=.5,we=.9,Te=1.2,Ee=.4,De=1.5,Oe=.6,ke=.5,Ae=1.2,je=.04,H=.04,Me=.3,Ne=.12,Pe=.5,Fe=.006,Ie=.08,Le=1.8,Re=1.1,ze=1.5,Be=3,Ve=.04,U=[[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];function W(e,t,n){return n*(1.7320508*e+.8660254*t)}function G(e,t,n){return n*1.5*t}function He(e,t,n,r){let i=e,a=-e-t,o=t,s=n,c=-n-r,l=r;return Math.max(Math.abs(i-s),Math.abs(a-c),Math.abs(o-l))}function Ue(e){return e-Math.floor(e)}function K(e,t,n){let r=1/0;for(let[n,i]of A){let a=He(e,t,n,i);a<r&&(r=a)}let i=e*1.7+n,a=t*1.7+n,o=Ue(Math.sin(i*127.1+a*311.7)*43758.5453),s=(r+o*b)/16;return Math.min(1,Math.max(0,s))}var q=1.4,J=1,We=60,Ge=40,Y=.6,X=.33,Ke=6,qe=8,Z=5e-4,Je=10,Q=1.5,$=8*y,Ye=class{renderer;scene;camera;quad;material;bees;traceField;rand;soloWall=!0;soloBees=!0;forceKnockAlways=!1;forceLinesAlways=!1;arcOverride=null;forceCrawlers=null;forceTraceOff=!1;firstUpdate=!0;lastDt=0;cover=new r(1,1);currentZoom=1;bassE=0;midE=0;highE=0;bassOnset=new _({refRate:B,relMargin:xe,absFloor:Se,cooldown:V});flashOnsetCooldown=0;knockOnsetCooldown=0;flash=0;flashCount=0;flashTimeToNext=0;knockSchedule=new v({epsilonFloor:1e-6});lineSchedule=new v({epsilonFloor:1e-6});lastSongTime=-1;pulse=0;pulseCount=0;pulseOnset=new _({refRate:B,relMargin:je,absFloor:H,cooldown:Me});pulseTimeToNext=0;knockSlotCount=4;knockBoosts=[];knockBoostUniformValues;knockGlows=[];knockGlowUniformValues;lineSlotCount=6;lines=[];lineAUniformValues;lineMetaUniformValues;crawlerSlotCount=10;crawlers=[];crawlerUniformValues;crawlerBoosts=[];crawlerBoostUniformValues;hexSeedFloat=0;held=!1;dragDx=0;dragDy=0;velX=0;velY=0;init(i){let{renderer:a,seed:o,quality:c}=i;this.renderer=a,this.rand=h(o^1085400558);let l=new URLSearchParams(location.search),u=l.get(`solo`);this.soloWall=!u||u===`wall`,this.soloBees=!u||u===`bees`,this.forceKnockAlways=l.get(`knock`)===`always`,this.forceLinesAlways=l.get(`lines`)===`always`,this.forceTraceOff=l.get(`trace`)===`off`;let d=l.get(`arc`);if(d){let e=d.split(`,`).map(Number);e.length===4&&e.every(Number.isFinite)&&(this.arcOverride={hexBuild:e[0],roomBuild:e[1],macro:e[2],dim:e[3]})}let f=l.get(`crawlers`);if(f!==null){let e=Number(f);Number.isFinite(e)&&(this.forceCrawlers=Math.min(1,Math.max(0,e)))}let g=c.level===`full`;this.knockSlotCount=g?4:2;for(let e=0;e<this.knockSlotCount;e++)this.knockBoosts.push({age:0,active:!1});this.knockBoostUniformValues=[];for(let t=0;t<this.knockSlotCount;t++)this.knockBoostUniformValues.push(new e(0,0,0,0));for(let e=0;e<this.knockSlotCount;e++)this.knockGlows.push({age:0,active:!1});this.knockGlowUniformValues=[];for(let t=0;t<this.knockSlotCount;t++)this.knockGlowUniformValues.push(new e(0,0,0,0));this.lineSlotCount=g?6:3;for(let e=0;e<this.lineSlotCount;e++)this.lines.push({age:0,active:!1});this.lineAUniformValues=[];for(let t=0;t<this.lineSlotCount;t++)this.lineAUniformValues.push(new e(0,0,0,0));this.lineMetaUniformValues=[];for(let t=0;t<this.lineSlotCount;t++)this.lineMetaUniformValues.push(new e(0,0,0,0));this.crawlerSlotCount=g?10:5,this.crawlerUniformValues=[];for(let t=0;t<this.crawlerSlotCount;t++)this.crawlerUniformValues.push(new e(0,0,0,0));for(let e=0;e<this.crawlerSlotCount;e++)this.crawlerBoosts.push({age:0,lifetime:0,active:!1});this.crawlerBoostUniformValues=[];for(let t=0;t<this.crawlerSlotCount;t++)this.crawlerBoostUniformValues.push(new e(0,0,0,0));this.scene=new n,this.camera=new m(-1,1,1,-1,0,1);let _=new p(2,2),v=(o>>>0)%1e5/1e5;this.hexSeedFloat=v,this.material=new t({vertexShader:ae,fragmentShader:se(g,this.knockSlotCount,this.lineSlotCount,this.crawlerSlotCount),depthTest:!1,depthWrite:!1,uniforms:{uTime:{value:0},uSeed:{value:v},uHexR:{value:y},uRoomSize:{value:x},uCover:{value:new r(1,1)},uScroll:{value:new r(0,0)},uZoom:{value:1},uHexBuild:{value:0},uRoomBuild:{value:0},uMacro:{value:0},uDim:{value:0},uWallGlow:{value:0},uHoneyFill:{value:0},uRoomLight:{value:0},uShimmer:{value:0},uPalMix:{value:0},uHueVar:{value:0},uBass:{value:0},uMid:{value:0},uHigh:{value:0},uFlash:{value:0},uFlashCount:{value:0},uPulse:{value:0},uPulseCount:{value:0},uGhost:{value:0},uBeatPulse:{value:0},uKnockBoost:{value:this.knockBoostUniformValues},uKnockGlow:{value:this.knockGlowUniformValues},uLineA:{value:this.lineAUniformValues},uLineMeta:{value:this.lineMetaUniformValues},uCrawler:{value:this.crawlerUniformValues},uCrawlerBoost:{value:this.crawlerBoostUniformValues},uTrace:{value:null},uDamage:{value:0},uTraceOff:{value:+!!this.forceTraceOff}}}),this.quad=new s(_,this.material),this.soloWall&&this.scene.add(this.quad),this.bees=new F(o,c,a),this.soloBees&&this.scene.add(this.bees.object),this.traceField=new P(a,g,this.lineSlotCount,this.crawlerSlotCount,v,this.lineAUniformValues,this.lineMetaUniformValues,this.crawlerUniformValues),this.initCrawlers();let b=a.domElement,S=b.clientWidth||1,C=b.clientHeight||1;this.resize(S,C)}kickFlash(e){this.flash=Math.min(De,this.flash+e),this.flashCount++}kickPulse(e){this.pulse=Math.min(Ae,this.pulse+e),this.pulseCount++}activateKnockBoost(e,t,n=1){let r=this.knockBoosts.findIndex(e=>!e.active);r<0&&(r=0);let i=this.knockBoosts[r];i.active=!0,i.age=0,this.knockBoostUniformValues[r].set(e,t,0,n)}activateKnockGlow(e,t,n=1){let r=this.knockGlows.findIndex(e=>!e.active);r<0&&(r=0);let i=this.knockGlows[r];i.active=!0,i.age=0,this.knockGlowUniformValues[r].set(e,t,0,n)}updateKnockAges(e){for(let t=0;t<this.knockBoosts.length;t++){let n=this.knockBoosts[t];n.active&&(n.age+=e,n.age>=.5?(n.active=!1,this.knockBoostUniformValues[t].w=0):this.knockBoostUniformValues[t].z=n.age)}for(let t=0;t<this.knockGlows.length;t++){let n=this.knockGlows[t];n.active&&(n.age+=e,n.age>=1.1?(n.active=!1,this.knockGlowUniformValues[t].w=0):this.knockGlowUniformValues[t].z=n.age)}}scheduleFlash(e,t){let n=Math.max(0,t)/60;if(!(n<=0))for(this.flashTimeToNext-=e;this.flashTimeToNext<=0;){this.kickFlash(Ee);let e=Math.max(1e-6,this.rand());this.flashTimeToNext+=-Math.log(e)/n}}schedulePulse(e,t){let n=Math.max(0,t)/60;if(!(n<=0))for(this.pulseTimeToNext-=e;this.pulseTimeToNext<=0;){this.kickPulse(ke);let e=Math.max(1e-6,this.rand());this.pulseTimeToNext+=Math.max(Ne,-Math.log(e)/n)}}scheduleKnocks(e,t){this.knockSchedule.update(e,t,this.rand,()=>{let e=(this.rand()*2-1)*q,t=(this.rand()*2-1)*J;this.activateKnockBoost(e,t,.6),this.activateKnockGlow(e,t,.6)})}activateLine(){let e=this.lines.findIndex(e=>!e.active);e<0&&(e=0);let t=this.lines[e],n=this.cover,r=this.material.uniforms.uZoom.value,i=this.material.uniforms.uScroll.value,a=n.x/r*Y,o=n.y/r*Y,s=0,c=0,l=0,u=0;for(let e=0;e<Ke;e++){let e=i.x+(this.rand()*2-1)*a*X,t=i.y+(this.rand()*2-1)*o*X,n=i.x+(this.rand()*2-1)*a,r=i.y+(this.rand()*2-1)*o;if(this.rand()<.5?(s=e,c=t,l=n,u=r):(s=n,c=r,l=e,u=t),Math.hypot(l-s,u-c)>=.3)break}t.active=!0,t.age=0,this.lineAUniformValues[e].set(s,c,l,u),this.lineMetaUniformValues[e].set(0,1,this.rand(),0)}updateLineAges(e){for(let t=0;t<this.lines.length;t++){let n=this.lines[t];n.active&&(n.age+=e,n.age>=1.6?(n.active=!1,this.lineMetaUniformValues[t].y=0):this.lineMetaUniformValues[t].x=n.age)}}scheduleLines(e,t){this.lineSchedule.update(e,t,this.rand,()=>this.activateLine())}initCrawlers(){for(let e=0;e<this.crawlerSlotCount;e++){let e=0,t=0,n=1/0;for(let r=0;r<12;r++){let r=Math.round((this.rand()*2-1)*4),i=Math.round((this.rand()*2-1)*4),a=K(r,i,this.hexSeedFloat);a<n&&(n=a,e=r,t=i)}let r=U[Math.min(U.length-1,Math.floor(this.rand()*U.length))],i={fromQ:e,fromR:t,toQ:e+r[0],toR:t+r[1],heading:0,t:this.rand(),stepDur:Pe+this.rand()*.4,strength:0};i.heading=Math.atan2(G(i.toQ,i.toR,y)-G(i.fromQ,i.fromR,y),W(i.toQ,i.toR,y)-W(i.fromQ,i.fromR,y)),this.crawlers.push(i)}}chooseNeighbor(e,t,n,r,i){let a=W(e.toQ,e.toR,y),o=G(e.toQ,e.toR,y),s=Math.cos(e.heading),c=Math.sin(e.heading),l=n-a,u=r-o,d=Math.hypot(l,u),f=Math.max(this.cover.x,this.cover.y)/Math.max(.3,this.currentZoom)*.5,p=Math.min(Re,f*.85),m=Math.max(0,d-p),h=d>1e-6?l/d:0,g=d>1e-6?u/d:0,_=[],v=0;for(let[n,r]of U){let l=e.toQ+n,u=e.toR+r,d=W(l,u,y),f=G(l,u,y),p=d-a,b=f-o,S=Math.hypot(p,b),C=p/S,w=b/S,T=.35+Math.max(0,C*s+w*c);if(l===e.fromQ&&u===e.fromR&&(T*=Ie),K(l,u,this.hexSeedFloat)<=t&&(T*=Le),T*=1+m*ze*Math.max(0,C*h+w*g),i){let e=Math.abs(d-Math.round(d/x)*x),t=Math.abs(f-Math.round(f/x)*x);Math.min(e,t)<Ve&&(T*=Be)}_.push(T),v+=T}let b=this.rand()*v;for(let t=0;t<U.length;t++)if(b-=_[t],b<=0)return[e.toQ+U[t][0],e.toR+U[t][1]];let S=U[U.length-1];return[e.toQ+S[0],e.toR+S[1]]}activateCrawlerBoost(e,t,n,r,i){let a=this.crawlerBoosts[e];a.active=!0,a.age=0,a.lifetime=r,this.crawlerBoostUniformValues[e].set(t,n,0,i)}updateCrawlerAges(e){for(let t=0;t<this.crawlerBoosts.length;t++){let n=this.crawlerBoosts[t];n.active&&(n.age+=e,n.age>=n.lifetime?(n.active=!1,this.crawlerBoostUniformValues[t].w=0):this.crawlerBoostUniformValues[t].z=n.age)}}updateCrawlers(e,t,n,r,i,a){let o=this.crawlers.length,s=Math.min(1,e*3);for(let c=0;c<o;c++){let l=this.crawlers[c],u=+(c<t*o);for(l.strength+=(u-l.strength)*s,l.t+=e/l.stepDur;l.t>=1;){--l.t;let e=W(l.toQ,l.toR,y),t=G(l.toQ,l.toR,y);this.activateCrawlerBoost(c,e,t,l.stepDur,l.strength);let o=this.chooseNeighbor(l,n,r,i,a);l.fromQ=l.toQ,l.fromR=l.toR,l.toQ=o[0],l.toR=o[1],l.heading=Math.atan2(G(l.toQ,l.toR,y)-t,W(l.toQ,l.toR,y)-e)}let d=l.t,f=d*d*(3-2*d),p=W(l.fromQ,l.fromR,y),m=G(l.fromQ,l.fromR,y),h=W(l.toQ,l.toR,y),g=G(l.toQ,l.toR,y),_=Math.sin(d*Math.PI*2+c*2.399)*Fe,v=p+(h-p)*f-Math.sin(l.heading)*_,b=m+(g-m)*f+Math.cos(l.heading)*_;this.crawlerUniformValues[c].set(v,b,l.heading,l.strength)}}update(e,t){let n=be(t.time),r=ge(t.time),i=n.params;this.lastDt=e,this.firstUpdate&&(this.firstUpdate=!1,this.traceField.seed(this.arcOverride?.roomBuild??r.roomBuild)),this.lastSongTime>=0&&t.time<this.lastSongTime-10&&this.traceField.seed(this.arcOverride?.roomBuild??r.roomBuild),this.lastSongTime>=0&&t.time-this.lastSongTime>=0&&t.time-this.lastSongTime<.5&&(this.lastSongTime<54&&t.time>=54&&this.kickFlash(we),this.lastSongTime<188&&t.time>=188&&this.kickFlash(Te)),this.lastSongTime=t.time;let a=Math.min(1,e*8),o=this.bassE;if(this.bassE+=(t.bass-this.bassE)*a,this.midE+=(t.mid-this.midE)*a,this.highE+=(t.high-this.highE)*a,this.flashOnsetCooldown-=e,this.knockOnsetCooldown-=e,this.bassOnset.update(e,this.bassE,o)){if(this.flashOnsetCooldown<=0&&(this.kickFlash(Ce),this.flashOnsetCooldown=g(V,i.flashRate)),this.knockOnsetCooldown<=0){let e=(this.rand()*2-1)*q,t=(this.rand()*2-1)*J;this.activateKnockBoost(e,t),this.activateKnockGlow(e,t),this.knockOnsetCooldown=g(V,i.knockRate)}i.lineRate>=qe&&this.activateLine()}this.pulseOnset.update(e,this.bassE,o)&&this.kickPulse(Oe),this.scheduleFlash(e,i.flashRate),this.flash*=Math.exp(-3*e),this.schedulePulse(e,i.pulseRate),this.pulse*=Math.exp(-6*e),this.scheduleKnocks(e,this.forceKnockAlways?We:i.knockRate),this.updateKnockAges(e),this.scheduleLines(e,this.forceLinesAlways?Ge:i.lineRate),this.updateLineAges(e);let s=this.material.uniforms;s.uTime.value+=e,s.uBass.value=this.bassE,s.uMid.value=this.midE,s.uHigh.value=this.highE,s.uFlash.value=this.flash,s.uFlashCount.value=this.flashCount,s.uPulse.value=this.pulse,s.uPulseCount.value=this.pulseCount,s.uGhost.value=i.ghost,s.uBeatPulse.value=i.beatPulse,s.uDamage.value=i.damage,s.uHexBuild.value=this.arcOverride?.hexBuild??r.hexBuild,s.uRoomBuild.value=this.arcOverride?.roomBuild??r.roomBuild,s.uMacro.value=this.arcOverride?.macro??r.macro,s.uDim.value=this.arcOverride?.dim??r.dim,s.uWallGlow.value=i.wallGlow,s.uHoneyFill.value=i.honeyFill,s.uRoomLight.value=i.roomLight,s.uShimmer.value=i.shimmer,s.uPalMix.value=i.palMix,s.uHueVar.value=i.hueVar;let c=i.zoom;s.uZoom.value=c,this.currentZoom=c;let l=s.uScroll.value,u=1+t.mid*.3;l.x+=i.driftX*e*u,l.y+=i.driftY*e*u;let d=this.cover;if(this.held){if(e>1e-5){let t=Math.min(1,e*Je),n=Math.min(Q,Math.max(-1.5,this.dragDx/e)),r=Math.min(Q,Math.max(-1.5,this.dragDy/e));this.velX+=(n-this.velX)*t,this.velY+=(r-this.velY)*t}this.dragDx=0,this.dragDy=0}else if(this.velX!==0||this.velY!==0){l.x+=this.velX*d.x/c*e,l.y+=this.velY*d.y/c*e;let t=Math.exp(-2.5*e);this.velX*=t,this.velY*=t,Math.abs(this.velX)<Z&&(this.velX=0),Math.abs(this.velY)<Z&&(this.velY=0)}let f=Math.hypot(l.x,l.y);f>$&&(l.x*=$/f,l.y*=$/f,this.velX=0,this.velY=0);let p=this.arcOverride?.roomBuild??r.roomBuild,m=p>0&&p<1;this.updateCrawlers(e,this.forceCrawlers??i.crawlers,this.arcOverride?.hexBuild??r.hexBuild,l.x,l.y,m),this.updateCrawlerAges(e),this.bees.update(e,t,n,r,c,d,this.flash)}pointer(e){let t=this.material.uniforms,n=this.cover,r=t.uZoom.value,i=t.uScroll.value;if(e.type===`down`){this.held=!0,this.dragDx=0,this.dragDy=0,this.velX=0,this.velY=0;let t=(e.x-.5)*n.x/r+i.x,a=(e.y-.5)*n.y/r+i.y;this.activateKnockBoost(t,a),this.activateKnockGlow(t,a);return}if(e.type===`move`){if(!this.held)return;i.x+=e.dx*n.x/r,i.y+=e.dy*n.y/r,this.dragDx+=e.dx,this.dragDy+=e.dy;return}if(e.type===`up`){this.held=!1;return}this.held=!1,this.velX=0,this.velY=0,this.dragDx=0,this.dragDy=0}render(){this.traceField.step(this.lastDt),this.material.uniforms.uTrace.value=this.traceField.texture,this.renderer.setRenderTarget(null),this.renderer.render(this.scene,this.camera)}resize(e,t){if(!this.material||e<=0||t<=0)return;let n=Math.min(3.5,Math.max(.28,e/t));n>=1?this.cover.set(n,1):this.cover.set(1,1/n),this.material.uniforms.uCover.value.copy(this.cover)}dispose(){this.material.dispose(),this.quad.geometry.dispose(),this.bees.dispose(),this.traceField.dispose(),this.renderer.setRenderTarget(null)}},Xe={default:()=>new Ye}.default;export{Xe as default};
+//# sourceMappingURL=a2-hive-B_D8jTkr.js.map
